@@ -357,6 +357,15 @@ popupSeq.ownerClicked=true（oob-result.json 引用见下方 §2.14 更正）；
   R2-02 Cancel 不点击已修；**R2-01「双击目标同一性」延期**——作用面仅虚拟
   桌面（fusion 每窗一页天然同目标）且该模式 ArkTS 无按窗数据，方向 =
   host 侧 X 命中查询（xwm xcb），已立项；F3B（epoch）随批。
+  **部署验证（2026-10-11 夜，自动化，设备 .5）**：全新安装冷启 ×2 均干净
+  （starting:wineboot→ready ≈55s，零 [AUTO-RETRY] —— D47 彩票未中，[AUTO-
+  RETRY] 链验证待故障注入）；core ×2 = 3/4（唯一 FAIL = D49 已知签名 #118）；
+  **#136 已过自动判定（含严格版）**：uitest 驱动设置页（dumpLayout 定位），
+  选 Wayland 后引擎整重启（41 条 native 消息 = 41 次 mirror 重跑）高亮零回
+  翻，hilog 双行 `preferred set: wayland→x11`，截图 `.temp/batch1-verify/`
+  （r0-r3/s0-s6）。F2 复测口径修正：前台 busy 被模态 overlay 结构挡住，真实
+  可复现面 = bg 自动重试期间（骑彩票）；Cancel 维持手测。auto-retry 判定件
+  已入库（0754ea3）并首跑 SKIP（no-evidence，未触发=不下结论）。
 - **悬而未决**：#133（硬件）；用户对最新构建（双击/滚动/路线 UI，含复核
   批次 1 修复项）的手测判词；B1/B2 的处置口径（修 or 记档）。
 
@@ -662,6 +671,10 @@ mono/msiexec/大部分 wine.inf 已装完（该 stderr 的 spawn 表可证），
 窗口内不再追加超预期自动重试）；F2 重试期间「重置」忙时出 toast 反馈。
 F3B（skip 也消耗重试预算）未做——timer 句柄已入位，最小改动只剩 epoch。
 部署验证时 F1/F2 一并复测（关闭后引擎不得自启；忙态重置有可见反馈）。
+**首轮部署验证（2026-10-11 夜）**：全新安装冷启 ×2 均未触发（D47 未复现，
+两轮 starting:wineboot→state:ready ≈55s 零 AUTO-RETRY）——[AUTO-RETRY] 链的
+验证需彩票命中或故障注入；归档判定件 auto-retry 已入库待信号（无信号时
+SKIP 不误报，见 automation/checks/auto_retry.py）。
 
 ### 2.4 X 路线 GL 呈现：走私有通道（2026-09-30 落地；GLX 补栈为被否决方案）
 
