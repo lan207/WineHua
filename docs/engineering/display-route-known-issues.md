@@ -699,6 +699,22 @@ F3B（skip 也消耗重试预算）未做——timer 句柄已入位，最小改
 验证需彩票命中或故障注入；归档判定件 auto-retry 已入库待信号（无信号时
 SKIP 不误报，见 automation/checks/auto_retry.py）。
 
+**故障注入尝试（2026-10-11 夜，4 轮未触发）**：为免等自然彩票试了注入
+（编排工具 `scripts/d47-fault-inject.sh` 入库，方法与踩坑全在脚本头注释）：
+① 外部 kill wineboot 子树——实测 wineboot loader 正常退出码即 `exit=9`
+（暖启成功 boot 同值），supervisor 的 waited-for-exit **不看退出码**，杀子树
+走「完成」假路径不复现 failed；② 外部 kill wineserver——`Operation not
+permitted`（hdc shell uid 2000 跨 uid 无权限），外力只剩 `aa force-stop`
+（整 app）；③④ 首启 wineboot 中途 force-stop 打断（+18s / +42s，后者 =
+mono 安装相、与自然失败同相位）→ 重拉新进程——**两次重拉均自愈**（50s 上下
+重建到 ready，无 failed）。结论：4 轮未触达 state:failed，链验证挂起待自然
+复现——**自动捕获已就位**：彩票命中时 [AUTO-RETRY] 行随 core 套件归档并被
+auto-retry 判据自动判定（该行出现即有 PASS/FAIL 结论）。**用户决定
+（2026-10-11）：暂缓追 wineboot 崩溃排查**（不好排查；止血已在库，影响面 =
+全新安装首启一次重试）。附带收获：打断首启后重拉自愈路径实测稳健（首启可
+中断性）；`hdc shell` 不传远端 rc / 杀不动 app 进程 / hilog 起读回环等设备
+通道教训已入 memory（ohos-device-evidence-channels）。
+
 ### 2.4 X 路线 GL 呈现：走私有通道（2026-09-30 落地；GLX 补栈为被否决方案）
 
 **现状（已修，实测）**：`winex11.drv` 增私有 present 驱动
