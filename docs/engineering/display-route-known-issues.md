@@ -424,7 +424,7 @@ runId manual / build/m4d-oob-inline.json 编排）；notepad 上下文菜单
 | maximize | 全屏化 = resize 到显示尺寸（FWM.fullscreen） | 同 incumbent |
 | 标题栏装饰 | 无系统装饰，wine 像素自带（无 caption; wayland 有 winewayland 自绘 CSD） | **自绘顶条落地（#129, 2026-10-11）**：几何补偿式（承载窗高 +40px 物理 = 20 逻辑px×scale，XComponent 下移同量、surface 保持 wine 尺寸 → 输入零换算），标题 + min/max/close 三键 + 拖动（startMoving, f43c764 同通道）。系统装饰在本形态结构性不可得：官方文档（非自由窗口态子窗恒沉浸式，decorEnabled 仅自由窗口态生效；@ohos.window.d.ts L1847/L8469）+ decorEnabled 三水实验（.temp/decor/）。三键走 M4b 动作链（min=FWM.hide / max↔restore / close=WM_DELETE_WINDOW）；菜单 popup 定位 +strip 补偿（PopupWM.positionEntry，实测 move ok (8,138)） |
 | 双击标题栏最大化 | N/A（无 caption） | 同构 N/A（非新缺口） |
-| 物理滚轮 | 物理滚轮 → winewayland 轴事件 | **双指滚动已通**（M4d review gate：sendScrollEvent 补 x11 multimode 轴分支，motion 先行；真机 7 步注入 = 7 次 ButtonPress 一一对应）。物理滚轮另卡在 ArkUI 层：轴事件送达承载窗（hilog `HandleInputEvent wid:… ac:5/6/7`）但 `onAxisEvent` 不触发（subWindow：AceInputTracking 无 Consumed；WWA：有 Consumed 仍无回调）——事件链断在 sendScrollEvent 之前，与注入口无关，待查（见下） |
+| 物理滚轮 | **同断（#132 实测）**：本 build 轴事件到不了任何 ArkUI 节点——物理滚轮非 wayland 可用项，两路线同灭（平台级，见下） | **双指滚动已通**（M4d review gate：sendScrollEvent 补 x11 multimode 轴分支，motion 先行；真机 7 步注入 = 7 次 ButtonPress 一一对应）。物理滚轮 = 平台断点（#132 定界）：轴事件送达承载窗（`HandleInputEvent wid:… ac:5/6/7`）但 ArkUI 命中链在任意坐标找不到节点（探针零回调 + TTHRTI 空 + 系统 app 同灭），与注入口无关，见下「物理滚轮平台断点」 |
 | 边缘拖拽 resize | 系统拉伸 + xdg 回写 wine 几何 | 系统拉伸只改渲染，几何不回写（§2.14 已知：缺 host→wine configure 通道，待治本） |
 | 点击置顶 | raiseToAppTop + raiseWindowGroup | 同 incumbent；X 侧堆叠同步已补齐（GAP2 #131：注入前 restack，见上「破案闭合」） |
 | subWindow 上限 | 表驱动无显式上限 | 6 窗并发实测无上限表现（创建/渲染/置顶/交互全正常）；wayland incumbent 无可比数据 |
@@ -468,14 +468,40 @@ runId manual / build/m4d-oob-inline.json 编排）；notepad 上下文菜单
   Button4/5（439k 行）；修复后 7 步注入 = 7 次 ButtonPress 一一对应、
   每步 MotionNotify 先行，落 notepad 的 X 窗。证据
   `.temp/m4drev/wine_stderr_{prefx,postfx}.log`。
-- **物理滚轮断点（新记档，待查）**：轴事件经系统 hover 路由可达承载窗
-  （`HandleInputEvent wid:885 ac:5/6/7`），但 ArkUI 不派发给 XComponent 的
-  `onAxisEvent`——subWindow 形态 AceInputTracking 无 Consumed；WWA
-  （`winehua.fusionHost ability`）形态有 Consumed 仍无回调。两条链都断在
-  `sendScrollEvent` 之前，非本次注入口问题；winewayland incumbent 的
-  DesktopWindow.onAxisEvent 亦未单独验证过（smoke wheel 走
-  injectDisplayRouteAxis 直入口）。治本方向：查 ArkUI 对 subWindow/自由窗
-  轴事件的派发条件（hover 命中链 + 窗口焦点态）。
+- **物理滚轮平台断点（#132 定界收窄, 2026-10-11；原「新记档待查」闭环）**：
+  轴事件送达承载窗（wm 客户端 `HandleInputEvent wid:… ac:5/6/7` 全链在案）后，
+  ArkUI 命中链在**任意坐标都找不到任何节点**——判定为**平台侧（ace 适配/
+  命中段）坐标缺陷**，非我方配置/挂载/焦点问题。证据链（全量落盘
+  `.temp/gap3/`，本轮三路日志 gap3-r1/r2/r3-full.log）：
+  - **incumbent 对照（wayland 实测同断）**：winewayland + fusion 冷启（uinput
+    轴通道，与物理鼠标 m4drev 实测签名一致），轴 `ac:5/6/7` 送达 + 容器
+    `Consumed` 在案 + **TTHRTI 空 + onAxisEvent 探针零行 + 无 `[ArkTS] SCROLL`/
+    `[PIPE] scroll`**（三路日志全量零匹配）⇒ 断点与 x11 无关，两路线同灭。
+    原档 WWA 形态「有 Consumed 仍无回调」同机制：Consumed 只记容器处理完成，
+    不表示节点收到（wayland 轮同现 Consumed + 零回调）。
+  - **全 app 面（系统 app 同灭）**：Settings（同窗轴 `axisId:10000` 后 TTHRTI
+    空；1 秒后手指触摸同窗 TTHNI={page,NavRouter,List} + PanRecognizer 命中）、
+    浏览器（点击命中 Flex/Row 识别器在案，轴事件 TTHRTI 空、长页不滚）、
+    启动器（轴送达，界面无反应）。
+  - **探针重建（x11 fusion，两处坐标）**：XComponent onAxisEvent 加无条件入口
+    日志 + 根 Stack 第二挂点 → 轴事件零行（回调从未触发，非轴值=0 静默路径）；
+    窗口局部 (492,600) 与 (12,50)（相距约 480px）均落空 ⇒ 任何 ≤~25× 的等比
+    缩放/小平移都会让至少一处留在窗内触发回调 ⇒ 排除近恒等类坐标变换，退化
+    为更大幅度或异空间坐标；精确值点在闭源 ace 内，app 侧不可观测。同窗
+    同会话 onMouse 正常且带动 GAP2 标记链 ⇒ 鼠标链健康、断点在轴命中。
+  - **已排除**：轴→触摸兼容转换（FeatureManager 配置失败 + isAppDevelopedForPC=1，
+    实测轴时刻无触摸事件）；z 序/重叠/焦点态（系统全屏窗同灭）；日志丢行
+    （两测量分钟设备级丢行 0/4 行，同时刻其它 app 行在流）。
+  - **app 侧替代通道全排**：OH_Input 轴监视（INPUT_MONITORING 系统权限）、
+    输入拦截器（INTERCEPT_INPUT_EVENT 系统权限）、窗口鼠标过滤器
+    （`WindowSessionImpl::FilterPointerEvent` 显式排除轴 action——读码件归档
+    `.temp/gap3/sdk-src/wm_filter.cpp`；设备实测同窗 5 次回调全为 move/DOWN/UP、
+    轴 0 次，含轴事件送达同窗后 1 秒的对照）⇒ **无可达替代轴通道，无我方侧
+    修复面**。
+  - 影响面：本 build（`param get const.ohos.fullname` = OpenHarmony-7.0.0.105
+    实测）物理滚轮对**全 app** 不生效（两路线、subWindow/WWA 形态）；触摸路线
+    不受影响（双指滚动 M4d I1 已通）。治本在平台侧（ArkUI 轴派发/命中段）；
+    平台修复前我方无可行替代（通道面已全排）。
 - **I2 PC 形态复跑（证据刷新）**：调试键 `winehua.fusionHost` 原实现是死键
   ——`AppStorage.set` 对从未 setOrCreate 的键是静默 no-op，跨设备强制从未
   生效（本次 Pad 实测：带参冷启 FWM 仍建 subWindow）；已改 setOrCreate。
