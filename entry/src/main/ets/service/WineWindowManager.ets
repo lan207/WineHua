@@ -131,6 +131,16 @@ export class WineWindowManager {
     }
   }
 
+  unsubscribe(listener: () => void): void {
+    const i = this.listeners.indexOf(listener);
+    if (i >= 0) this.listeners.splice(i, 1);
+  }
+
+  // 任务 #129: 顶条标题读取口 (WineWindow 页在 notify 后经此刷新)。
+  getWindowTitle(tl: number): string {
+    return this.entries.get(tl)?.title ?? '';
+  }
+
   private notify(): void {
     for (const listener of this.listeners) {
       listener();
@@ -805,14 +815,26 @@ export class WineWindowManager {
 
     // Pad 多窗口 (subWindow 承载): 系统接口差异适配 —
     //   title     → subWindow decorEnabled:false 时 setWindowTitle 报 1300002,
-    //               标题由 Wine 像素自带, 只记录不改 (e.title 由 queueOrApply 维护)
+    //               标题由 Wine 像素/ArkTS 顶条自带, 只记录不改 (e.title 由
+    //               queueOrApply 与此处共同维护, findToplevelByTitle 消费)
     //   minimized → 独立于任务栏, 最小化近似为隐藏 (restored 恢复显示)
     //   maximized/unmaximized/fullscreen/unfullscreen → subWindow 无系统最大化
     //               (非自由窗口不支持), 全屏化 = resize 到显示尺寸 + 定位 0,0
     if (this.fusionUsesSubWindow() && FusionWindowManager.getInstance().has(toplevelId)) {
       switch (event) {
         case 'title':
-          hilog.info(DOMAIN, TAG, '[MW] fusion #%{public}d title (record only, subwindow no decor)', toplevelId);
+          try {
+            const tobj: Record<string, string | number> = JSON.parse(data) as Record<string, string | number>;
+            if (tobj.title) e.title = tobj.title as string;
+          } catch (_) { /* keep previous title */
+          }
+          hilog.info(DOMAIN, TAG, '[MW] fusion #%{public}d title="%{public}s"',
+            toplevelId, e.title);
+          // 任务 #129: 顶条标题同步 — 仅顶条存在时通知 (stripPxOf > 0 即
+          // x11 fusion 子窗); wayland 分支不新增任何行为 (隔离红线)。
+          if (FusionWindowManager.getInstance().stripPxOf(toplevelId) > 0) {
+            this.notify();
+          }
           return;
         case 'minimized':
           FusionWindowManager.getInstance().hide(toplevelId);
@@ -864,7 +886,11 @@ export class WineWindowManager {
             break;
           }
           if (w && h) {
-            const barH = 0; //  标题栏已通过 setWindowDecorVisible(false) 隐藏
+            // barH: 顶条物理高 (任务 #129 回退路线, x11 fusion 子窗非 0,
+            // 判据单点 FusionWindowManager.stripPxOf; 其余形态恒 0)。
+            // 换算单点在承载 resize 前完成 (plan RF#1): surface 保持 wine
+            // 尺寸, 无差值进 onSurfaceChanged 反馈。
+            const barH = FusionWindowManager.getInstance().stripPxOf(toplevelId);
             const s = this.displayScale * this.scaleBoost;  // effective scale = 2.0
             const winW = Math.round(w * s);
             const winH = Math.round(h * s + barH);
@@ -1132,9 +1158,9 @@ export class WineWindowManager {
     }, initX, initY);
   }
 
-  // subWindow 就绪后处理: subWindow 无系统装饰, 不存在 decor 校准/标题重设
-  // (decorEnabled:false 时 setWindowTitle 报 1300002, 标题由 Wine 像素自带),
-  // 只保留圆角直角化。返回上级事件处理一致 (resize 已由 applyEvent 走 win 接口)。
+  // subWindow 就绪后处理: 圆角直角化对 decor:false/true 都执行 (decor true
+  // 跳过会残留系统默认圆角, 2026-10-11 真机实测)。无 decor 校准/标题重设
+  // (标题走 applyEvent title → setWindowTitle, 系统装饰承载)。
   private onFusionWindowReady(toplevelId: number): void {
     const win = FusionWindowManager.getInstance().getWindow(toplevelId);
     if (!win) return;

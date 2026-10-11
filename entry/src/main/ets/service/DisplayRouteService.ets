@@ -10,7 +10,10 @@ export const ROUTE_X11: string = 'x11';
 // EntryAbility 的 desktopMode 注释)。生效时机 = 冷启动解析一次, 引擎"重启
 // Wine"等应用内会话操作不重置。
 // 消费点白名单 (spec 2026-10-03 §2.2): DesktopWindow surface 分发 / 输入
-// 分发 / native env 汇集点 (经 NAPI 镜像)。出现第四处 route 判断 = 违规。
+// 分发 / native env 汇集点 (经 NAPI 镜像) / 窗口装饰形态 (任务 #129 方向①:
+// 顶条与系统装饰只在 x11 形态渲染, 判据单点 = FusionWindowManager.stripPxOf,
+// WWA decor 分支同理 —— wayland incumbent 行为不变是硬约束, 装饰必须
+// route 分叉)。新增消费点先改本注释并给单点判据, 再加代码。
 export class DisplayRouteService {
   private static instance: DisplayRouteService | null = null;
 

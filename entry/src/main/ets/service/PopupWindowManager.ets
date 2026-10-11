@@ -1,6 +1,7 @@
 import { display, window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import testNapi from 'libentry.so';
+import { FusionWindowManager } from './FusionWindowManager';
 
 const DOMAIN = 0x0000;
 const TAG = 'PopupWM';
@@ -321,11 +322,15 @@ export class PopupWindowManager {
   }
 
   // 全局坐标 = 父窗口 windowRect (全局物理 px) + Wine 逻辑 offset × scale
+  // (+ stripPxOf 为手动补偿位, 任务 #129 回退路线保留, 当前恒 0: 若回退
+  // 自绘顶条, off 是 guest 坐标里 popup 相对 owner X 窗的偏移, owner X 窗
+  // 内容在承载窗里从顶条下方开始, 不补 y 则菜单 popup 错位进顶条区)
   private async positionEntry(entry: PopupEntry, parentWin: window.Window, scale: number): Promise<void> {
     if (!entry.subWin) return;
     const rect = parentWin.getWindowProperties().windowRect;
     const gx = Math.round(rect.left + entry.offX * scale);
-    const gy = Math.round(rect.top + entry.offY * scale);
+    const gy = Math.round(rect.top + entry.offY * scale +
+      FusionWindowManager.getInstance().stripPxOf(entry.parentToplevel));
     try {
       await entry.subWin.moveWindowToGlobal(gx, gy);
       hilog.info(DOMAIN, TAG, '[POPUP] move ok #%{public}d → (%{public}d,%{public}d)', entry.popupId, gx, gy);
