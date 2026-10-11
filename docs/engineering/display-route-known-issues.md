@@ -407,6 +407,11 @@ popupSeq.ownerClicked=true（oob-result.json 引用见下方 §2.14 更正）；
   early-boot multiwindow false→true；notepad/explorer 直启均出窗；core 4/4。
   教训 (原则 7/10)：**启动位接线点的依赖必须在读点前备齐**，且接线点日志
   不可省——本值错判时全链无一条线索，只能从「窗走哪条路径」间接反推。
+  **同类面审计（当晚随修）**：展示路线（DisplayRouteService.init 先于读）、
+  d3d/dxvk preference（PersistentStorage.persistProp 语义为同步恢复，SDK
+  common_ts_ets_api.d.ts 明言「通常先于 AppStorage 访问调用」，且 onCreate
+  注册先于读取）、fusionHost/testDecor（走 want 显式参数无持久化）均无此
+  类时序依赖——desktopMode 是唯一一例。
 - **悬而未决**：#133（硬件）；用户对最新构建（双击/滚动/路线 UI，含复核
   批次 1 修复项）的手测判词；B1/B2 的处置口径（修 or 记档）。
 
