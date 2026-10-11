@@ -392,6 +392,21 @@ popupSeq.ownerClicked=true（oob-result.json 引用见下方 §2.14 更正）；
   （r0-r3/s0-s6）。F2 复测口径修正：前台 busy 被模态 overlay 结构挡住，真实
   可复现面 = bg 自动重试期间（骑彩票）；Cancel 维持手测。auto-retry 判定件
   已入库（0754ea3）并首跑 SKIP（no-evidence，未触发=不下结论）。
+- **冷启 multiwindow 位时序（2026-10-11 夜，4b83f93 已修）**：用户实测
+  「Pad x11 多窗口 + 文件管理启动 explorer 窗口不出」。根因 = x11 链早启
+  （EntryAbility.publishLaunchRequest）调 shouldUseMultiwindow() 决定
+  chain_start multiwindow 位，而 DesktopModeService.init（读持久化
+  'fusion'）在 WineWindowManager.init 里晚 26ms 才跑（实测 displayRoute
+  applied 40.756 早于 mode policy 40.782）→ 读默认 'virtual' → native 链
+  落虚拟桌面（x11_toplevel_active=false，窗走 g_clients 画布路径），而
+  ArkTS 实时查询判 fusion 不开画布 → 窗无宿主不可见。**两路径差异判据**：
+  smoke 冷启带显式 `--ps winehua.desktopMode`（setOverrideMode 在查询前）
+  故正常——「同一操作 smoke 出窗、产品路径不出」即此时序指纹。修复 =
+  publishLaunchRequest 里提前 DesktopModeService.init + chain_start 日志
+  带 multiwindow 值。真机验证：全新安装 + UI 持久化 fusion + 冷启无参数，
+  early-boot multiwindow false→true；notepad/explorer 直启均出窗；core 4/4。
+  教训 (原则 7/10)：**启动位接线点的依赖必须在读点前备齐**，且接线点日志
+  不可省——本值错判时全链无一条线索，只能从「窗走哪条路径」间接反推。
 - **悬而未决**：#133（硬件）；用户对最新构建（双击/滚动/路线 UI，含复核
   批次 1 修复项）的手测判词；B1/B2 的处置口径（修 or 记档）。
 
