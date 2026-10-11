@@ -125,6 +125,8 @@ struct DesktopPage {
   private x11LastTapMs: number = 0;      // 双击检测: 上次单击的发送时刻+位置
   private x11LastTapPx: number = 0;
   private x11LastTapPy: number = 0;
+  private x11LastTapNx: number = 0;      // 首击归一化坐标 (双击第二击按此重放)
+  private x11LastTapNy: number = 0;
   // 双指滚动 (语义对齐 wayland 分支: 中点位移累积, 向上=正=向下滚)
   private x11TwoFinger: boolean = false;
   private x11LastMidPx: number = 0;
@@ -463,18 +465,29 @@ struct DesktopPage {
                   const isDouble = this.x11LastTapMs > 0 &&
                     (now - this.x11LastTapMs) < DesktopPage.DOUBLE_TAP_MS &&
                     dist < DesktopPage.DOUBLE_TAP_DIST;
-                  // 双击: 第二击按首击坐标重放 (wine ±2px 判定恒过);
-                  // 单击: Down 点发出并记为双击序列首击
-                  displayRouteNapi.injectDisplayRouteMotion(this.x11DownNx, this.x11DownNy, 1);
-                  displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_LEFT, true);
-                  displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_LEFT, false);
                   if (isDouble) {
+                    // 双击: 第二击按**首击坐标**重放 (wayland 分支同语义),
+                    // 本击 Down 点不再发出。wine win32u/message.c:2753 判双击
+                    // 要求第二击位移 < SM_CXDOUBLECLK/2 (默认 4/2, 即 ≤1px),
+                    // 手指两击抖动 5-40px, 按本击 Down 点发恒判不过 = guest
+                    // 收到两次独立单击 (2026-10-11 实测: 12px 抖动双击标题栏
+                    // 不最大化, 同点双击最大化; 修复前该分支传 x11DownNx/Ny)。
                     this.x11LastTapMs = 0;
-                    hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] X11-DOUBLE-TAP');
+                    displayRouteNapi.injectDisplayRouteMotion(this.x11LastTapNx, this.x11LastTapNy, 1);
+                    displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_LEFT, true);
+                    displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_LEFT, false);
+                    hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] X11-DOUBLE-TAP replay=(%{public}d,%{public}d)',
+                      Math.round(this.x11LastTapPx), Math.round(this.x11LastTapPy));
                   } else {
+                    // 单击: Down 点发出并记为双击序列首击 (记录注入坐标副本)
+                    displayRouteNapi.injectDisplayRouteMotion(this.x11DownNx, this.x11DownNy, 1);
+                    displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_LEFT, true);
+                    displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_LEFT, false);
                     this.x11LastTapMs = now;
                     this.x11LastTapPx = this.x11DownPx;
                     this.x11LastTapPy = this.x11DownPy;
+                    this.x11LastTapNx = this.x11DownNx;
+                    this.x11LastTapNy = this.x11DownNy;
                   }
                 }
               }
