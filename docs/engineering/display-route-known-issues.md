@@ -161,6 +161,26 @@ opengl 两项 displayed 门依赖虚拟桌面画布发布的 display-seq
 fusion 两套件显式声明覆盖。类推约束：（route × backend × desktopMode）
 三元组每个未钉死的维度都是一个「继承设备现场」的假 PASS/FAIL 面。
 
+**2026-10-12 续（钉档的携带面：钉死 ≠ 生效）**：gate 重跑 2/4-4/4 全红
+（opengl 双档 `no compositor display sequence observed`，fusion 无发布源
+指纹）破案——钉档声明齐了，但携带面有洞：`cmd_run` 收尾必 force-stop
+（finally），skip-push 轮次（gate 第 2 轮起）的主 `aa start` 就是冷启，而
+desktopMode 只随 push 的 `ensure_app_running` 冷启携带，主 start 不带 ⇒
+冷启读设备持久化（本机 fusion）⇒ multiwindow=true。1/4 带 push 为对照组
+PASS。修复：suite_mode 解析移出 skip_push 块，钉档随**每次** aa start 携带
+（主 start / ready-degraded 自愈 restamp 冷启 / retry start 三处补齐；二次
+want 上 setOverrideMode 同值幂等，native multiwindow 位只认冷启——见
+display_route_napi `g_started` 语义）。验收：gate 4/4 全绿（core-
+r20261012-000708/000748/000837/000926），四轮冷启日志
+`early-boot multiwindow=false`（修复前同场景 = true）。
+
+**route 同构残余（未修，记档）**：displayRoute 同样只随 push 冷启携带——
+skip-push 冷启落设置页持久化路线（#136 preferredRoute），x11 套件 skip-push
+跑批前须确认持久化路线或走带 push 的 run。不随主 start 补的原因：显式 route
+的二次 want 会走 `g_started` retrigger（script 门按最新调用方意图刷新为
+false），与 displayroute 编排（script=true）的交互「幂等性无保」
+（EntryAbility 注释原话），需独立取证再动。
+
 **explorer 桌面窗处置（M4b Task-0 决策 = 接受）**：managed 模式
 user32 `get_desktop_window` 自动 spawn 的 explorer /desktop 桌面窗
 （class = atom #32769，`explorer/desktop.c:40`）会作为普通承载窗进入
@@ -1335,6 +1355,12 @@ X 面节点的 scene damage 按**可见区域**算：被完全遮挡的窗口不
 **协议**：出现该报错时先 `aa force-stop app.hackeris.winehua`（或直接重跑——
 push 前会重新拉起应用并重试），不要在设备上手工 `rm` 后当作已修。同一次连跑的
 上一轮能过是因为那时目录没被持有，属于时序，不是版本差异。
+
+**2026-10-12 补充（删除重试）**：`remove_sandbox_path` 已加 3 次重试（间隔
+0.5s，最新报错文案带 `3 attempts`）——覆盖第二类瞬态：app 冷启被拉起瞬间
+el2 视图切换窗口内，`rm -rf` 对真实路径**静默无效**（同时刻同一 shell 对
+同树 mkdir 被 SELinux 恒定拒；亚秒后手动 rm 即成功，gate 重跑即愈）。持续
+持有（本例：app 运行中占用）重试耗尽后照旧报错，force-stop 协议不变。
 
 ## 4. 前置条件（场景切换才触发）
 

@@ -623,12 +623,21 @@ def archive_evidence(hdc: str, device: str, archive: Path) -> None:
 
 def remove_sandbox_path(hdc: str, device: str, rel_path: str) -> None:
     """删除 files/ 下的一条路径（相对 files/）。用真实路径 + 事后校验：
-    `rm -rf` 对无权限路径会静默成功，不校验会留下旧载荷导致跑的还是旧内容。"""
+    `rm -rf` 对无权限路径会静默成功，不校验会留下旧载荷导致跑的还是旧内容。
+
+    2026-10-11 23:51 实测（gate 1/4 中断）：app 冷启被拉起瞬间该路径可能
+    瞬态不可删（同时刻同一 shell 对同树 mkdir 被 SELinux 拒——el2 视图
+    挂载状态相关；稍后手动 rm 同路径即成功、push 重跑即愈）。故删除后
+    验证失败时重试 3 次——瞬态窗口是亚秒级，不得因一次撞上就判死。"""
     real = f"{REAL_FILES}/{rel_path}"
-    hdc_shell(hdc, device, f"rm -rf '{real}'")
-    code, out = hdc_shell(hdc, device, f"ls -d '{real}' 2>/dev/null")
-    if code == 0 and out.strip():
-        die(f"remove verification failed (still exists): {real}")
+    for attempt in range(3):
+        hdc_shell(hdc, device, f"rm -rf '{real}'")
+        code, out = hdc_shell(hdc, device, f"ls -d '{real}' 2>/dev/null")
+        if not (code == 0 and out.strip()):
+            return
+        if attempt < 2:
+            time.sleep(0.5)
+    die(f"remove verification failed (still exists, 3 attempts): {real}")
 
 
 def sandbox_text(hdc: str, device: str, rel_path: str) -> str:
@@ -848,26 +857,29 @@ def cmd_run(args: argparse.Namespace) -> int:
     if job.get("displayroute"):
         for marker_name in DISPLAYROUTE_MARKERS:
             remove_sandbox_path(hdc, device, marker_name)  # files 根 (D10b)
+    # M10 (M4a deferred 治本): 套件级 desktopMode 钉死 —— CLI 未显式给时
+    # 采纳套件声明, 防「换人跑/改 job 时 mode 漂移」(设备当前设置由机型
+    # 与系统版本决定, 同一套件在不同设备上测的不是一回事)。CLI 显式给
+    # 且与声明不同 → 覆盖生效但打 NOTE 留痕。
+    # 解析在 skip_push 判定**之外**: 钉档要随每次 aa start 携带 (见下方
+    # start 拼装), 不只在 push 的冷启里 —— skip-push 轮次没有 push。
+    suite_mode = ""
+    # suite 名取 CLI > job 声明 —— 只带 --job 跑时同样钉死档位
+    # (2026-10-11 实测: 只带 --job 时 args.suite 为空, suite_mode 漏采,
+    #  冷启缺 winehua.desktopMode, 全新安装按持久化默认落 virtual 桌面,
+    #  fusion 套件 byTitle/按窗点击全败 —— 表现为 D35 间歇假象)
+    suite_name = args.suite or job.get("suite", "")
+    if suite_name:
+        sp = SUITES_DIR / f"{suite_name}.json"
+        if sp.is_file():
+            suite_mode = json.loads(sp.read_text()).get("desktopMode", "")
+    cli_mode = getattr(args, "desktop_mode", None)
+    if suite_mode and cli_mode and cli_mode != suite_mode:
+        log(f"NOTE: CLI --desktop-mode {cli_mode} 覆盖套件声明 {suite_mode}")
+    pin_mode = cli_mode or suite_mode or None
     if not args.skip_push:
-        # M10 (M4a deferred 治本): 套件级 desktopMode 钉死 —— CLI 未显式给时
-        # 采纳套件声明, 防「换人跑/改 job 时 mode 漂移」(设备当前设置由机型
-        # 与系统版本决定, 同一套件在不同设备上测的不是一回事)。CLI 显式给
-        # 且与声明不同 → 覆盖生效但打 NOTE 留痕。
-        suite_mode = ""
-        # suite 名取 CLI > job 声明 —— 只带 --job 跑时同样钉死档位
-        # (2026-10-11 实测: 只带 --job 时 args.suite 为空, suite_mode 漏采,
-        #  冷启缺 winehua.desktopMode, 全新安装按持久化默认落 virtual 桌面,
-        #  fusion 套件 byTitle/按窗点击全败 —— 表现为 D35 间歇假象)
-        suite_name = args.suite or job.get("suite", "")
-        if suite_name:
-            sp = SUITES_DIR / f"{suite_name}.json"
-            if sp.is_file():
-                suite_mode = json.loads(sp.read_text()).get("desktopMode", "")
-        cli_mode = getattr(args, "desktop_mode", None)
-        if suite_mode and cli_mode and cli_mode != suite_mode:
-            log(f"NOTE: CLI --desktop-mode {cli_mode} 覆盖套件声明 {suite_mode}")
         push_args = argparse.Namespace(payload=args.payload, device=args.device,
-                                       desktop_mode=cli_mode or suite_mode or None,
+                                       desktop_mode=pin_mode,
                                        display_route=getattr(args, "display_route", None))
         if cmd_push(push_args) != 0:
             return 1
@@ -897,6 +909,14 @@ def cmd_run(args: argparse.Namespace) -> int:
              f"--ps winehua.run_id {run_id} --ps winehua.prefix {args.prefix}")
     if args.suite:
         start += f" --ps winehua.suite {args.suite}"
+    # 钉档随主 aa start 携带 (不能只靠 push 的冷启携带): run 收尾必 force-stop
+    # (见 finally), 于是 skip-push 轮次的本次 start 就是冷启 —— 不带钉档 ⇒
+    # 读设备持久化 mode ⇒ 2026-10-11 实测: gate 2/4-4/4 全红 "present no
+    # compositor display sequence observed" (fusion 无 display-seq 发布源),
+    # 1/4 带 push 对照组 PASS。二次 want 上 setOverrideMode 同值幂等
+    # (native multiwindow 位只认冷启, display_route_napi 的 g_started 语义)。
+    if pin_mode:
+        start += f" --ps winehua.desktopMode {pin_mode}"
     if getattr(args, "extra_ps", ""):
         # 附加调试键 (如 winehua.fusionHost)。publishLaunchRequest 在
         # onCreate/onNewWant 双入口对显式 want 随时生效; 承载判定
@@ -937,8 +957,15 @@ def cmd_run(args: argparse.Namespace) -> int:
                 f"固定帧只在时长 >= 2.5s 的用例里渲染, 抓帧必然为空")
 
     summary_rel = f"{DRIVE_C_REL}/results/{run_id}/suite-summary.json"
-    restamp = (f"--ps winehua.displayRoute {args.display_route}"
-               if getattr(args, "display_route", None) else "")
+    # 自愈冷启的钉档章 (poll_run ready-degraded 路径: force-stop →
+    # ensure_app_running(restamp) 冷启 → start_command 二次 want): 冷启那次
+    # 必须带齐钉档 —— 只带 route 的话新代际 mode 落持久化, 与 gate 2/4-4/4
+    # 假 FAIL 同类。
+    restamp = " ".join(x for x in (
+        (f"--ps winehua.displayRoute {args.display_route}"
+         if getattr(args, "display_route", None) else ""),
+        (f"--ps winehua.desktopMode {pin_mode}" if pin_mode else ""),
+    ) if x)
     try:
         summary, frames = poll_run(hdc, device, archive, run_id, frame_targets,
                                    timeout_minutes, args.poll_seconds,
@@ -988,7 +1015,11 @@ def cmd_run(args: argparse.Namespace) -> int:
         host = judge_run(archive, entries, frames, summary.get("tests", []),
                          suite_def, suite_name, long_seconds)
         if getattr(args, "retry_failed", False):
+            # 重试的 start 在 retry_failed_tests 内部自建 (不复用主 start):
+            # 钉档同样要随行 —— 首判后 app 若已死, 重试 start 就是冷启。
             suite_ps = f" --ps winehua.suite {args.suite}" if args.suite else ""
+            if pin_mode:
+                suite_ps += f" --ps winehua.desktopMode {pin_mode}"
             host = retry_failed_tests(hdc, device, archive, run_id, job, args,
                                       manifest, entries, host, frames,
                                       timeout_minutes, restamp, suite_ps)
