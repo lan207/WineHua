@@ -29,6 +29,7 @@ import json
 import re
 from pathlib import Path
 
+from . import auto_retry as _auto_retry
 from . import coverage as _coverage
 from . import frame
 from . import wine_trace as _wine_trace
@@ -436,6 +437,7 @@ REGISTRY = {
     "visual": visual,
     "marker": marker,
     "presented-route": presented_route,
+    "auto-retry": _auto_retry.auto_retry,
     "wine-trace": _wine_trace.wine_trace,
     "fusion-clicks": fusion_clicks,
     "fusion-state": fusion_state,

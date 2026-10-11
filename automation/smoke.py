@@ -597,6 +597,15 @@ def archive_evidence(hdc: str, device: str, archive: Path) -> None:
     if code == 0 and gf_out.strip():
         (evidence / "guest-frames.log").write_text(gf_out, errors="replace")
         found.append("guest-frames.log")
+    # D47 [AUTO-RETRY]（批次 1 复核 F1）：首启失败自动重试/作废的 app 侧
+    # 日志（WineEnvService hilog warn, domain 'wine'）。判定器 auto-retry
+    # 读它做机制认证（「每进程一次」预算 / 关闭被尊重）。hilog 只留几分钟,
+    # suite 结束立即拉; 拉不到不致命（本轮未触发 / 老运行器），判定侧 SKIP。
+    code, ar_out = hdc_shell(hdc, device,
+                             "hilog -x 2>/dev/null | grep -a AUTO-RETRY | tail -50")
+    if code == 0 and ar_out.strip():
+        (evidence / "auto-retry.log").write_text(ar_out, errors="replace")
+        found.append("auto-retry.log")
     code, out = hdc_shell(hdc, device, "date +%Y%m%d")
     day = out.strip().splitlines()[-1].strip() if code == 0 and out.strip() else ""
     if len(day) == 8 and day.isdigit():

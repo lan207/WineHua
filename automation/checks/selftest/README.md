@@ -9,6 +9,7 @@ RED。判据改动后必须复跑对应自测（判定只读归档数据，合�
 | 目录 | 覆盖判定器 | 形态数 | 运行 |
 |---|---|---|---|
 | `popup/` | `fusion-popup-menu` (frame.py) | 11（含真机像素形态，`.temp/m4c-popup-1.jpeg` 不在场时优雅跳过为 10） | `python3 automation/checks/selftest/popup/gen_and_run.py` |
+| `auto_retry/` | `auto-retry` (auto_retry.py) | 8（合成 hilog 形态日志；含 SKIP×3 / PASS×4 / FAIL×1） | `python3 automation/checks/selftest/auto_retry/gen_and_run.py` |
 
 产物（合成帧 JPEG）落在 `build/popup-selftest/`，build/ gitignored，
 每次运行重新生成——`rm -rf build/` 后从零复跑即毁灭性重建演练。

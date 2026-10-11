@@ -1,6 +1,9 @@
 {
   "name": "core",
   "title": "入口门禁（OpenGL + DNS）",
+  "checks": [
+    "auto-retry"
+  ],
   "tests": [
     {
       "case": "graphics-smoke",
