@@ -647,6 +647,13 @@ mono/msiexec/大部分 wine.inf 已装完（该 stderr 的 spawn 表可证），
 **未定性（治本待办）**：32 位 InstallHinfSection 为何栈溢出（候选：box32 线程
 栈尺寸 / INF 递归深度 / 首启并发状态依赖）；复发时保现场（stderr + hilog
 全量落盘再分析）。
+**止血的复核与部署验证判据（2026-10-11 R3 复核；findings
+`.temp/review/r3-init.md`）**：止血留分支等部署验证（主场景成立、终点与手工
+重试一致）。验证时**必须认 hilog `[AUTO-RETRY]` 行**——自动化路径
+（winehua.program）的 ensureEngineReady 会抢先走同款 restartEngine 恢复，
+把它的成功当成 D47 生效会误判。复核收敛项随部署验证批次处置：F1 失败卡片
+「关闭」在 1s 窗口被重试反转；F2 重试期间「重置」被静默吞；F3B skip 也消耗
+重试预算（最小改动方向：关闭取消待定 timer / 重置给反馈 / timer 带 epoch）。
 
 ### 2.4 X 路线 GL 呈现：走私有通道（2026-09-30 落地；GLX 补栈为被否决方案）
 
