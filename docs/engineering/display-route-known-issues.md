@@ -314,12 +314,14 @@ wayland）回写标记 0 行 + geomA 全零（隔离红线实测；wayland 虚�
   父窗右/下方），与 RF#5 后半同属待测。
 
 **遗留观察（不阻塞）**：① popup 用例的 byTitle owner 点击
-（ownerClicked）命中率不稳定（035938/040837 两轮均 false，菜单链不受
-影响——开关菜单不依赖它）——**M4d review gate 处置（2026-10-11）：已随
-8a1e975 motion 修复闭合**。其不稳定与悬案同根因族（焦点不变时按钮携带
-陈旧光标坐标，命中判定错位）；修复后 M4d 探针轮 ownerClicked PASS
-（oob-result.json），当前构建复跑再证 PASS
-（fusion-r20261011-pad-regress4 popupSeq.ownerClicked=true）；
+（ownerClicked）命中率不稳定——**记录更正（2026-10-11 复核）**：原「035938/
+040837 两轮均 false」与归档不符（040837 实为 true/true；全部 False 轮 =
+035938 + 102439/pad-regress/pad-regress3，后三家属设施档位假阳性，见下方
+102439 更正）；真瞬态仅 035938 一例（该轮 fusion-probe a=1 实证确在
+fusion 模式）。**M4d review gate 处置（2026-10-11）：已随 8a1e975 motion
+修复闭合**。其不稳定与悬案同根因族（焦点不变时按钮携带陈旧光标坐标，
+命中判定错位）；有效复证锚点 = fusion-r20261011-pad-regress4
+popupSeq.ownerClicked=true（oob-result.json 引用见下方 §2.14 更正）；
 ② fusion 套件跑批中段 crash 修复后，host 抓帧时序（missing-frame）成为
 新的间歇项（D35 家族新形态），单点复跑即可判绿。
 
@@ -329,8 +331,10 @@ wayland）回写标记 0 行 + geomA 全零（隔离红线实测；wayland 虚�
 未取证门）**：用户定义 = x11 虚拟桌面 / PC 多窗口 / Pad 多窗口三形态都有替代
 （自研窗口栈退役前提，见 memory x11-retirement-three-mode-parity）。现状：
 
-- **虚拟桌面**：替代成立——notepad/多程序交互链（§2.1）+ displayroute 套件
-  常态绿；今日闭环 #137 双击治本（fd98603）、#136 路线切换 UI（0a66f7d）。
+- **虚拟桌面**：替代成立——displayroute 前缀组 21/21（job-r20261011-101858，
+  超历史基线 20/21）+ 交互手测链；今日闭环 #137 双击治本（fd98603）、
+  #136 路线切换 UI（0a66f7d）。（2026-10-11 复核更正：原引「§2.1」是悬案
+  记录，不作正向锚点。）
 - **PC 多窗口**：替代成立（M4a/M4b：#119/#120-125，x11-fusion 套件双窗/状态
   序列常态绿）。**未取证门 = #133**：真 PC/2in1 硬件上的系统装饰显形（代码
   已按 isX11 分叉落地 + 能力缺失 graceful 降级，Pad 观察不作跨设备结论 =
@@ -342,8 +346,14 @@ wayland）回写标记 0 行 + geomA 全零（隔离红线实测；wayland 虚�
   **非阻断项**：#116 首启偶发失败（止血 90c26c7，待部署验证；影响面 = 全新
   安装首启一次重试，已装用户不受影响）、#117/#118 套件间歇（低优记档、复跑
   即愈）、#134 测试资产清理（待用户叫停）。
-- **悬而未决只此两处**：#133（硬件）；用户对最新构建（双击/滚动/路线 UI）的
-  手测判词。
+- **复核补注（2026-10-11，R1-R5 怀疑式复核；findings 全文 `.temp/review/`）**：
+  分级不变，但补：① B1/B2 两处**未登记缺口**——wine 程序驱动 maximize
+  （`_NET_WM_STATE_MAXIMIZED` 无宿主侧事件路径）与程序化 move
+  （`_NET_WM_MOVERESIZE` 无监听）在 x11 多窗形态未落地；退役评估前修或
+  显式记档为限制；② 下表 maximize/双击标题栏行按复核修正；③ 记录更正见
+  本节各条（102439 假阳性、ownerClicked 归档、oob 引用）。
+- **悬而未决**：#133（硬件）；用户对最新构建（双击/滚动/路线 UI）的手测
+  判词；B1/B2 的处置口径（修 or 记档）。
 
 **验收状态**：M4 多窗分期收官——x11 fusion 的 Pad 承载（subWindow 路线）
 四项手测全通过：承载/双窗（fusion 套件复跑全绿，见下）、拖动/手势、
@@ -351,10 +361,14 @@ wayland）回写标记 0 行 + geomA 全零（隔离红线实测；wayland 虚�
 displayroute-win32-interactive（x11 + virtual）**21/21**（job-r20261011-
 101858，超历史基线 20/21——input-keyboard-x64 char-count 本轮亦绿）；
 core **3/4**（core-r20261011-102209，opengl-x86 = D49 已知签名）；
-fusion 套件 3/3（job-r20261011-103109，multimode 注入改动后的回归轮；
-其间 r20261011-102439 轮 1/3 = 间歇：byTitle 三用例全部 "title not
-synced" + popup 视觉判定字体条带漏检，同构建复跑全绿——D35 家族口径，
-单点复跑判绿，间歇机理未查）。截图/日志归档 `.temp/m4d-*`。
+fusion 套件 3/3（job-r20261011-103109，multimode 注入改动后的回归轮）。
+**记录更正（2026-10-11 复核）**：r20261011-102439（及同日 pad-regress/
+pad-regress3）1/3 曾记「D35 家族间歇、机理未查」——实为**设施档位假阳性**：
+只带 --job 跑时 suite 名空 → 冷启缺 winehua.desktopMode → 落 virtual 桌面，
+fusion 套件 byTitle/按窗点击全败（指纹与真瞬态不同：probe a=0 vs 035938
+的 a=1）；commit 4af1dcb 当日修复并自证（「三轮假阳性实测 explicit=none
+铁证」）。「同构建复跑全绿」实为「同构建+钉档位」；102439 第三用例
+popup-oob 实为 PASS（非「三用例全败」）。截图/日志归档 `.temp/m4d-*`。
 
 **GAP2 追加收口（任务 #131, 2026-10-11 晚）**：M4d 记录的多 app X rect
 重叠输入错投**治本闭合**（根因/修复/证据详见本节末「多 app 重叠输入错
@@ -378,10 +392,14 @@ mini-plan `docs/superpowers/plans/2026-10-11-x11-gap2-overlap-input.md`。
 dismiss 不发生。修复 = 按钮前无条件补 motion+frame（grab 重定向下坐标
 同样为真）。修复后复测：popup_overflow 探针（短窗 + 整条菜单越出窗底）
 uitest 点第 2 项 → **command-received True（WM_COMMAND id=202）+
-command-item2 True**（探针自证结果归档 `.temp/m4d/oob-result.json`，
-runId manual / build/m4d-oob-inline.json 编排）；notepad 上下文菜单
-外点 → popup-hide 正常 dismiss。`fusion-popup-selection` 的恒 SKIP
-标记保留（越界用例的点选自动化另立判定器，本闭合为手测证据链）。
+command-item2 True**（runId manual / build/m4d-oob-inline.json 编排）；
+notepad 上下文菜单外点 → popup-hide 正常 dismiss。`fusion-popup-selection`
+的恒 SKIP 标记保留（越界用例的点选自动化另立判定器，本闭合为手测证据链）。
+**记录更正（2026-10-11 复核）**：原引 `.temp/m4d/oob-result.json` 作探针
+自证不成立——该文件整体 status=FAIL（1/6：menu-below-window 159<162 三像素
+off-by，未披露），且写入时刻早于 8a1e975 修复 commit 11 分钟（其「修复后」
+构建归属不可证）；修复后有效复证锚点 = fusion-r20261011-pad-regress4
+（ownerClicked=true、菜单链在案）。
 
 **执行时核实点（plan Self-Review 实测沉淀）**：
 - **RF#3 caption 结构性缺失**：x11 下 wine 的 X 窗 = win32 rect 减
@@ -464,9 +482,9 @@ runId manual / build/m4d-oob-inline.json 编排）；notepad 上下文菜单
 | 项 | incumbent（wayland Pad） | x11 Pad（M4d 现状） |
 |---|---|---|
 | hide/minimize | `minimize()` 近似，非自由窗口不生效不报错 | 同 incumbent（FWM.hide 不变） |
-| maximize | 全屏化 = resize 到显示尺寸（FWM.fullscreen） | 同 incumbent |
+| maximize | 全屏化 = resize 到显示尺寸（FWM.fullscreen） | **顶条 max 键路径同 incumbent；程序驱动路径不成立**（2026-10-11 复核）：x11 无 maximized/unmaximized 事件（B1），wine SW_MAXIMIZE 至多以 resize 落地、isFullscreen 不置位 |
 | 标题栏装饰 | 无系统装饰，wine 像素自带（无 caption; wayland 有 winewayland 自绘 CSD） | **自绘顶条落地（#129, 2026-10-11）**：几何补偿式（承载窗高 +40px 物理 = 20 逻辑px×scale，XComponent 下移同量、surface 保持 wine 尺寸 → 输入零换算），标题 + min/max/close 三键 + 拖动（startMoving, f43c764 同通道）。系统装饰在本形态结构性不可得：官方文档（非自由窗口态子窗恒沉浸式，decorEnabled 仅自由窗口态生效；@ohos.window.d.ts L1847/L8469）+ decorEnabled 三水实验（.temp/decor/）。三键走 M4b 动作链（min=FWM.hide / max↔restore / close=WM_DELETE_WINDOW）；菜单 popup 定位 +strip 补偿（PopupWM.positionEntry，实测 move ok (8,138)） |
-| 双击标题栏最大化 | N/A（无 caption） | 同构 N/A（非新缺口） |
+| 双击标题栏最大化 | **有**（winewayland 自绘 CSD caption，t3-wl-control 实证——2026-10-11 复核修正） | x11 无 caption；最大化可达入口 = 顶条 max 键 + 程序驱动 `_NET_WM_STATE_MAXIMIZED`（后者宿主侧无事件路径 = B1，未落地） |
 | 物理滚轮 | **同断（#132 实测）**：本 build 轴事件到不了任何 ArkUI 节点——物理滚轮非 wayland 可用项，两路线同灭（平台级，见下） | **双指滚动已通**（M4d review gate：sendScrollEvent 补 x11 multimode 轴分支，motion 先行；真机 7 步注入 = 7 次 ButtonPress 一一对应）。物理滚轮 = 平台断点（#132 定界）：轴事件送达承载窗（`HandleInputEvent wid:… ac:5/6/7`）但 ArkUI 命中链在任意坐标找不到节点（探针零回调 + TTHRTI 空 + 系统 app 同灭），与注入口无关，见下「物理滚轮平台断点」 |
 | 边缘拖拽 resize | 系统拉伸 + xdg 回写 wine 几何 | **已治本（#135, 2026-10-11）**：x11 分支 `wlr_xwayland_surface_configure` 回写，win32 事实跟随（640→790 拉伸、原点 ±0 拖动）+ 重排帧实证；拖动承载窗位置半边（新 NAPI notifyToplevelMove）同轮补齐；wayland 对照零变化（详见 §2.14） |
 | 点击置顶 | raiseToAppTop + raiseWindowGroup | 同 incumbent；X 侧堆叠同步已补齐（GAP2 #131：注入前 restack，见上「破案闭合」） |
