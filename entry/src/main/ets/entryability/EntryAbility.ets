@@ -66,7 +66,11 @@ export default class EntryAbility extends UIAbility {
     const explicitFusionHost = !!parameters && parameters['winehua.fusionHost'] !== undefined &&
       parameters['winehua.fusionHost'] !== null;
     if (explicitFusionHost) {
-      AppStorage.set<string>('winehua.fusionHost', value('winehua.fusionHost', ''));
+      // M4d-review I2 实测: 原 AppStorage.set 对不存在的键是静默 no-op（全仓
+      // 无人 setOrCreate/'@StorageLink' 建过该键），调试键从未生效 —— 2026-10-11
+      // Pad 真机: --ps winehua.fusionHost ability 冷启后 FWM 仍建 subWindow。
+      // 改 setOrCreate（与上方 d3d/dxvk.backend 同款双写模式）。
+      AppStorage.setOrCreate<string>('winehua.fusionHost', value('winehua.fusionHost', ''));
     }
     // 桌面模式显式覆盖 (fusion|virtual): 仅在 applyModePolicy 判定读取, 不持久化
     // (重启引擎场景仍按持久化值)。经 DesktopModeService 单例传递 — AppStorage
