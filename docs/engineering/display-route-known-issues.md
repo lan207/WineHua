@@ -335,6 +335,10 @@ runId manual / build/m4d-oob-inline.json 编排）；notepad 上下文菜单
   触摸路径不存在，wine `_NET_WM_MOVERESIZE`（winex11 mouse.c:1468）
   无触发面；菜单栏是 X 窗顶部的真实命中区（popup off y=19 = 菜单栏
   底）。wayland Pad 同构（xdg 亦无 caption），非 x11 独有。
+  **#129 处置（2026-10-11）**：caption 缺口由 x11 fusion 子窗自绘顶条补位
+  （承载层 ArkTS chrome，不进 guest 像素/X 窗）；wayland Pad 的 caption 由
+  winewayland 自绘 CSD 提供（本非缺口，实测截图 t3-wl-control）。顶条高度
+  40px 物理即原菜单栏拖动区（f43c764）上方的独立节点，短按/拖动语义分离。
 - **拖动定案落地（f43c764）**：WineWindow 触摸状态机新增顶条分支——
   拖动起点 ≤40 物理像素且 fusionUsesSubWindow → `startMoving()` 系统拖拽
   （wayland Pad incumbent 同通道），整手势零注入 wine；短按不受影响
@@ -343,6 +347,12 @@ runId manual / build/m4d-oob-inline.json 编排）；notepad 上下文菜单
   点击 press 被系统手势消费（app 只收 Up，CLICK-PIPE 零日志）——点
   wine 菜单栏左端（文件(F)）用 x≥70；uitest 日志的
   `IMultimodalInputConnect 29201` 为伴随噪音，注入本身可用。
+  **键盘（#129 追记）**：单键可达 wine（修复后实测 `keyEvent 2017` →
+  notepad 编辑区出现 'a'，状态栏 1行2列）；**组合键（Alt+F4）不可注入**
+  ——uitest 模拟修饰键不记录态（KeyEventNormalize "simulated modifier
+  key status record switch is not enabled"），裸 F4 被 SceneBoard
+  KeyEventInputSubscribeManager 截走（app 收不到 F4 down）。组合键排障
+  须物理键盘。
 
 **新发现（多 app 重叠输入错投，待治本）**：两个以上 wine 应用且 X
 rect 重叠时，multimode 注入按 toplevelId 正确发出，X 侧却投给别的窗：
@@ -362,12 +372,40 @@ rect 重叠时，multimode 注入按 toplevelId 正确发出，X 侧却投给别
 |---|---|---|
 | hide/minimize | `minimize()` 近似，非自由窗口不生效不报错 | 同 incumbent（FWM.hide 不变） |
 | maximize | 全屏化 = resize 到显示尺寸（FWM.fullscreen） | 同 incumbent |
-| 标题栏装饰 | 无系统装饰，wine 像素自带（无 caption） | 同构；拖动由 ArkTS 顶条补位（f43c764，incumbent 的 wine move 请求链对无 caption 应用同样不触发） |
+| 标题栏装饰 | 无系统装饰，wine 像素自带（无 caption; wayland 有 winewayland 自绘 CSD） | **自绘顶条落地（#129, 2026-10-11）**：几何补偿式（承载窗高 +40px 物理 = 20 逻辑px×scale，XComponent 下移同量、surface 保持 wine 尺寸 → 输入零换算），标题 + min/max/close 三键 + 拖动（startMoving, f43c764 同通道）。系统装饰在本形态结构性不可得：官方文档（非自由窗口态子窗恒沉浸式，decorEnabled 仅自由窗口态生效；@ohos.window.d.ts L1847/L8469）+ decorEnabled 三水实验（.temp/decor/）。三键走 M4b 动作链（min=FWM.hide / max↔restore / close=WM_DELETE_WINDOW）；菜单 popup 定位 +strip 补偿（PopupWM.positionEntry，实测 move ok (8,138)） |
 | 双击标题栏最大化 | N/A（无 caption） | 同构 N/A（非新缺口） |
 | 物理滚轮 | 物理滚轮 → winewayland 轴事件 | **双指滚动已通**（M4d review gate：sendScrollEvent 补 x11 multimode 轴分支，motion 先行；真机 7 步注入 = 7 次 ButtonPress 一一对应）。物理滚轮另卡在 ArkUI 层：轴事件送达承载窗（hilog `HandleInputEvent wid:… ac:5/6/7`）但 `onAxisEvent` 不触发（subWindow：AceInputTracking 无 Consumed；WWA：有 Consumed 仍无回调）——事件链断在 sendScrollEvent 之前，与注入口无关，待查（见下） |
 | 边缘拖拽 resize | 系统拉伸 + xdg 回写 wine 几何 | 系统拉伸只改渲染，几何不回写（§2.14 已知：缺 host→wine configure 通道，待治本） |
 | 点击置顶 | raiseToAppTop + raiseWindowGroup | 同 incumbent；新增：X 侧堆叠不同步（多 app 重叠输入错投，见上） |
 | subWindow 上限 | 表驱动无显式上限 | 6 窗并发实测无上限表现（创建/渲染/置顶/交互全正常）；wayland incumbent 无可比数据 |
+
+**窗口装饰落地与关闭出路（任务 #129, 2026-10-11）**：
+
+- **Pad x11 fusion = 自绘顶条**（判据单点 `FusionWindowManager.stripPxOf`：
+  x11∧fusion 子窗非 0，wayland 恒 0；`fusionUsesSubWindow` 不可用——wayland
+  Pad 也是子窗）。承载窗 h+strip、XComponent 下移、全部 resize/restore/
+  popup 定位补偿同点。三键实测：min→`FWM.hide`；max↔restore（`isFullscreen`
+  态判定，全屏 2800x1840 截图）；close→`sendToplevelClose` 补 x11 分支 =
+  `x11_toplevel_close`（队列化 → `wlr_xwayland_surface_close` =
+  WM_DELETE_WINDOW，wine 收 WM_CLOSE 走 win32 关窗语义）。顶条区点击不落
+  guest（独立节点零注入实测）；拖动 = `startMoving` 跟手实测；菜单 popup
+  定位 +strip 补偿实测（`[POPUP] move ok → (8,138)`）。弹窗对话框（页面设置
+  等 264x94）同为 fusion 子窗、同带顶条（实测 #7/#8）。
+- **关闭出路盘点（Pad）**：顶条 × ✓（WM_DELETE 全链 33ms 闭环）；wine 应用
+  自退 ✓（对话框 ESC/外点关闭 → destroyed → 承载销毁完整链，实测算例 #7/#8；
+  fusion-probe 自退 = 套件常态）；Alt+F4 = 通道半程（Alt 达 wine；F4 被
+  uitest 注入限制截走，物理键盘可验，见上 uitest 条目）；Pad 任务卡片 = 无
+  （subWindow 非应用级窗口，结构如此；min 后无系统恢复入口 = incumbent
+  「minimize 近似」语义的既有面，非本任务新增）。
+- **键盘链修复（#129 副产物）**：build() 加根包裹层后页面根节点成为焦点
+  落点，`onKeyEvent` 只挂 Stack 时键盘全丢（WinFocusMove → Column/onFocus
+  定证）。修复 = 键逻辑抽 `handleWineKey`，Stack 与 strip 分支根 Column
+  双挂点（stopPropagation 防双发）。**凡改渲染树根，必须重验键盘链**。
+- **PC/2in1 形态（T2, WWA 系统装饰）**：装饰按 `isX11()` 分叉（x11: decor
+  visible + 标题按钮 + titleMove；wayland 逐字不变），分调用 step 日志
+  （装饰 API 能力面按调用不同，合并 try 会吞错误面）。**真机验证
+  pending-hardware**——Pad 上（非自由窗口态、承载窗全屏）观察不作跨设备
+  结论（用户裁决）；代码在能力缺失时为 graceful 降级（每步独立 catch）。
 
 **M4d review gate 收尾（2026-10-11，final-review I1/I2/Minor 落地）**：
 
@@ -411,7 +449,9 @@ fusion-r20261011-pc-ability，唯一缺口为上页所述 Pad 模拟布局差异
 判定项）/ x11 Pad 多窗 ✓（M4d：本节）——**三形态硬前提全部达成**，
 自研窗口栈退役条件评估的事实基础齐备（退役评估本身 = 独立决策，输入见
 `docs/superpowers/specs/2026-10-07-display-route-x11-three-mode-gap-analysis.md`
-与本节限制清单）。
+与本节限制清单）。**窗口装饰缺口（#129, 2026-10-11）**：Pad（x11 fusion
+子窗）自绘顶条落地，关闭出路盘点闭合；PC/2in1 系统装饰分叉已落、
+pending-hardware 实测。
 
 ## 2. 技术悬案（M2 排查入口）
 

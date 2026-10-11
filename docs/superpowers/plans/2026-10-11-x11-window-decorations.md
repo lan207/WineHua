@@ -1,57 +1,66 @@
-# x11 多窗窗口装饰（顶条 UI 化）实施计划
+# x11 多窗窗口装饰实施计划（路线：系统装饰）
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans (inline, 单 agent 全程) 实施。
 
-**Goal:** x11 多窗形态补齐窗口装饰——Pad 子窗顶条可视化（标题+三键），PC WWA 形态开系统装饰；关闭出路盘点；known-issues §2.15 装饰行改写。
+**Goal:** x11 多窗形态补齐窗口装饰——Pad 子窗开 OHOS 系统装饰（decorEnabled），PC WWA 形态开系统装饰；关闭出路盘点；known-issues §2.15 装饰行改写。
 
-**Architecture（核心设计判断，M4d 实测支撑）:** x11drv 的 wine X 窗 = win32 rect 减 WM 装饰区（caption+border 偏移，M4d 实测 D52 created 坐标即证）——**ArkTS 顶条占用的正是被减掉的装饰区**：承载窗总高 = guest h + STRIP_PX，XComponent 下移 STRIP_PX，guest 帧几何不变，wine 零感知。三键直接驱动 M4b 已验证的承载动作链（hide/show→FusionWindowManager、destroy→既有关窗链），不新增任何 native 通道。
+**Architecture（2026-10-11 decorEnabled 实验后定案：双路线混合）:**
+- **Pad subWindow：几何补偿式自绘顶条**（回退路线激活）。依据 = decorEnabled 三水实验（证据 `.temp/decor/`）：① 带内容 fusion 子窗（notepad 画面可见）decorEnabled:true 两轮零装饰 UI；② 裸窗对照连背景色都不合成；③ SDK 文档「装饰按钮只在自由窗口模式生效」——WineHua 全屏 stage 应用内进不了自由窗模式。系统装饰对 Pad 实证不可用。
+- 自绘顶条设计：承载窗 h + STRIP_PX、XComponent 下移、三键驱动 M4b 动作链；STRIP_PX = 20 × getEffectiveScale()。判据单点 stripPxOf(tl)（仅 x11 fusion 子窗非 0；fusionUsesSubWindow 不可用——wayland Pad 也是子窗）。
+- **PC WWA：OHOS 系统装饰**照旧（T2 执行时实测确认）。
+- close 语义统一走 WM_DELETE_WINDOW 通道：sendToplevelClose x11 分支已在工作树（napi_init.cpp + x11_toplevel_close，C 侧已就位）。
+- 用户待亲眼核验：可见版 A/B 测试窗（winehua.testDecor 1 + DecorTestPage）——verdict 前保留测试资产。
 
-**Tech Stack:** ArkTS（FusionWindowManager/WineWindow 页面布局、WWA 装饰开关）。
+**Tech Stack:** ArkTS（FusionWindowManager 创建参数、WWA 装饰开关）。
 
-**Spec:** 任务 #129；known-issues §2.15 装饰行（M4d review Minor#2/文档 gate 关联项）。
+**Spec:** 任务 #129；known-issues §2.15 装饰行。
 
 ## Global Constraints
 
-- **禁止 wine 侧改动**（零 x11drv/wine 源码触碰——方向 ① 的定义即此）；禁合成器装饰（方向 ② 明确不做）
-- incumbent 对齐红线：wayland 路线行为不变（顶条/装饰改动只落 x11 分叉或 x11 形态判定内）
-- STRIP_PX = 20 × getEffectiveScale()（M4d Minor#3 教训，禁止硬编码 scale）
-- 判定：真机手测清单 + 截图归档 .temp/decor-*；fusion 套件回归不回归（5 checks + popup）
-- 设备纪律照旧（POC 优先、限时前台、帧污染作废重跑）
+- **禁止 wine 侧改动**（方向 ① 定义）
+- incumbent 红线：wayland 路线行为不变（decorEnabled 分叉只在 x11 分支内）
+- **WineWindow 页面双逻辑隔离**（用户约束）：装饰判据单点（stripPxOf 语义，必须能区分 x11 fusion 子窗与 wayland fusion 子窗——fusionUsesSubWindow 不够），wayland 路径渲染树/布局/交互与改动前逐字节等价，wayland fusion 对照轮验证
+- 判定：真机手测清单 + 截图归档 .temp/decor-*；fusion 套件回归（Pad + PC 两形态）
 
 ## Review Focus
 
-1. **顶条与 guest 首帧时序**：子窗高度补偿（w, h+STRIP）要在 created/resize 事件的尺寸进 FusionWindowManager.resize 前完成换算——否则 onSurfaceChanged 反馈环（M4a T2 教训）会把 40px 差回写 wine
-2. **PC WWA 系统装饰开关的视觉核实**：setWindowDecorVisible(true) 在 x11 PC 形态的实际渲染（系统装饰样式/标题文字来源/windowTitle 与 wine title 事件的同步——WWA 现有 setWindowTitleButtonVisible(false) 三连要先恢复）
-3. **关闭键的语义链**：close 键 = 子窗 destroyWindow 路径（FusionWindowManager.destroy）→ destroyed 事件缺失（子窗主动销毁不发 wine destroyed——wine 侧窗口残留的处置，执行时核实 sendToplevelClose 是否需要补发）
-4. **顶条出现后的 hit-test**：M4d 顶条是手势判定（tap 直通 guest），UI 化后顶条区变成 OHOS 控件——guest 顶部内容被盖 + 点击被顶条吃掉是**预期行为**（装饰区语义），但要验证 wine 客户区 hit-test（HTCLIENT 判定）不含顶条区——wine 不知道装饰存在，它的菜单栏 y=0 从 XComponent 顶开始，点菜单 = 点 XComponent 区域 ✓ 应自洽，实测确认
+1. **顶条与 guest 帧对齐**：承载窗增高后 XComponent 下移、wine 帧顶不缺失、顶条区点击不落 guest（输入 y 换算有无 STRIP_PX 偏差）、菜单栏 y=0 可点
+2. **三键与 M4b 动作链**：min/max/close 分别驱动既有 windowEvent/windowStatusChange 链；close = WM_DELETE（wine 收 WM_CLOSE，保存提示语义保留）
+3. **隔离**：wayland fusion 子窗 stripPxOf=0、渲染树/布局/交互不变——清单核代码面 + 对照轮验行为
+4. **拖动**：f43c764 手势面与顶条共存（顶条区=拖动区），阈值按有效 scale（1b75f80 先例）
 
 ---
 
-### Task 1: Pad 子窗顶条 UI（几何补偿式）
+### Task 0: 可见性测试窗收尾（用户阻塞项，最优先）
 
-**Files:** `entry/src/main/ets/pages/WineWindow.ets`（顶条 Row：标题 Text + ─ □ × 三键，仅 multiwindow+fusion 子窗形态渲染）、`entry/src/main/ets/service/FusionWindowManager.ets`（resize 尺寸补偿 h+STRIP、定位/restore 同步）、`entry/src/main/ets/service/WineWindowManager.ets`（title 事件 → 顶条标题同步，若 WineWindow 已订阅则复用）
+- [ ] T0.1 `pages/DecorTestPage` 注册进 `entry/src/main/resources/base/profile/main_pages.json`（本仓库全部子窗页面均注册——未注册 → loadContent 失败 → .then 链断 → showWindow 未执行 = 当前「created 但不可见」根因假设；catch 分支已有 `[DECOR-TEST] A/B FAILED` 日志可证）
+- [ ] T0.2 冷启 `--ps winehua.testDecor 1 --ps winehua.desktopMode fusion` → 立刻 grep DECOR-TEST（缓冲几分钟即滚，落盘留证）→ 截图确认 A/B 可见带内容 → SendMessage 报告 main（转用户亲眼核验）
+- [ ] T0.3 verdict 前保留测试资产；若用户翻案（看到装饰）→ 回系统装饰路线
 
-- [ ] T1.1 布局：WineWindow 页 Stack 顶部加顶条 Row（高 STRIP_PX，背景深色、标题白字、三键），XComponent 约束下移 STRIP_PX；仅 fusion 子窗形态启用（PC WWA 走 T2 系统装饰）
-- [ ] T1.2 尺寸补偿：FusionWindowManager resize/ensure 的承载窗尺寸 = guest h + STRIP_PX（created/resize 事件换算单点）；created 的初始定位同补偿
-- [ ] T1.3 三键接线：─ = FusionWindowManager.hide（M4b minimized 链）、□ = fullscreen/restore 切换（幂等位已有）、× = destroy 链（核实 wine 侧残留处置——Review Focus #3）
-- [ ] T1.4 标题同步：title 事件 → 顶条 Text（entry.title 已有）
-- [ ] T1.5 构建 + 真机：双窗截图（.temp/decor-pad-1.jpeg）+ 三键逐一操作 + 拖动仍跟手（顶条即拖把手，f43c764 的手势区与顶条重合——确认共存）+ fusion 套件回归 5 checks
-- [ ] T1.6 Commit
+### Task 1: Pad 子窗自绘顶条（回退路线激活）
+
+**Files:** `entry/src/main/ets/service/FusionWindowManager.ets`（stripPxOf/补偿/三键）、`entry/src/main/ets/pages/WineWindow.ets`（顶条 UI + 拖动）、`entry/src/main/ets/service/WineWindowManager.ets`（title 同步）、C 侧 close 通道已就位
+
+- [ ] T1.1 stripPxOf 恢复真实值（x11 fusion 子窗非 0）+ 承载窗高度补偿 + XComponent 下移
+- [ ] T1.2 三键（min/max/close）接线 M4b 动作链；close = x11_toplevel_close（C 侧已就位，实测生效）
+- [ ] T1.3 title 事件 → 顶条标题同步 + 顶条拖动（f43c764 手势保留，阈值按有效 scale）实测
+- [ ] T1.4 部署实测（双窗截图 .temp/decor-pad-*.jpeg：顶条/标题/三键/内容对齐/顶条区点击不落 guest）+ fusion 套件回归（Pad）
+- [ ] T1.5 wayland fusion 对照轮（隔离验证：共享路径清单 + 行为）+ Commit
 
 ### Task 2: PC WWA 系统装饰
 
-**Files:** `entry/src/main/ets/entryability/WineWindowAbility.ets`（decor 开关恢复——现有 setWindowDecorVisible(false) 改 true、标题按钮恢复、D52 定位块适配装饰高）
+**Files:** `entry/src/main/ets/entryability/WineWindowAbility.ets`（decor 开关 x11 形态判定内恢复、D52 定位适配）
 
-- [ ] T2.1 x11 形态判定内开装饰（wayland 不动——incumbent 红线）：decor visible + 标题按钮，实测视觉（.temp/decor-pc-1.jpeg）
-- [ ] T2.2 D52 定位块与装饰高的适配（若有偏移）+ fusion 套件 PC 形态复跑（--extra-ps winehua.fusionHost ability，M4d gate 的用法）
-- [ ] T2.3 Commit
+- [ ] T2.1 x11 形态内 decor visible + 标题按钮（截图 .temp/decor-pc-1.jpeg）
+- [ ] T2.2 fusion 套件 PC 形态复跑（--extra-ps winehua.fusionHost ability）+ Commit
 
 ### Task 3: 关闭出路盘点 + known-issues 改写
 
-- [ ] T3.1 盘点清单逐项实测：顶条 × 键 / Alt+F4（MM key 注入链，Ctrl+Alt 组合的可达性实测）/ Pad 任务卡片滑动关闭 / 应用自身退出（notepad 菜单）——每项截图或日志归档
-- [ ] T3.2 known-issues §2.15 装饰行改写（装饰补齐后的状态 + 各出路结论）+ §2.14 关联更新
-- [ ] T3.3 Commit + push
+- [ ] T3.1 盘点：顶条×键 / Alt+F4 / Pad 任务卡片 / 应用自退——逐项实测归档
+- [ ] T3.2 known-issues §2.15 装饰行改写 + §2.14 关联更新
+- [ ] T3.3 测试资产清理（DecorTestPage + testDecor 钩子 + main_pages 条目）随收口提交
+- [ ] T3.4 Commit + push
 
 ## Self-Review
 
-Spec 覆盖：任务 #129 三方向落 T1（顶条）/T2（PC 装饰）/T3（出路）；几何补偿的设计判断有 M4d 实测锚点；RF 四条均有核实步骤。占位符：无 TBD；「执行时核实」点（close 键 wine 残留、decor 视觉）都在步骤内给锚点。
+路线裁决（用户确认系统装饰可用）取代原自绘顶条方案；回退路线保留在案。隔离约束（用户裁定）升格为 Global Constraints。RF 四条均有实测锚点。
