@@ -478,6 +478,7 @@ struct inject_item
     bool is_mm_key;    /* 同上, 按窗键盘 */
     bool is_mm_axis;   /* M4d-review I1: 同上, 按窗轴 (滚轮), 复用
                         * axis_which/axis_steps + mm_* 字段 */
+    bool is_mm_close;  /* 任务 #129 RF#3: 按窗关闭请求, 复用 mm_toplevel_id */
     uint32_t keycode; /* is_button 时复用为 evdev 按钮码 */
     bool press;
     float nx, ny;
@@ -556,6 +557,8 @@ static int InjectQueueDrain(void *data)
             x11_toplevel_input_axis_dispatch(
                 item.mm_toplevel_id, item.mm_lx, item.mm_ly,
                 item.axis_which, item.axis_steps);
+        else if (item.is_mm_close)
+            x11_toplevel_close_dispatch(item.mm_toplevel_id);
         else if (item.is_axis)
             display_input_inject_axis(item.axis_which, item.axis_steps);
         else if (item.is_text)
@@ -1092,5 +1095,14 @@ void wl_ohos_input_post_mm_axis(uint32_t toplevelId, int lx, int ly,
     item.mm_ly = ly;
     item.axis_which = which;
     item.axis_steps = steps;
+    InjectQueuePush(&item);
+}
+
+void wl_ohos_input_post_mm_close(uint32_t toplevelId)
+{
+    struct inject_item item;
+    memset(&item, 0, sizeof(item));
+    item.is_mm_close = true;
+    item.mm_toplevel_id = toplevelId;
     InjectQueuePush(&item);
 }

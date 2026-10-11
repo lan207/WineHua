@@ -123,6 +123,11 @@ void wl_ohos_input_post_mm_key(uint32_t toplevelId, uint32_t keycode,
                                bool press);
 void wl_ohos_input_post_mm_axis(uint32_t toplevelId, int lx, int ly,
                                 int which, int steps);
+// 任务 #129 RF#3: 按窗关闭请求 (顶条 × 键 / WWA cleanup 的 sendToplevelClose
+// 在 x11 路线的落地)。napi 线程只入队, loop 线程 drain 分派到
+// x11_toplevel_close_dispatch (查表 + wlr_xwayland_surface_close =
+// WM_DELETE_WINDOW, 与 wayland 路线的 xdg_toplevel_send_close 同语义)。
+void wl_ohos_input_post_mm_close(uint32_t toplevelId);
 
 // M4c-T2: seat 键盘焦点让渡 (x11 popup 焦点链) —— activate + keyboard
 // enter, 同 multimode 口的焦点纪律 (幂等: 同 surface 短路; 无内容 surface

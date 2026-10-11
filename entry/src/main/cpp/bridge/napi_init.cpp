@@ -687,6 +687,14 @@ static napi_value SendToplevelClose(napi_env env, napi_callback_info info) {
     uint32_t id = 0;
     napi_get_value_uint32(env, args[0], &id);
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] sendToplevelClose id=%{public}u", id);
+    // 任务 #129 RF#3: x11 路线的关闭通道 —— xdg_toplevel resource 在 x11
+    // 路线不存在 (wine 走 X11), SendToplevelClose 恒 "NOT found" no-op;
+    // 补 x11 分支 = WM_DELETE_WINDOW (wlr_xwayland_surface_close), 与
+    // pointer/key/axis 的 x11 分流同款 (SendScrollEvent I1 先例)。
+    if (x11_toplevel_active()) {
+        x11_toplevel_close(id);
+        return nullptr;
+    }
     WaylandServer::GetInstance()->SendToplevelClose(id);
     return nullptr;
 }

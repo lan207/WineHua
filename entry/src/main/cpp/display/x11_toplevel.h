@@ -45,6 +45,13 @@ void x11_toplevel_input_key(uint32_t toplevelId, uint32_t keycode,
  * 不携带位置, 8a1e975 同类处理)。 */
 void x11_toplevel_input_axis(uint32_t toplevelId, int px, int py,
                              int which, int steps);
+/* 任务 #129 RF#3: 按窗关闭请求 (sendToplevelClose 的 x11 落地)。napi 线程
+ * 入队, loop 线程 close_dispatch 执行 wlr_xwayland_surface_close —— 即
+ * ICCCM WM_DELETE_WINDOW client message (wine 收到 → WM_CLOSE → 应用自行
+ * 退出, win32 关窗语义; 协议不支持时 wlroots 回退 xcb_kill_client)。
+ * 与 wayland 路线的 xdg_toplevel_send_close 同语义同层。 */
+void x11_toplevel_close(uint32_t toplevelId);
+void x11_toplevel_close_dispatch(uint32_t toplevelId);
 /* loop 线程执行端 (InjectQueueDrain 分派, display_input.c 调): 查表 +
  * 物理像素→X 逻辑坐标换算 + 缝隙丢弃 + 纪律投递。勿在其他线程调。 */
 void x11_toplevel_input_pointer_dispatch(uint32_t toplevelId, int px, int py,

@@ -816,6 +816,24 @@ void x11_toplevel_input_axis(uint32_t toplevelId, int px, int py,
     wl_ohos_input_post_mm_axis(toplevelId, px, py, which, steps);
 }
 
+/* 任务 #129 RF#3: 关闭请求。napi 线程只入队 (与 pointer/key/axis 同纪律);
+ * xcb 连接为 loop 线程专用, wlr_xwayland_surface_close 必须在其上执行。 */
+void x11_toplevel_close(uint32_t toplevelId)
+{
+    wl_ohos_input_post_mm_close(toplevelId);
+}
+
+void x11_toplevel_close_dispatch(uint32_t toplevelId)
+{
+    pthread_mutex_lock(&g_lock);
+    struct x11_xs_entry *e = entry_of_id(toplevelId);
+    struct wlr_xwayland_surface *xs = e ? e->xs : NULL;
+    pthread_mutex_unlock(&g_lock);
+    if (!xs) return;
+    XTL_LOG("XTL close id=%{public}u -> WM_DELETE_WINDOW", toplevelId);
+    wlr_xwayland_surface_close(xs);
+}
+
 /* pointer/axis dispatch 共用的落点解算 (M4d-review I1 抽出, 判据只留一处):
  * 查表与字段读取持锁 (win_w/win_h 会被 napi 线程 resize_window 写), seat
  * 操作由调用方在锁外做 (seat 不属 entry 表, 持锁调没必要)。物理像素 →
