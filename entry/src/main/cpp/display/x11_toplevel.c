@@ -810,43 +810,71 @@ void x11_toplevel_input_key(uint32_t toplevelId, uint32_t keycode,
     wl_ohos_input_post_mm_key(toplevelId, keycode, press);
 }
 
-/* loop 线程执行 (InjectQueueDrain 分派): 查表 + 坐标空间换算 + 纪律投递 */
-void x11_toplevel_input_pointer_dispatch(uint32_t toplevelId, int px, int py,
-                                         int action, uint32_t button)
+void x11_toplevel_input_axis(uint32_t toplevelId, int px, int py,
+                             int which, int steps)
+{
+    wl_ohos_input_post_mm_axis(toplevelId, px, py, which, steps);
+}
+
+/* pointer/axis dispatch 共用的落点解算 (M4d-review I1 抽出, 判据只留一处):
+ * 查表与字段读取持锁 (win_w/win_h 会被 napi 线程 resize_window 写), seat
+ * 操作由调用方在锁外做 (seat 不属 entry 表, 持锁调没必要)。物理像素 →
+ * X 逻辑坐标; 未校准 (attach 初值 1x1) 时比例未知, 丢弃并采样留痕 ——
+ * 比乱投好 (scale≠1 设备上乱投 = 命中点偏 2 倍); 换算后越界 = 点在窗间
+ * 空隙/标题条外, 同样不投递 (spec §4)。返回 true = xs 有效且点在窗内。 */
+static bool mm_resolve_local(uint32_t toplevelId, int px, int py,
+                             struct wlr_xwayland_surface **xs_out,
+                             double *lx_out, double *ly_out)
 {
     struct x11_xs_entry *e;
     int lx, ly;
-    /* I1: 查表与字段读取持锁 (win_w/win_h 会被 napi 线程 resize_window 写);
-     * wl_ohos_input_multimode_pointer 的 seat 操作在锁外 (seat 不属 entry
-     * 表, 且持锁调 seat 与 render_tick 的 present 无依赖冲突但没必要)。 */
     pthread_mutex_lock(&g_lock);
     e = entry_of_id(toplevelId);
     if (!e || !e->xs || !e->win) {
         pthread_mutex_unlock(&g_lock);
-        return;
+        return false;
     }
-    /* I3 (review): 物理像素 → X 逻辑坐标。承载窗尺寸由 onSurfaceChanged
-     * 维护 (win_w/win_h); 未校准 (attach 初值 1x1) 时比例未知, 丢弃并
-     * 采样留痕 —— 比乱投好 (scale≠1 设备上乱投 = 命中点偏 2 倍)。 */
     if (e->win_w <= 2 || e->win_h <= 2) {
         static unsigned skip_n;
         if (++skip_n % 60 == 1)
-            XTL_LOG("XTL mm-ptr skip uncalibrated id=%{public}u win=%{public}dx%{public}d",
+            XTL_LOG("XTL mm-input skip uncalibrated id=%{public}u win=%{public}dx%{public}d",
                     toplevelId, e->win_w, e->win_h);
         pthread_mutex_unlock(&g_lock);
-        return;
+        return false;
     }
     lx = (int)((int64_t)px * (int)e->xs->width / e->win_w);
     ly = (int)((int64_t)py * (int)e->xs->height / e->win_h);
-    /* 缝隙不投递 (spec §4): 换算后越界 = 点在窗间空隙/标题条外 */
     if (lx < 0 || ly < 0 ||
         lx >= (int)e->xs->width || ly >= (int)e->xs->height) {
         pthread_mutex_unlock(&g_lock);
-        return;
+        return false;
     }
+    *xs_out = e->xs;
+    *lx_out = (double)lx;
+    *ly_out = (double)ly;
     pthread_mutex_unlock(&g_lock);
-    wl_ohos_input_multimode_pointer(e->xs, (double)lx, (double)ly,
-                                    action, button);
+    return true;
+}
+
+/* loop 线程执行 (InjectQueueDrain 分派): 查表 + 坐标空间换算 + 纪律投递 */
+void x11_toplevel_input_pointer_dispatch(uint32_t toplevelId, int px, int py,
+                                         int action, uint32_t button)
+{
+    struct wlr_xwayland_surface *xs;
+    double lx, ly;
+    if (!mm_resolve_local(toplevelId, px, py, &xs, &lx, &ly))
+        return;
+    wl_ohos_input_multimode_pointer(xs, lx, ly, action, button);
+}
+
+void x11_toplevel_input_axis_dispatch(uint32_t toplevelId, int px, int py,
+                                      int which, int steps)
+{
+    struct wlr_xwayland_surface *xs;
+    double lx, ly;
+    if (!mm_resolve_local(toplevelId, px, py, &xs, &lx, &ly))
+        return;
+    wl_ohos_input_multimode_axis(xs, lx, ly, which, steps);
 }
 
 void x11_toplevel_input_key_dispatch(uint32_t toplevelId, uint32_t keycode,

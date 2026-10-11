@@ -974,6 +974,22 @@ static napi_value SendScrollEvent(napi_env env, napi_callback_info info) {
     napi_get_value_double(env, args[5], &py);
     OH_LOG_INFO(LOG_APP, "[PIPE] scroll tl=%{public}u axis=%{public}s val=%{public}.1f step=%{public}d px=(%{public}.0f,%{public}.0f)",
                 tl, axis == 0 ? "VERT" : "HORIZ", value, scrollStep, px, py);
+    // M4d-review I1: x11 多窗模式按窗直达 —— scroll 与 pointer/key 同款分流,
+    // 不进 wayland 的 InputManager seat 面 (那是 winewayland.drv 路线的
+    // CoordTransform/seat 语义, x11 多窗下 wine 不在该 seat 上, 事件只会
+    // 静默丢失 —— 2026-10-11 真机实证: [PIPE] scroll 不出现、wine +event
+    // 全程零 Button4/5)。axis 不携带位置: 落点语义由映射层补 (motion 先行,
+    // 8a1e975 同类处理)。steps 归一化为 ±1 格 —— x11 桥的 discrete 是
+    // v120 格语义 (见 display_input_inject_axis 注释), 双指平滑量已在
+    // ArkTS 层按 SCROLL_STEP_PX 折算为单步事件, DesktopWindow.ets
+    // onAxisEvent 的 x11 分支同款归一化。
+    if (x11_toplevel_active()) {
+        const int steps = value > 0 ? 1 : (value < 0 ? -1 : 0);
+        if (steps != 0) {
+            x11_toplevel_input_axis(tl, (int)px, (int)py, axis, steps);
+        }
+        return nullptr;
+    }
     InputManager::GetInstance()->SendScrollEvent(tl, axis, value, scrollStep, px, py);
     return nullptr;
 }

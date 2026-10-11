@@ -40,12 +40,19 @@ void x11_toplevel_input_pointer(uint32_t toplevelId, int px, int py,
                                 int action, uint32_t button);
 void x11_toplevel_input_key(uint32_t toplevelId, uint32_t keycode,
                             bool press);
+/* M4d-review I1: 按窗轴注入 (滚轮)。px/py = OHOS 承载窗局部物理像素,
+ * which: 0=纵向 1=横向, steps = ±N 格。映射层在 axis 前补 motion (axis
+ * 不携带位置, 8a1e975 同类处理)。 */
+void x11_toplevel_input_axis(uint32_t toplevelId, int px, int py,
+                             int which, int steps);
 /* loop 线程执行端 (InjectQueueDrain 分派, display_input.c 调): 查表 +
  * 物理像素→X 逻辑坐标换算 + 缝隙丢弃 + 纪律投递。勿在其他线程调。 */
 void x11_toplevel_input_pointer_dispatch(uint32_t toplevelId, int px, int py,
                                          int action, uint32_t button);
 void x11_toplevel_input_key_dispatch(uint32_t toplevelId, uint32_t keycode,
                                      bool press);
+void x11_toplevel_input_axis_dispatch(uint32_t toplevelId, int px, int py,
+                                      int which, int steps);
 
 /* ── Task 3: per-xs 呈现 ── */
 struct wlr_allocator;

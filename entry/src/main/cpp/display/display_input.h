@@ -106,6 +106,13 @@ void wl_ohos_input_multimode_pointer(struct wlr_xwayland_surface *xs,
                                      int action, uint32_t button);
 void wl_ohos_input_multimode_key(struct wlr_xwayland_surface *xs,
                                  uint32_t keycode, bool press);
+// M4d-review I1: 按窗轴注入。axis 不携带位置 —— 内部先保证指针焦点在 xs
+// 并把 X 光标带到 (lx,ly) (motion+frame, 8a1e975 同类), 再发 axis。
+// which: 0=纵向 1=横向; steps = ±N 格 (v120 语义见 display_input_inject_axis)。
+// 必须在合成器事件循环线程调用。
+void wl_ohos_input_multimode_axis(struct wlr_xwayland_surface *xs,
+                                  double lx, double ly,
+                                  int which, int steps);
 
 // M4a-T5 (C1 review 修复): 多窗注入的 napi 线程入口 —— 只入队 (lock +
 // pipe 唤醒), loop 线程 drain 分派到 x11_toplevel_input_*_dispatch。
@@ -114,6 +121,8 @@ void wl_ohos_input_post_mm_pointer(uint32_t toplevelId, int lx, int ly,
                                    int action, uint32_t button);
 void wl_ohos_input_post_mm_key(uint32_t toplevelId, uint32_t keycode,
                                bool press);
+void wl_ohos_input_post_mm_axis(uint32_t toplevelId, int lx, int ly,
+                                int which, int steps);
 
 // M4c-T2: seat 键盘焦点让渡 (x11 popup 焦点链) —— activate + keyboard
 // enter, 同 multimode 口的焦点纪律 (幂等: 同 surface 短路; 无内容 surface

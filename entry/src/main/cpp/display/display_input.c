@@ -476,6 +476,8 @@ struct inject_item
                         * drain 在 loop 线程执行 —— wlr_seat/wl_display
                         * 全部事件循环线程专用) */
     bool is_mm_key;    /* 同上, 按窗键盘 */
+    bool is_mm_axis;   /* M4d-review I1: 同上, 按窗轴 (滚轮), 复用
+                        * axis_which/axis_steps + mm_* 字段 */
     uint32_t keycode; /* is_button 时复用为 evdev 按钮码 */
     bool press;
     float nx, ny;
@@ -550,6 +552,10 @@ static int InjectQueueDrain(void *data)
         else if (item.is_mm_key)
             x11_toplevel_input_key_dispatch(
                 item.mm_toplevel_id, item.keycode, item.press);
+        else if (item.is_mm_axis)
+            x11_toplevel_input_axis_dispatch(
+                item.mm_toplevel_id, item.mm_lx, item.mm_ly,
+                item.axis_which, item.axis_steps);
         else if (item.is_axis)
             display_input_inject_axis(item.axis_which, item.axis_steps);
         else if (item.is_text)
@@ -1005,6 +1011,34 @@ void wl_ohos_input_multimode_key(struct wlr_xwayland_surface *xs,
     wl_ohos_input_post_key(keycode, press);
 }
 
+/* M4d-review I1: 按窗轴注入 (x11 multimode 滚轮)。axis 事件不携带位置 ——
+ * 与按钮同款处理 (8a1e975 的类别): 目标窗指针焦点未建立时先 enter (带
+ * 坐标), 再无条件 motion+frame 把 X 光标带到滚动点, 然后才发 axis。X 侧
+ * 投递链见 display_input_inject_axis 注释 (value120 → DIX → Button4/5 →
+ * wine WM_MOUSEWHEEL, 按 X 光标落点路由): 缺 motion 半边时滚轮按上一条
+ * motion 的陈旧位置投递 —— 与 M4d 数据点①/② 按钮陈旧坐标同一机理。 */
+void wl_ohos_input_multimode_axis(struct wlr_xwayland_surface *xs,
+                                  double lx, double ly,
+                                  int which, int steps)
+{
+    if (!g_seat || !xs || !xs->surface)
+        return;
+    if (steps == 0)
+        return;
+    if (xs->surface != g_ptr_focus)
+    {
+        FocusClient(xs); /* activate + keyboard enter + settle 记录 */
+        if (g_display)
+            wl_display_flush_clients(g_display); /* 焦点批先行 (同键纪律) */
+        wlr_seat_pointer_notify_enter(g_seat, xs->surface, lx, ly);
+        TrackPtrFocus(xs->surface);
+    }
+    g_ptr_focus_xs = xs;
+    wlr_seat_pointer_notify_motion(g_seat, NowMsec(), lx, ly);
+    wlr_seat_pointer_notify_frame(g_seat); /* motion 必配 frame (D9) */
+    display_input_inject_axis(which, steps);
+}
+
 /* M4c-T2: seat 焦点让渡导出口 (x11_toplevel.c 的 popup show/hide 调)。
  * 语义与 multimode 口的 FocusClient 完全一致 —— 这里只做导出包装, 不复制
  * 逻辑。调用方 (popup show/hide) 在合成器 loop 线程持映射层 g_lock 时调:
@@ -1044,5 +1078,19 @@ void wl_ohos_input_post_mm_key(uint32_t toplevelId, uint32_t keycode,
     item.mm_toplevel_id = toplevelId;
     item.keycode = keycode;
     item.press = press;
+    InjectQueuePush(&item);
+}
+
+void wl_ohos_input_post_mm_axis(uint32_t toplevelId, int lx, int ly,
+                                int which, int steps)
+{
+    struct inject_item item;
+    memset(&item, 0, sizeof(item));
+    item.is_mm_axis = true;
+    item.mm_toplevel_id = toplevelId;
+    item.mm_lx = lx;
+    item.mm_ly = ly;
+    item.axis_which = which;
+    item.axis_steps = steps;
     InjectQueuePush(&item);
 }
