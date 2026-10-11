@@ -438,6 +438,9 @@ struct Index {
       // ============================================================
       //  侧边栏
       // ============================================================
+      // 设置区滚动容器 (2026-10-11 用户要求: 累计内容超出屏高, 需上下滑动)。
+      // 内层内容缩进保留原层级, 不做纯缩进的整段重排。
+      Scroll() {
       Column() {
         // -- Wine 环境状态 --
         Text('Wine 环境')
@@ -640,7 +643,9 @@ struct Index {
               .backgroundColor('#1e1e1e')
             })
           }
-          .width('100%').layoutWeight(1)
+          .width('100%')
+          // 进程列表限高 (Scroll 内 layoutWeight 失效): 最多 8 行, 超出内部滚动
+          .height(Math.min(this.processList.length, 8) * 44)
           .margin({ left: -14, right: -14 })
           .scrollBar(BarState.Off)
         } else {
@@ -649,9 +654,12 @@ struct Index {
             .width('100%').padding({ top: 8 })
         }
       }
+      .width('100%')
+      }
       .width(300).height('100%')
       .backgroundColor('#141414')
       .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+      .scrollBar(BarState.Auto)
 
       // -- 侧边栏分隔线 --
       Divider().vertical(true).color('#2a2a2a').height('100%')
