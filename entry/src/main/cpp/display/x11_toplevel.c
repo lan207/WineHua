@@ -875,6 +875,46 @@ static bool mm_resolve_local(uint32_t toplevelId, int px, int py,
 }
 
 /* loop 线程执行 (InjectQueueDrain 分派): 查表 + 坐标空间换算 + 纪律投递 */
+
+/* GAP2 (#131): 注入前 X 堆叠回写 (click-to-raise)。
+ *
+ * 问题 (真机实测 2026-10-11, .temp/gap2/wine_trace_after_click1.log):
+ * 按窗注入只决定局部坐标 + 目标 surface; X 投递由服务端 hit-test (X 窗树/
+ * 堆叠) 决定 (xwayland-input.c dispatch_absolute_motion: root 点 =
+ * focus_window->toplevel->drawable + local → QueuePointerEvents
+ * POINTER_ABSOLUTE|POINTER_SCREEN)。x11 fusion 下各 app 的 X 窗都钉在创建
+ * 位 (host→wine 几何回写缺失, §2.14), rect 恒重叠 ⇒ 堆叠决定命中。而
+ * X 堆叠无人同步: wine 跨进程不 restack (X z 序归 WM 管), xwm(wlroots) 把
+ * 堆叠留给合成器, 且 map_notify 对新窗 restack(BELOW) —— 实测: 点 B 承载
+ * 窗 (tl=17) 的 ButtonPress 全落 A 的 X 窗 (0x10060/e00003), B 自激活
+ * (wine foreground) 后 X 顶仍是 A。
+ *
+ * 机制: 指针/轴注入前把目标 restack 到 managed 栈顶 —— root 点按构造 ∈
+ * 目标 X rect, 目标在顶 ⇒ hit-test 必中目标 (不变式)。语义 = 桌面
+ * click-to-raise 惯例 (指针交互目标即 X 顶); OS 已按承载窗 z 序投递指针
+ * 事件, 本调用令 X 命中与 OS 命中一致。键盘侧的 X 焦点对齐见
+ * display_input.c SyncXInputFocus (同一缺口的两半)。
+ *
+ * 守卫: !override_redirect (wlroots restack 有 assert; popup/菜单走 X grab
+ * 重定向, 不参与堆叠) + surface 在册 (withdrawn 窗 stack_link 已摘)。
+ * 去重日志: 只记目标切换 (证据链)。
+ * xcb 到达序: xwm_schedule_flush 在 socket 可写时同步 flush (xwm.c:3097),
+ * restack 先于后续 wayland 输入写入。 */
+static void mm_restack_target(struct wlr_xwayland_surface *xs,
+                              uint32_t toplevelId)
+{
+    if (!xs || !xs->surface || xs->override_redirect)
+        return;
+    static struct wlr_xwayland_surface *last;
+    if (last != xs)
+    {
+        last = xs;
+        XTL_LOG("XTL mm-restack id=%{public}u win=0x%{public}x -> managed top",
+                toplevelId, xs->window_id);
+    }
+    wlr_xwayland_surface_restack(xs, NULL, XCB_STACK_MODE_ABOVE);
+}
+
 void x11_toplevel_input_pointer_dispatch(uint32_t toplevelId, int px, int py,
                                          int action, uint32_t button)
 {
@@ -882,6 +922,7 @@ void x11_toplevel_input_pointer_dispatch(uint32_t toplevelId, int px, int py,
     double lx, ly;
     if (!mm_resolve_local(toplevelId, px, py, &xs, &lx, &ly))
         return;
+    mm_restack_target(xs, toplevelId);
     wl_ohos_input_multimode_pointer(xs, lx, ly, action, button);
 }
 
@@ -892,6 +933,9 @@ void x11_toplevel_input_axis_dispatch(uint32_t toplevelId, int px, int py,
     double lx, ly;
     if (!mm_resolve_local(toplevelId, px, py, &xs, &lx, &ly))
         return;
+    /* 轴投递按 X 光标位置命中 (Xwayland emulate → Button4/5), 同样需要
+     * 目标在 X 顶 (滚动是「指针下的窗」语义, 无点击前置)。 */
+    mm_restack_target(xs, toplevelId);
     wl_ohos_input_multimode_axis(xs, lx, ly, which, steps);
 }
 

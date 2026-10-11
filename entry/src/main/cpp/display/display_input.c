@@ -56,6 +56,8 @@ static const struct wlr_keyboard_impl k_kb_impl = {
 static struct wlr_seat *g_seat;
 static struct wlr_keyboard g_kb;
 static struct wl_event_loop *g_loop;
+static struct wlr_xwayland *g_xwayland; /* GAP2 (#131): X 硬件焦点同步口
+                                         * (xwm 连接 + window_id), set_seat 时注入 */
 static struct wlr_surface *g_kbd_focus; /* 已 keyboard enter 的 surface */
 static struct wlr_surface *g_ptr_focus; /* 已 pointer enter 的 surface */
 static struct wlr_xwayland_surface *g_ptr_focus_xs; /* 命中的 xs (D36 点击置前用) */
@@ -179,10 +181,51 @@ static struct xkb_keymap *BuildKeymap(void)
     return km;
 }
 
+/* GAP2 (#131): X 硬件输入焦点同步 (x11 multimode)。
+ *
+ * 问题 (真机实测 2026-10-11, .temp/gap2/wine_trace_after_key2.log):
+ * `wlr_xwayland_surface_activate` 对 wine 走 WM_TAKE_FOCUS, 而 xwm 的
+ * message data32[1] = CurrentTime = 0 (wlroots xwm_focus_window); wine 的
+ * 接受门 (winex11 event.c:738 `hwnd != foreground &&
+ * !window_should_take_focus(foreground, 0)`, window.c:2146
+ * `!focus_time || time > focus_time`, focus_time = 前台窗 WM_STATE 属性
+ * 事件时间 ≠ 0) 对 time=0 恒拒绝 —— 实测 wine WARN "Ignoring ...
+ * WM_TAKE_FOCUS ... event_time 0, foreground 0x10060" 后 KeyPress 落旧窗。
+ * ⇒ 合成器驱动的焦点切换对 wine 结构性不可达; wine 自接受路径
+ * (event.c:635 set_focus) 在有 EWMH 时也只做 XSetInputFocus
+ * (不动 win32 前台) —— 本同步即该等价动作, 绕过的只是 time=0 门。
+ *
+ * 纪律: 每次 FocusClient 调用都重断言 (不只在切换时) —— wine 自置前台时
+ * 会主动 XSetInputFocus 回自己, X 焦点会漂移, 键注入前必须对齐目标。
+ * 门: multimode (x11_toplevel_active, 否则虚拟桌面/wayland 路线零行为
+ * 变化) + 非 OR 窗 (菜单等 override-redirect 不进 X 焦点模型) + surface
+ * 在册 (withdrawn 窗不碰)。 */
+static void SyncXInputFocus(struct wlr_xwayland_surface *xs)
+{
+    if (!g_xwayland || !xs || !xs->surface || xs->override_redirect)
+        return;
+    if (!x11_toplevel_active())
+        return; /* multimode 门 (上面的行为清单依据) */
+    xcb_connection_t *conn = wlr_xwayland_get_xwm_connection(g_xwayland);
+    if (!conn)
+        return;
+    static struct wlr_xwayland_surface *logged;
+    if (logged != xs)
+    {
+        logged = xs;
+        OHLOG("x-focus sync xs=%{public}p win=0x%{public}x (multimode)",
+              (void *)xs, xs->window_id);
+    }
+    xcb_set_input_focus(conn, XCB_INPUT_FOCUS_POINTER_ROOT, xs->window_id,
+                        XCB_CURRENT_TIME);
+    xcb_flush(conn); /* 先于后续键注入上位 (settle 40ms 兜竞态) */
+}
+
 static void FocusClient(struct wlr_xwayland_surface *xs)
 {
     if (!wl_ohos_surface_has_content(xs ? xs->surface : NULL))
         return;
+    SyncXInputFocus(xs);
     if (xs->surface == g_kbd_focus)
         return;
     /* 激活先行: wlr_xwayland_surface_activate → xwm_focus_window →
@@ -923,6 +966,7 @@ void wl_ohos_input_xwayland_set_seat(struct wlr_xwayland *xwayland)
 {
     if (!g_seat || !xwayland)
         return;
+    g_xwayland = xwayland; /* GAP2: SyncXInputFocus 用 (xwm 连接) */
     wlr_xwayland_set_seat(xwayland, g_seat);
     OHLOG("xwayland seat attached");
 }
