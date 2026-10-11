@@ -174,6 +174,9 @@ export class WineEnvService {
   // 定界与实测依据见 scheduleColdStartAutoRetry 注释。
   private coldStartFailRetried: boolean = false;
   private engineEverReady: boolean = false;
+  // 待定自动重试的 timer 句柄 (F1 复核): >=0 表示 1s 窗口内仍有待触发的
+  // restartEngine — 关闭卡片/显式重试须经 cancelColdStartAutoRetry 作废
+  private coldStartRetryTimer: number = -1;
 
   private hasRawfileWineData: boolean = false;
   private ctx: common.Context | null = null;
@@ -913,7 +916,8 @@ export class WineEnvService {
     this.coldStartFailRetried = true;
     hilog.warn(DOMAIN, 'wine', '[AUTO-RETRY] cold-start engine fail (%{public}s), retrying once',
       detail);
-    setTimeout(() => {
+    this.coldStartRetryTimer = setTimeout(() => {
+      this.coldStartRetryTimer = -1;
       // 1s 窗口内被别的路径接管 (用户点重试/重置、native 又推进) 则让位;
       // restartEngine 的 isBusy 门是第二道兜底
       if (this.engineState != 'failed') {
@@ -922,6 +926,18 @@ export class WineEnvService {
       }
       this.restartEngine(!wasBg);
     }, 1000);
+  }
+
+  // 作废待定的自动重试 (F1 复核): 关闭卡片 / 显式重试先到场时调用 —
+  // 不取消的后果 = 1s 后 timer 把用户的「关闭」/「手动重试」反转成又一次
+  // 自动 restartEngine。doReset 不在此列: 其全程 opBusy 挡 restartEngine
+  // (isBusy 门), timer 回调内的 engineState 复查兜底。
+  private cancelColdStartAutoRetry(reason: string): void {
+    if (this.coldStartRetryTimer >= 0) {
+      clearTimeout(this.coldStartRetryTimer);
+      this.coldStartRetryTimer = -1;
+      hilog.warn(DOMAIN, 'wine', '[AUTO-RETRY] cancelled (%{public}s)', reason);
+    }
   }
 
   // prefix 是否已在盘上 (drive_c 存在): 引导"首次/二次进入"文案分野 —
@@ -935,6 +951,11 @@ export class WineEnvService {
   // 关闭后启动器内 EngineGuide 承接 failed 引导 (重试/重置环境)
   dismissFailedInit(): void {
     if (this.initFailed && !this.isBusy()) {
+      // F1 (复核): 关闭卡片 = 拒绝本次自动自救 —— 必须作废待定重试, 否则
+      // 1s 后 timer 触发 restartEngine, 用户看到的「关闭」被反转成「引擎
+      // 自己又拉起来了」。取消后引擎停在失败态, EngineGuide 的 failed
+      // 引导 (重试/重置) 承接, 与手动路径终点一致。
+      this.cancelColdStartAutoRetry('dismissed by user');
       this.initOverlayVisible = false;
       this.notify();
     }
@@ -1158,6 +1179,10 @@ export class WineEnvService {
     if (this.isBusy()) {
       return;
     }
+    // 显式编排接管 = 待定自动重试失效 (F1 复核): 1s 窗口内用户先点了「重试」
+    // 时让位给用户 —— 否则手动重试若再失败, 迟到的 timer 会追加一次非预期
+    // 的自动重启 (「每进程一次」的承诺被绕过)。
+    this.cancelColdStartAutoRetry('restart started');
     this.opBusy = true;
     (async (): Promise<void> => {
       await this.stopSession(foreground);
