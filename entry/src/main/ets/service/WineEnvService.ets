@@ -188,7 +188,7 @@ export class WineEnvService {
   private stopWaiters: Array<() => void> = [];
 
   // -- 启动参数 (EntryAbility 发布的 AppStorage 生效值, init 时读取) --
-  private d3dBackend: string = 'vkd3d_limited_500k';
+  private d3dBackend: string = 'dxvk_modern_2_6';
   private dxvkBackend: string = 'dxvk_legacy';
   // Wine locale 语言 ("zh_CN"/"en_US"), 设置页可切, 重启引擎后生效。
   // 持久化走 preferences API (同 DisplaySettingsService) — 不用 PersistentStorage:
@@ -334,7 +334,7 @@ export class WineEnvService {
 
   // 读取 EntryAbility 发布到 AppStorage 的生效值 (D3D/DXVK 后端)
   private updateLaunchRequest(): void {
-    const backend = AppStorage.get<string>('winehua.d3d.backend') ?? 'vkd3d_limited_500k';
+    const backend = AppStorage.get<string>('winehua.d3d.backend') ?? 'dxvk_modern_2_6';
     this.d3dBackend = this.normalizeD3dBackend(backend);
     this.dxvkBackend = this.normalizeDxvkBackend(
       AppStorage.get<string>('winehua.dxvk.backend') ?? 'dxvk_legacy');

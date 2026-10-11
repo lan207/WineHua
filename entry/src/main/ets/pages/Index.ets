@@ -20,8 +20,8 @@ const DRIVE_C = '/data/storage/el2/base/files/.wine/drive_c';
 @Entry
 @Component
 struct Index {
-  @StorageLink('winehua.d3d.backend') d3dBackendText: string = 'vkd3d_limited_500k';
-  @StorageLink('winehua.d3d.preference') d3dPreferenceText: string = 'vkd3d_limited_500k';
+  @StorageLink('winehua.d3d.backend') d3dBackendText: string = 'dxvk_modern_2_6';
+  @StorageLink('winehua.d3d.preference') d3dPreferenceText: string = 'dxvk_modern_2_6';
   @StorageLink('winehua.dxvk.backend') dxvkBackendText: string = 'dxvk_legacy';
   @StorageLink('winehua.dxvk.preference') dxvkPreferenceText: string = 'auto';
   private env = WineEnvService.getInstance();
@@ -59,9 +59,9 @@ struct Index {
   // 图形后端互斥单选状态 (响应式, 高亮判据唯一来源)。区别于 @StorageLink
   // 文本字段: 后者由 AppStorage/PersistentStorage 恢复, 非点击驱动;
   // 直接绑 private 字段做高亮是旧实现"选中无高亮"根因 (非响应式)。
-  @State backendSel: string = 'vkd3d_limited_500k';
+  @State backendSel: string = 'dxvk_modern_2_6';
   // doRun 传参用的后端值: 与 backendSel 同步 (selectBackend 内联更新)
-  private d3dBackend: string = 'vkd3d_limited_500k';
+  private d3dBackend: string = 'dxvk_modern_2_6';
   private dxvkBackend: string = 'dxvk_legacy';
   // 升级提示日志只打一次 (master 版无弹卡 UI, 检测到不一致仅留痕 +
   // 快速操作按钮转为"应用更新"语义, 见 quickStart)

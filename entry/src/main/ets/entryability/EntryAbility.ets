@@ -44,7 +44,10 @@ export default class EntryAbility extends UIAbility {
     };
     const explicitD3d = !!parameters && parameters['winehua.d3d_backend'] !== undefined &&
       parameters['winehua.d3d_backend'] !== null;
-    const persistedD3dRaw = AppStorage.get<string>('winehua.d3d.preference') || 'vkd3d_limited_500k';
+    /* 产品默认档 = DXVK 2.6.2 (2026-10-11 用户拍板, 原 vkd3d_limited_500k
+     * 组合降为手动可选)。选 dxvk 档时 dxvk 轴随之强制 modern (见下方),
+     * dxvk 轴的 auto 白名单仅在 vkd3d 组合档下参与解析。 */
+    const persistedD3dRaw = AppStorage.get<string>('winehua.d3d.preference') || 'dxvk_modern_2_6';
     const requestedD3d = explicitD3d ? value('winehua.d3d_backend', 'wined3d') : persistedD3dRaw;
     const d3dBackend = requestedD3d === 'dxvk_legacy' ||
       requestedD3d === 'dxvk_modern_2_6' || requestedD3d === 'vkd3d_limited_500k' ?
@@ -206,13 +209,13 @@ export default class EntryAbility extends UIAbility {
       argv: [],
       environment: environment,
       workingDirectory: dir,
-      d3dBackend: AppStorage.get<string>('winehua.d3d.backend') ?? 'vkd3d_limited_500k',
+      d3dBackend: AppStorage.get<string>('winehua.d3d.backend') ?? 'dxvk_modern_2_6',
       dxvkBackend: AppStorage.get<string>('winehua.dxvk.backend') ?? 'auto'
     });
   }
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    PersistentStorage.persistProp<string>('winehua.d3d.preference', 'vkd3d_limited_500k');
+    PersistentStorage.persistProp<string>('winehua.d3d.preference', 'dxvk_modern_2_6');
     PersistentStorage.persistProp<string>('winehua.dxvk.preference', 'auto');
     // 注: Wine 语言偏好不走 PersistentStorage (冷启动不恢复磁盘值, 实测),
     // 由 WineEnvService.init 用 preferences API 自行加载
