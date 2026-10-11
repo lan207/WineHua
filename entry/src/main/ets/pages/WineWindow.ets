@@ -86,11 +86,19 @@ struct WineWindow {
   // X 窗 = win32 rect 减 WM 装饰区 (D52 created 坐标 = 原点 + caption+border
   // 偏移, 实测 2026-10-11), caption 属于缺席的 WM —— guest 像素里没有标题栏,
   // HTCAPTION/_NET_WM_MOVERESIZE 触摸路径结构性不可达; 顶条实为 wine 菜单栏
-  // (高度 ≈ guest 0..20 逻辑 ×2 = 40 物理像素)。短按仍走点击 (菜单可开),
+  // (高度 ≈ guest 顶部 20 逻辑像素)。短按仍走点击 (菜单可开),
   // 仅超过拖动阈值的顶条手势转为移动承载窗 (startMoving, 与 wayland Pad
   // incumbent 同一系统拖拽通道); wine 不感知位置 (managed 模式位置由
   // ArkTS/系统权威, popup 偏移按父相对量不受影响)。
-  private static readonly DRAG_STRIP_PX: number = 40; // 物理像素
+  private static readonly DRAG_STRIP_LOGICAL_PX: number = 20; // guest 逻辑像素
+
+  // M4d-review Minor#3: 物理阈值按有效 scale 现算 (原硬编码 40 只对 scale-2
+  // 设备成立; displayScale/scaleBoost 不同的设备上过小会把菜单栏拖动误判为
+  // 内容拖拽, 过大会吞掉客户区)
+  private dragStripPx(): number {
+    return Math.round(WineWindow.DRAG_STRIP_LOGICAL_PX *
+      WineWindowManager.getInstance().getEffectiveScale());
+  }
   // 双击检测
   private lastTapTime: number = 0;
   private lastTapPx: number = 0;
@@ -253,10 +261,10 @@ struct WineWindow {
               const dist = Math.abs(px - this.touchStartPx) + Math.abs(py - this.touchStartPy);
               if (this.touchPending && dist >= WineWindow.DRAG_THRESHOLD) {
                 // M4d RF#3: fusion subWindow 顶条手势 = 移动承载窗 (定案见
-                // DRAG_STRIP_PX 注释)。短按不进此分支, 菜单点击不受影响;
+                // DRAG_STRIP_LOGICAL_PX 注释)。短按不进此分支, 菜单点击不受影响;
                 // 系统拖拽接管后 wine 收不到任何合成事件 (窗移动对 guest
                 // 不可见, managed 模式位置由 ArkTS/系统权威)。
-                if (this.touchStartPy <= WineWindow.DRAG_STRIP_PX &&
+                if (this.touchStartPy <= this.dragStripPx() &&
                     WineWindowManager.getInstance().fusionUsesSubWindow()) {
                   const win = WineWindowManager.getInstance().getWindow(this.toplevelId);
                   if (win) {
