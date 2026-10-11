@@ -844,6 +844,18 @@ feature contract failed`；设备端 metrics 给出失败点：`featureLevel=11.
 兑现）；它只影响 d3d11-smoke 这一条深度用例。**本轮（2026-09-30）裁决：用户
 决定先跳过**——按上面两步入口留档，不投入本轮。
 
+**状态刷新（2026-10-11 复核，以归档为准）**：「与显示路线无关」定性**作废**
+——wayland 基线已绿：10-06 三轮 dxvk 套件全 PASS（dxvk-r20261006-093803 /
+193907 / 234729，`dxvk-legacy-x64/x86` 均过；同夜 19:29 一轮全 FAIL 系
+**D24S8 cube-array pending** 拖超时，重跑即愈，与本题不同源）。失败面收敛为
+**x11 专属未过**：x11 上最后一轮 dxvk-legacy（job-r20261007-003719，job.json
+钉 `WINEHUA_DISPLAY_ROUTE=x11`）拖死 suite，按裁定排除出 x11 判据（见
+`smoke/suites/displayroute-dxvk.json` 头注释）；x11 出图门禁（cube，
+`displayroute-dxvk-cube-x64`）当夜会话修复后 PASS（job-r20261007-012820，
+此前 011201/012006 两轮为会话内中间态）。修复归因（9-30→10-06 之间哪笔改动
+修好 wayland 侧）未考古，登记待查。**vkd3d/d3d12 侧：当前归档体系（223 个）
+无任何 d3d12 套件运行记录——x11 路线无验证证据，待补跑**。
+
 ### 2.6 guest 帧归还的 GPU 同步由 present 侧 glFinish 提供（2026-09-30 定性更正 + 不变量检查器）
 
 **原记录（「归还传 fence -1 = 不做 GPU 侧同步，采样可能还在飞」）不成立**：归还
