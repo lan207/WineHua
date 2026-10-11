@@ -13,6 +13,7 @@
 ## Global Constraints
 
 - spec §6：M4c 通过前不开 M4d（前置 = M4b/M4c 验收 PASS）。
+- **进入承诺：越界点选悬案（known-issues §2.14，任务 #127）在 M4d 内闭合或凭真实应用证据重新定界**——popup-input 设计冻结前必须拿到两个数据点：① 真实应用（notepad 之外的 Windows 程序，越界菜单形态）的菜单项点选结果；② 菜单开着时菜单外点击关闭（outside-click dismiss）的行为证据。两者同属一个指针路由面（Xwayland rootless OR 窗指针路由 vs 探针消息循环），一并调查。依据 = M4c final review I1 + known-issues §2.14（复现资产 `smoke/jobs/popup-overflow-x11.json`，已排除项四条）。
 - Pad subWindow 承载近似（hide/minimize 无系统能力）= **继承 incumbent 已知限制，不新增债**（§5 红线）——修复冲动对照 FusionWindowManager 现状，incumbent 没有的能力不做。
 - Pad 设备清单与限制见 docs/assets/devices.md。
 - 验收方式 = 真机手测清单（spec §6：本阶段无 smoke 判定要求），每项截图/日志归档 `.temp/m4d-*.jpeg|log`。
