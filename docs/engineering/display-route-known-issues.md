@@ -153,10 +153,13 @@ opengl 两项 displayed 门依赖虚拟桌面画布发布的 display-seq
 `bindings=1`、探针 624 帧走 fusion 通路后被 detach —— 渲染正常，判据
 缺源）。设备持久化的 desktopMode（UI 选择持久化，tablet 缺省 virtual）
 会被未声明 desktopMode 的套件静默继承：用户会话选过「多窗口模式」后，
-未钉档的 core 即在该形态下假 FAIL。处置：core / displayroute-dxvk 两套
-件已钉 `"desktopMode": "virtual"`（各带 _desktopMode_note 说明依赖）；
-其余未钉套件审计为待办。类推约束：（route × backend × desktopMode）三
-元组每个未钉死的维度都是一个「继承设备现场」的假 PASS/FAIL 面。
+未钉档的 core 即在该形态下假 FAIL。处置（已收口 #144）：全仓 23 个套件
+全部显式声明 desktopMode —— core / displayroute-dxvk 与其余 19 个审计后
+统一钉 `"desktopMode": "virtual"`（历史基线均为虚拟桌面单画布形态，
+探针级 display-seq 依赖仅 winehua_graphics_smoke；core/displayroute-dxvk
+另带 _desktopMode_note），fusion 形态由 displayroute-dxvk-fusion 与
+fusion 两套件显式声明覆盖。类推约束：（route × backend × desktopMode）
+三元组每个未钉死的维度都是一个「继承设备现场」的假 PASS/FAIL 面。
 
 **explorer 桌面窗处置（M4b Task-0 决策 = 接受）**：managed 模式
 user32 `get_desktop_window` 自动 spawn 的 explorer /desktop 桌面窗
