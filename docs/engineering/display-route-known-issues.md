@@ -265,17 +265,38 @@ wine 菜单跟踪交互差异」两说——**均被 M4d 推翻**：真因在我
 PASS 的点选判据。负全局坐标（菜单越出屏幕左/上，RF#5 后半）行为未测，
 不进自动化套件，只有手动路径。
 
-**OHOS 拖拽 resize 在 x11 路线不回写 wine（M4a 模型缺口，T3 现场确认，
-待治本）**：fusion+x11 下拖拽子窗边框，OHOS 子窗缩放只是渲染拉伸，几何
-不回写 guest——`NotifyToplevelResize` 找不到 xdg resource 直接早退
-（wayland_server.cpp:470），x11 路线缺 host→wine 的
-`wlr_xwayland_surface_configure` 应答通道（现有几何流只有 wine→host
-单向）。根治落点在 wayland_server 的 x11 分支补 configure 回写。
-**与 GAP2（§2.15 多 app 重叠输入错投）解耦（2026-10-11 定论）**：两者
-独立——多 app 重叠路由由 X 堆叠裁决（GAP2 已修，注入前 restack），
-几何写回单独不能修重叠（两 rect 都含重叠点，命中仍归堆叠）；写回改善
-的是非重叠区的 hover/命中保真与拖动后视觉一致。本缺口按原方向另行
-治本，不因 GAP2 关闭而消解。
+**OHOS 拖拽 resize / 拖动承载窗在 x11 路线不回写 wine（M4a 模型缺口，
+2026-10-11 任务 #135 治本闭合）**：原文（症状 + 根因）：fusion+x11 下拖拽
+子窗边框，OHOS 子窗缩放只是渲染拉伸，几何不回写 guest——
+`NotifyToplevelResize` 找不到 xdg resource 直接早退（wayland_server.cpp
+原 L470）；位置半边全仓无通道。修前实录 `.temp/geom/r1-*`（边缘拉伸后
+win32 事实原地不动 640x480/sizes=0；同会话 `[NAPI] notifyToplevelResize`
+75 条 vs `[MW] NotifyToplevelResize` 0 条）。**治本（全部落我方层，
+thirdparty/wine 零改动）**：① 尺寸半边——`NotifyToplevelResize` 入口加
+x11 分支（门 = `x11_toplevel_active() ∧ x11_toplevel_owns(id)`，防路线
+旗标与 id 空间错配误劫 wayland）；② 位置半边——新 NAPI
+`notifyToplevelMove`（ArkTS 上报点 = FWM subWindow / WWA mainWindow 的
+`windowRectChange`，值 = windowRect 原点 / effectiveScale，gated
+`DisplayRouteService.isX11()`）。两半同纪律：napi 线程只入队 → loop
+线程 dispatch → `wlr_xwayland_surface_configure`（x11_toplevel.c
+geom_writeback）；门禁 = 与 xs 现值全等跳过（防回声第一道门，实测 860
+条 NAPI 上报中 432 条被无变化跳过）+ minimized 跳过 + echo 抑制
+（handle_request_configure 对 ε=2px 内回声只发协议应答、不上送 resize
+事件）。**实测（真机 192.168.1.5，2026-10-11 18:01-18:24 冷启同代际；
+证据 `.temp/geom2/` + 归档 `build/automation-logs/job-r20261011-180034`
+与 `job-r20261011-181026`）**：边缘拉伸 +151 逻辑 → win32 事实 640→790、
+WM_SIZE 计数 56，帧为新尺寸重排（白十字臂宽 22px 物理 ≈ 新帧 24px；
+拉伸指纹应 28-30px，对照修复前 r1-01=28px）；顶条拖动 +100,+100 →
+win32 原点 100→200 精确（WM_MOVE 计数 51）；4 轮往返收敛精确、空闲
+25s 计数冻结、echo 抑制 0；wine 侧 `+x11drv` 轮 108 条 config 采纳行走
+(104,130)-(736,576)→(204,230)-(986,676) 与回写逐拍对应、drag 期间
+`requesting config` 0 条（无回写风暴）。回归 fusion 3/3、core 3/4
+（opengl-x86=D49 已知）；**wayland 对照轮**（同探针同拖拽编排，route=
+wayland）回写标记 0 行 + geomA 全零（隔离红线实测；wayland 虚拟桌面态
+无承载窗 resize 手势、surface 事件链 0 条——该拓扑下回写通道无触发面）。
+**与 GAP2（§2.15 多 app 重叠输入错投）解耦维持**：几何写回不修重叠
+路由（命中仍归 X 堆叠，GAP2 侧 restack 仍必要）；写回改善的是非重叠区
+的 hover/命中保真与拖动后视觉一致。
 
 **三个执行时核实点结论（plan Self-Review #2 的实测沉淀）**：
 - OR 窗 associate 行为：wlroots 对 OR 窗与受管窗同样发 associate/
@@ -376,7 +397,9 @@ runId manual / build/m4d-oob-inline.json 编排）；notepad 上下文菜单
   - 指针：按窗注入只决定局部坐标 + 目标 surface；X 投递由**服务端
     hit-test（X 窗树/堆叠）** 裁决（xwayland-input.c `dispatch_absolute_motion`:
     root 点 = focus_window 的 X 窗位置 + local）。x11 fusion 下各 app 的
-    X 窗都钉在创建位（host→wine 几何回写缺失, §2.14）→ rect 恒重叠 →
+    X 窗都钉在创建位（当轮 host→wine 几何回写缺失, §2.14——该缺口已由
+    #135 治本；本节结论不依赖它：两窗几何本就可能重叠，命中仍归堆叠）→
+    rect 恒重叠 →
     堆叠决定命中；而 **X 堆叠无人同步**：wine 跨进程不 restack（X z 序
     归 WM 管）、xwm 把堆叠留给合成器（map_notify 对新窗还 restack(BELOW),
     xwm.c:1609）——即**宿主 WM 职责缺口**（M4 多窗实现了呈现半边 + 注入
@@ -425,7 +448,7 @@ runId manual / build/m4d-oob-inline.json 编排）；notepad 上下文菜单
 | 标题栏装饰 | 无系统装饰，wine 像素自带（无 caption; wayland 有 winewayland 自绘 CSD） | **自绘顶条落地（#129, 2026-10-11）**：几何补偿式（承载窗高 +40px 物理 = 20 逻辑px×scale，XComponent 下移同量、surface 保持 wine 尺寸 → 输入零换算），标题 + min/max/close 三键 + 拖动（startMoving, f43c764 同通道）。系统装饰在本形态结构性不可得：官方文档（非自由窗口态子窗恒沉浸式，decorEnabled 仅自由窗口态生效；@ohos.window.d.ts L1847/L8469）+ decorEnabled 三水实验（.temp/decor/）。三键走 M4b 动作链（min=FWM.hide / max↔restore / close=WM_DELETE_WINDOW）；菜单 popup 定位 +strip 补偿（PopupWM.positionEntry，实测 move ok (8,138)） |
 | 双击标题栏最大化 | N/A（无 caption） | 同构 N/A（非新缺口） |
 | 物理滚轮 | **同断（#132 实测）**：本 build 轴事件到不了任何 ArkUI 节点——物理滚轮非 wayland 可用项，两路线同灭（平台级，见下） | **双指滚动已通**（M4d review gate：sendScrollEvent 补 x11 multimode 轴分支，motion 先行；真机 7 步注入 = 7 次 ButtonPress 一一对应）。物理滚轮 = 平台断点（#132 定界）：轴事件送达承载窗（`HandleInputEvent wid:… ac:5/6/7`）但 ArkUI 命中链在任意坐标找不到节点（探针零回调 + TTHRTI 空 + 系统 app 同灭），与注入口无关，见下「物理滚轮平台断点」 |
-| 边缘拖拽 resize | 系统拉伸 + xdg 回写 wine 几何 | 系统拉伸只改渲染，几何不回写（§2.14 已知：缺 host→wine configure 通道，待治本） |
+| 边缘拖拽 resize | 系统拉伸 + xdg 回写 wine 几何 | **已治本（#135, 2026-10-11）**：x11 分支 `wlr_xwayland_surface_configure` 回写，win32 事实跟随（640→790 拉伸、原点 ±0 拖动）+ 重排帧实证；拖动承载窗位置半边（新 NAPI notifyToplevelMove）同轮补齐；wayland 对照零变化（详见 §2.14） |
 | 点击置顶 | raiseToAppTop + raiseWindowGroup | 同 incumbent；X 侧堆叠同步已补齐（GAP2 #131：注入前 restack，见上「破案闭合」） |
 | subWindow 上限 | 表驱动无显式上限 | 6 窗并发实测无上限表现（创建/渲染/置顶/交互全正常）；wayland incumbent 无可比数据 |
 
