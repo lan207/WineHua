@@ -445,6 +445,25 @@ struct DesktopPage {
                 displayRouteNapi.injectDisplayRouteMotion(nx, ny, 1);
               }
             } else if (ev.type === TouchType.Up || ev.type === TouchType.Cancel) {
+              // R2-02 (复核): 系统取消 (截屏/通知下拉等手势打断) 只收尾, 不注入
+              // 点击 — 修复前 Up||Cancel 同枝, 取消也按 Up 语义点击, 且在 400ms
+              // 窗口内可触发按首击坐标的双击重放。取消的触控不是点击, 也不能与
+              // 更早的点击跨试次重放 (打断 lastTap 序列)。wayland 分支 Cancel
+              // 同样不点击 (:676), 本处对齐。
+              if (ev.type === TouchType.Cancel) {
+                const hadGesture = this.x11Dragging || this.x11Pending;
+                if (this.x11Dragging) {
+                  displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_LEFT, false);
+                }
+                this.x11Dragging = false;
+                this.x11Pending = false;
+                if (hadGesture) {
+                  this.x11LastTapMs = 0; // 取消打断双击序列
+                }
+                hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] X11-CANCEL no-click gesture=%{public}s',
+                  hadGesture ? 'yes' : 'no');
+                return;
+              }
               if (this.x11Dragging) {
                 displayRouteNapi.injectDisplayRouteButton(DesktopPage.X11_BTN_LEFT, false);
                 this.x11Dragging = false;
