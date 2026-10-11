@@ -3,7 +3,7 @@ import testNapi from 'libentry.so';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { BusinessError, deviceInfo } from '@kit.BasicServicesKit';
 import { inputMethod } from '@kit.IMEKit';
-import { SegmentButton, SegmentButtonOptions } from '@kit.ArkUI';
+import { SegmentButton, SegmentButtonOptions, promptAction } from '@kit.ArkUI';
 import { WineEnvService } from '../service/WineEnvService';
 import { ProcessService, ProcessInfo } from '../service/ProcessService';
 import { WineWindowManager } from '../service/WineWindowManager';
@@ -209,9 +209,11 @@ struct Index {
           this.desktopModeSel = [modeSel];
         }
       }
-      // 显示路线镜像: 会话已应用路线 (want 覆盖 > 持久化 > 缺省) —
-      // 选中高亮与本会话实际运行一致; 设置页更改只落盘, 冷启动生效
-      const routeIdx = DisplayRouteService.getInstance().routeName() === ROUTE_X11 ? 0 : 1;
+      // 显示路线镜像: 以持久化选择值 (preferredRoute) 为准 — 本会话已应用值
+      // (routeName) 在「已选待重启」窗口内落后于选择, 用它回翻高亮会把刚选
+      // 的项跳回旧值 (选 Wayland 后高亮弹回 X11, 复核 #136); 运行中/待生效
+      // 的差异由 routeRestartHint 表达, 与 selectRoute 的选中语义同源
+      const routeIdx = DisplayRouteService.getInstance().preferredRoute() === ROUTE_X11 ? 0 : 1;
       if (this.routeSel[0] != routeIdx) {
         this.routeSel = [routeIdx];
       }
@@ -279,12 +281,16 @@ struct Index {
   // 显示路线切换 (实验对照): 落盘持久化, 冷启动 (完全退出重开) 后生效 —
   // 运行中会话的路线裁决不变 (EntryAbility 冷启动解析一次)
   private selectRoute(route: string): void {
-    if (route == DisplayRouteService.getInstance().routeName()) {
+    // 早退判据必须是持久化选择值 (preferredRoute) 而非已应用值 (routeName):
+    // x11 会话里选 Wayland 后 routeName 仍是 x11, 用 routeName 判「已选中」
+    // 会把「选回 X11」的一击吞掉 (需两次冷启才切回, 复核 #136)
+    if (route == DisplayRouteService.getInstance().preferredRoute()) {
       return;
     }
     DisplayRouteService.getInstance().setPreferred(route);
     this.routeSel = [route == ROUTE_X11 ? 0 : 1];
-    this.routeRestartHint = true;
+    // 待生效提示只在 选择值 != 会话已应用值 时成立 (选回当前运行值 = 无事发生)
+    this.routeRestartHint = (route != DisplayRouteService.getInstance().routeName());
   }
 
   // 设置项可见性: Pad/PC 可切 (phone 恒虚拟桌面, 无多窗口模式可切)
@@ -318,7 +324,12 @@ struct Index {
         value: '重置',
         fontColor: '#ff5555',
         action: () => {
-          this.env.doReset();
+          // F2 (复核): doReset 忙时静默 return false (防重入) —— 用户视角是
+          // 「点了没反应」。给可感知的拒绝反馈, 不排队重试 (忙态是瞬态,
+          // 是否重来由用户决定)。
+          if (!this.env.doReset()) {
+            promptAction.showToast({ message: '引擎操作进行中，请稍后再试' });
+          }
         }
       }
     });
