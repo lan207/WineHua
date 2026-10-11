@@ -394,6 +394,28 @@ popupSeq.ownerClicked=true（oob-result.json 引用见下方 §2.14 更正）；
   R2-02 Cancel 不点击已修；**R2-01「双击目标同一性」延期**——作用面仅虚拟
   桌面（fusion 每窗一页天然同目标）且该模式 ArkTS 无按窗数据，方向 =
   host 侧 X 命中查询（xwm xcb），已立项；F3B（epoch）随批。
+- **R2-01 设计冻结（2026-10-12 固化；源 = .temp/review 复核全文 + 执行会话
+  分析，.temp 清理后以本条为准）**：
+  - 缺陷（CONFIRMED，r2-code R2-01）：x11 双击判据缺目标同一性（wayland
+    有 `pendingTl === lastTapTl`）——A/B 两窗击点相距 <30px 且间隔 ≤400ms
+    → 误判双击：B 的点击被吞、按 A 首击坐标重放；后果 = B 零点击 / A 被误开。
+  - 数据源勘误（已核实）：FWM 矩形表不可用（entries 仅 fusion 填充；虚拟
+    桌面为 root 单例）。数据源 = host 侧 X 命中查询。
+  - 冻结方案：display_route napi 增同步查询 `queryXWindowAt(fx,fy)`——
+    xcb 连接取 xwm（`wlr_xwayland_get_xwm_connection`，GAP2
+    SyncXInputFocus 先例）或专用连接（互斥串行化）；一次
+    `XTranslateCoordinates(root → 桌面承载窗, fx, fy)` 拿 app 窗级命中
+    （返回桌面窗的直系子窗 id；虚拟桌面下桌面窗满屏于 root 下）。
+    fx/fy 与注入路径同空间，换算与 `inject_motion` 同源（防经典坐标错位）。
+  - ArkTS 门（DesktopWindow.ets x11 分支）：isDouble 追加
+    `target === lastTapTarget`——两击同目标才重放；不同 → 各按本方坐标
+    单击（对齐 wayland 语义）。「均为桌面窗」（图标双击）视为同目标 ✓。
+    查询失败（-1）回退现行 time+slop（零回归姿态）；wayland 分支不动。
+  - 时序基石：Down 必发 motion（DesktopWindow.ets:423）；本地 X socket
+    往返 <1ms ≪ Down-Up 间隔。
+  - 验收判据（先于实现确定）：① 跨窗 <30px 先后点（≤400ms）= 各收单击、
+    无重放（wayland 对照）② 同窗/图标双击照常（#137 回归面，uitest 复刻）
+    ③ 查询失败路径 = 现行行为（xcb 不可用对照）④ core 不回归。
   **部署验证（2026-10-11 夜，自动化，设备 .5）**：全新安装冷启 ×2 均干净
   （starting:wineboot→ready ≈55s，零 [AUTO-RETRY] —— D47 彩票未中，[AUTO-
   RETRY] 链验证待故障注入）；core ×2 = 3/4（唯一 FAIL = D49 已知签名 #118，当晚判定修正后重判 4/4，见下）；
