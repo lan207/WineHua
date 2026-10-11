@@ -245,20 +245,20 @@ crash 移进跑批中段现形）。修复 = 墓碑槽 + 复用（entry 地址�
 owner 可挂 → 什么都不渲染——探针窗样式回归 popup_overflow 同款托管样式
 （本栈非客户区不绘制，视觉判定不受标题栏影响）。
 
-**越界点选悬案（未闭合，移交 M4d）**：越界（整条菜单越出窗 rect 底缘）
-场景下点击菜单项，wine 收到按钮事件且菜单关闭，但不产生 WM_COMMAND——
-探针以 command-item2 自证落空。四轮控制变量全部排除：几何（窗界内对照
-同败）、owner 先导点击（两段式复刻 notepad 流同败）、SetForegroundWindow
-前置（对齐 e2e_menu 同款同败）、坐标换算（OHOS 子窗尺寸 = w×scale 精确，
-guest local 恒在目标项区内）。关键证据（wine +event trace）：点击的
-Enter/Motion/Press/Release 四事件送达 explorer 桌面窗（hwnd 0x10068 /
-X 1000003）而非探针菜单窗；wine 菜单 grab 收到点击（菜单关闭）但命中
-判定按错误位置处理。收敛位置：Xwayland rootless 对 OR 菜单窗的
-wl_pointer enter 路由 / X 堆叠 hit-test（fusion 无 scene 布局器，X 堆叠
-归 wine+explorer），或自研探针消息循环形态与 wine 菜单跟踪的交互差异
-（唯一全绿组合 = notepad 真实程序）。影响面：窗界内菜单（notepad 形态）
-不受影响；真实应用的越界菜单需在真实程序上复测后才能定界——探针形态
-的失败不能直接归因产品链路。复现资产：`smoke/jobs/popup-overflow-x11.json`
+**越界点选悬案（已闭合，M4d 破案——见 §2.15；以下为 M4c 阶段记录）**：
+越界（整条菜单越出窗 rect 底缘）场景下点击菜单项，wine 收到按钮事件且
+菜单关闭，但不产生 WM_COMMAND——探针以 command-item2 自证落空。四轮控制
+变量全部排除：几何（窗界内对照同败）、owner 先导点击（两段式复刻
+notepad 流同败）、SetForegroundWindow 前置（对齐 e2e_menu 同款同败）、
+坐标换算（OHOS 子窗尺寸 = w×scale 精确，guest local 恒在目标项区内）。
+关键证据（wine +event trace）：点击的 Enter/Motion/Press/Release 四事件
+送达 explorer 桌面窗（hwnd 0x10068 / X 1000003）而非探针菜单窗；wine
+菜单 grab 收到点击（菜单关闭）但命中判定按错误位置处理。当时收敛到
+「Xwayland OR 菜单窗 enter 路由 / X 堆叠 hit-test」与「探针消息循环与
+wine 菜单跟踪交互差异」两说——**均被 M4d 推翻**：真因在我方 multimode
+注入口缺 motion 半边（按钮携带陈旧光标坐标，与 OR 路由/探针形态无关，
+§2.15）。影响面（M4c 时认定，现仍有效）：窗界内菜单（notepad 形态）
+不受影响。复现资产：`smoke/jobs/popup-overflow-x11.json`
 （`--desktop-mode fusion --display-route x11`，uitest 按物理坐标点选）。
 套件判定口径（Ruling）：自动判定只覆盖已验证行为（渲染/关闭链）——
 `fusion-popup-selection` 判定器对越界用例恒 SKIP 并注明移交，不做会假
@@ -289,9 +289,13 @@ PASS 的点选判据。负全局坐标（菜单越出屏幕左/上，RF#5 后半
 
 **遗留观察（不阻塞）**：① popup 用例的 byTitle owner 点击
 （ownerClicked）命中率不稳定（035938/040837 两轮均 false，菜单链不受
-影响——开关菜单不依赖它），待 M4d 与点选路由一并查；② fusion 套件
-跑批中段 crash 修复后，host 抓帧时序（missing-frame）成为新的间歇项
-（D35 家族新形态），单点复跑即可判绿。
+影响——开关菜单不依赖它）——**M4d review gate 处置（2026-10-11）：已随
+8a1e975 motion 修复闭合**。其不稳定与悬案同根因族（焦点不变时按钮携带
+陈旧光标坐标，命中判定错位）；修复后 M4d 探针轮 ownerClicked PASS
+（oob-result.json），当前构建复跑再证 PASS
+（fusion-r20261011-pad-regress4 popupSeq.ownerClicked=true）；
+② fusion 套件跑批中段 crash 修复后，host 抓帧时序（missing-frame）成为
+新的间歇项（D35 家族新形态），单点复跑即可判绿。
 
 ### 2.15 M4d 收口：x11 fusion Pad 承载贯通 + 越界点选悬案闭合（2026-10-11）
 
@@ -360,14 +364,52 @@ rect 重叠时，multimode 注入按 toplevelId 正确发出，X 侧却投给别
 | maximize | 全屏化 = resize 到显示尺寸（FWM.fullscreen） | 同 incumbent |
 | 标题栏装饰 | 无系统装饰，wine 像素自带（无 caption） | 同构；拖动由 ArkTS 顶条补位（f43c764，incumbent 的 wine move 请求链对无 caption 应用同样不触发） |
 | 双击标题栏最大化 | N/A（无 caption） | 同构 N/A（非新缺口） |
+| 物理滚轮 | 物理滚轮 → winewayland 轴事件 | **双指滚动已通**（M4d review gate：sendScrollEvent 补 x11 multimode 轴分支，motion 先行；真机 7 步注入 = 7 次 ButtonPress 一一对应）。物理滚轮另卡在 ArkUI 层：轴事件送达承载窗（hilog `HandleInputEvent wid:… ac:5/6/7`）但 `onAxisEvent` 不触发（subWindow：AceInputTracking 无 Consumed；WWA：有 Consumed 仍无回调）——事件链断在 sendScrollEvent 之前，与注入口无关，待查（见下） |
 | 边缘拖拽 resize | 系统拉伸 + xdg 回写 wine 几何 | 系统拉伸只改渲染，几何不回写（§2.14 已知：缺 host→wine configure 通道，待治本） |
 | 点击置顶 | raiseToAppTop + raiseWindowGroup | 同 incumbent；新增：X 侧堆叠不同步（多 app 重叠输入错投，见上） |
 | subWindow 上限 | 表驱动无显式上限 | 6 窗并发实测无上限表现（创建/渲染/置顶/交互全正常）；wayland incumbent 无可比数据 |
 
+**M4d review gate 收尾（2026-10-11，final-review I1/I2/Minor 落地）**：
+
+- **I1 滚轮接线（修复 + 真机实证）**：`SendScrollEvent` napi 补 x11 multimode
+  分支（pointer/key 同款分流），新增 `wl_ohos_input_multimode_axis` /
+  `x11_toplevel_input_axis(_dispatch)`——axis 不携带位置，投递前按 8a1e975
+  同类纪律先 enter/motion+frame 定位到滚动点；discrete 走 v120 格语义
+  （`display_input_inject_axis`），步进归一化 ±1 格（DesktopWindow.ets
+  同款）。真机 A/B：修复前双指滚动后 wine +event trace 全程零
+  Button4/5（439k 行）；修复后 7 步注入 = 7 次 ButtonPress 一一对应、
+  每步 MotionNotify 先行，落 notepad 的 X 窗。证据
+  `.temp/m4drev/wine_stderr_{prefx,postfx}.log`。
+- **物理滚轮断点（新记档，待查）**：轴事件经系统 hover 路由可达承载窗
+  （`HandleInputEvent wid:885 ac:5/6/7`），但 ArkUI 不派发给 XComponent 的
+  `onAxisEvent`——subWindow 形态 AceInputTracking 无 Consumed；WWA
+  （`winehua.fusionHost ability`）形态有 Consumed 仍无回调。两条链都断在
+  `sendScrollEvent` 之前，非本次注入口问题；winewayland incumbent 的
+  DesktopWindow.onAxisEvent 亦未单独验证过（smoke wheel 走
+  injectDisplayRouteAxis 直入口）。治本方向：查 ArkUI 对 subWindow/自由窗
+  轴事件的派发条件（hover 命中链 + 窗口焦点态）。
+- **I2 PC 形态复跑（证据刷新）**：调试键 `winehua.fusionHost` 原实现是死键
+  ——`AppStorage.set` 对从未 setOrCreate 的键是静默 no-op，跨设备强制从未
+  生效（本次 Pad 实测：带参冷启 FWM 仍建 subWindow）；已改 setOrCreate。
+  修复后带 `--extra-ps "winehua.fusionHost ability"` 跑 fusion 套件
+  （fusion-r20261011-pc-ability，MANAGED MODE explicit=fusion）：
+  result-json / fusion-clicks（a=1 b=0）/ fusion-state / popup 两用例全
+  PASS；唯一 FAIL = visual:fusion-window-a，因 ability 承载下窗 B 以全屏
+  自由窗叠在窗 A 上（Pad 模拟 PC 形态的布局差异，真 PC/2in1 自由窗级联
+  不重叠；点击/状态不受 z 序影响）。三形态对账 PC 行证据据此刷新。
+- **Minor**：DRAG_STRIP_PX 硬编码 40（scale-2 特例）改为 20×getEffectiveScale
+  现算（review Minor#3）；其余 Minor（#4/#5/#6/#7）记 ledger deferred 不修。
+- **自动化设施**：`smoke.py run` 新增 `--extra-ps`（附加冷启调试键）；
+  修复只带 `--job` 跑时套件档位不钉死的问题（suite 名取 CLI > job 声明，
+  否则全新安装按持久化默认落 virtual 桌面，fusion 用例全败、貌似 D35 间歇
+  ——本次 3 轮假阳性即此因）。
+
 **三形态对账更新（退役条件评估输入）**：x11 虚拟桌面 ✓（M3 起，前缀组
-持续守门）/ x11 PC 多窗 ✓（M4b：承载/状态面/popup 全绿）/ x11 Pad 多窗
-✓（M4d：本节）——**三形态硬前提全部达成**，自研窗口栈退役条件评估的
-事实基础齐备（退役评估本身 = 独立决策，输入见
+持续守门）/ x11 PC 多窗 ✓（M4b 承载/状态面/popup 全绿；2026-10-11 review
+gate 在当前构建复跑：fusionHost=ability 强制承载，功能面全绿——
+fusion-r20261011-pc-ability，唯一缺口为上页所述 Pad 模拟布局差异的视觉
+判定项）/ x11 Pad 多窗 ✓（M4d：本节）——**三形态硬前提全部达成**，
+自研窗口栈退役条件评估的事实基础齐备（退役评估本身 = 独立决策，输入见
 `docs/superpowers/specs/2026-10-07-display-route-x11-three-mode-gap-analysis.md`
 与本节限制清单）。
 
