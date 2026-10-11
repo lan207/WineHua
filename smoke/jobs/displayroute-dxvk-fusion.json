@@ -1,0 +1,13 @@
+{
+  "displayroute": true,
+  "displayrouteScript": false,
+  "suite": "displayroute-dxvk-fusion",
+  "params": {
+    "env": {
+      "WINEHUA_DISPLAY_ROUTE": "x11",
+      "DISPLAY": ":0",
+      "WAYLAND_DISPLAY": ""
+    }
+  },
+  "_note": "displayrouteScript=false (D4 教训, 同 x11-fusion job): fusion 多窗会话要产品级干净桌面 —— 注入脚本定时器 + xclient 测试窗不进会话。本守卫用例无注入需求。"
+}

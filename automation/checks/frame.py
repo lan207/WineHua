@@ -112,13 +112,11 @@ def validate_rgba_quadrants(image_path: Path, step: int = 4,
     }
 
 
-def validate_d3d11_cube(image_path: Path, step: int = 4,
-                        region: dict | None = None) -> dict:
-    """带深度/背景色差的彩色立方体（d3d11-cube-color-depth-v1）。"""
+def _cube_metrics(pixels, xgrid, ygrid, width, height, step: int = 4):
+    """立方体四谓词（d3d11-cube 与 fusion-cube 共用单源）：彩样量 / 三色桶 /
+    彩色包围盒占区 / 暗底占比。返回 (passed, metrics)。"""
     import numpy as np
 
-    pixels, xgrid, ygrid, width, height = _load_sampled_rgb(image_path, step,
-                                                            region)
     r = pixels[..., 0].astype(np.int16)
     g = pixels[..., 1].astype(np.int16)
     b = pixels[..., 2].astype(np.int16)
@@ -155,12 +153,7 @@ def validate_d3d11_cube(image_path: Path, step: int = 4,
         and box_height > (height * 0.08)
         and dark_count > (sample_count * 0.03)
     )
-
-    return {
-        "schemaVersion": 1,
-        "status": "PASS" if passed else "FAIL",
-        "validator": "d3d11-cube-color-depth-v1",
-        "image": str(image_path),
+    metrics = {
         "width": width,
         "height": height,
         "coloredSamples": colored_count,
@@ -169,6 +162,79 @@ def validate_d3d11_cube(image_path: Path, step: int = 4,
         "activeColorBuckets": active_buckets,
         "colorBuckets": {name: int(value) for name, value in buckets.items()},
         "coloredBounds": {"x": min_x, "y": min_y, "width": box_width, "height": box_height},
+    }
+    return passed, metrics
+
+
+def validate_d3d11_cube(image_path: Path, step: int = 4,
+                        region: dict | None = None) -> dict:
+    """带深度/背景色差的彩色立方体（d3d11-cube-color-depth-v1）。"""
+    pixels, xgrid, ygrid, width, height = _load_sampled_rgb(image_path, step,
+                                                            region)
+    passed, metrics = _cube_metrics(pixels, xgrid, ygrid, width, height, step)
+    return {
+        "schemaVersion": 1,
+        "status": "PASS" if passed else "FAIL",
+        "validator": "d3d11-cube-color-depth-v1",
+        "image": str(image_path),
+        **metrics,
+    }
+
+
+def validate_fusion_cube(image_path: Path, region: dict | None = None) -> dict:
+    """fusion 多窗模式的 dxvk 立方体出图（fusion-cube-v1）。
+
+    fusion 下立方体是独立 OHOS 窗（屏幕位置由窗管决定，host 无 preview-rect
+    可裁，与 §2.4 单画布场景的本质区别）—— 全屏采样后自定位：取「高饱和
+    彩色样本」的二维密集带（_dense_band）。旋转渐变立方体的彩样密度远高于
+    屏上零散彩块（按钮/图标/marker），密度阈值把它们排除；再按带裁剪重采样，
+    复用 _cube_metrics 四谓词。诱饵防御：即使彩块成带，单色块的三色桶与
+    彩样量两条谓词也判不过（合成自测 decoy 形态）。region 参数保留不用
+    （fusion 无区域裁切来源，形态即自定位）。"""
+    import numpy as np
+
+    pixels, xgrid, ygrid, width, height = _load_sampled_rgb(image_path, step=8)
+    r = pixels[..., 0].astype(np.int16)
+    g = pixels[..., 1].astype(np.int16)
+    b = pixels[..., 2].astype(np.int16)
+    maximum = np.maximum(np.maximum(r, g), b)
+    minimum = np.minimum(np.minimum(r, g), b)
+    colored = (maximum > 100) & ((maximum - minimum) > 55)
+    if not colored.any():
+        return {"schemaVersion": 1, "status": "FAIL", "validator": "fusion-cube-v1",
+                "image": str(image_path),
+                "message": "无高饱和彩色样本（窗未出图/全黑全白）"}
+    band_x = _dense_band(xgrid[colored])
+    band_y = _dense_band(ygrid[colored])
+    if band_x is None or band_y is None:
+        return {"schemaVersion": 1, "status": "FAIL", "validator": "fusion-cube-v1",
+                "image": str(image_path),
+                "message": f"彩色样本无密集带 x={band_x} y={band_y}"}
+    crop = {"x": int(band_x[0]), "y": int(band_y[0]),
+            "width": int(band_x[1] - band_x[0]) + 8,
+            "height": int(band_y[1] - band_y[0]) + 8}
+    crop["x"] = min(crop["x"], width - 1)
+    crop["y"] = min(crop["y"], height - 1)
+    crop["width"] = min(crop["width"], width - crop["x"])
+    crop["height"] = min(crop["height"], height - crop["y"])
+    # 绝对尺寸门 (合成自测 small-cube 形态): 带内谓词的「包围盒 > 8%」基准是
+    # 带自身 —— 小彩块 (marker 类) 自证式通过。此处按全屏 8% 兜底 (与
+    # d3d11-cube 的绝对尺寸谓词同量纲)。
+    if crop["width"] < width * 0.08 or crop["height"] < height * 0.08:
+        return {"schemaVersion": 1, "status": "FAIL", "validator": "fusion-cube-v1",
+                "image": str(image_path),
+                "message": f"彩色密集带过小 (全屏 8% 门): {crop}",
+                "locateBand": crop}
+    pixels, xgrid, ygrid, cw, ch = _load_sampled_rgb(image_path, step=4,
+                                                     region=crop)
+    passed, metrics = _cube_metrics(pixels, xgrid, ygrid, cw, ch, step=4)
+    return {
+        "schemaVersion": 1,
+        "status": "PASS" if passed else "FAIL",
+        "validator": "fusion-cube-v1",
+        "image": str(image_path),
+        "locateBand": crop,
+        **metrics,
     }
 
 
@@ -510,6 +576,7 @@ VALIDATORS.update({
     "fusion-window-a": validate_fusion_window_a,
     "fusion-window-b": validate_fusion_window_b,
     "fusion-popup-menu": validate_fusion_popup_menu,
+    "fusion-cube": validate_fusion_cube,
 })
 
 

@@ -232,7 +232,8 @@ def visual(ctx: dict) -> dict:
     # 决定, host 无 preview-rect 可裁) —— 跳过 §2.4 的 region 门。M4c-T4
     # popup 菜单判定同形态 (popup 子窗位置 = 父窗原点+off×scale, host 侧
     # 同样无矩形可裁)。
-    fusion_locating = validator.startswith(("fusion-window", "fusion-popup"))
+    fusion_locating = validator.startswith(("fusion-window", "fusion-popup",
+                                            "fusion-cube"))
     if ((result.get("metrics") or {}).get("expectedRoute")) == "x11" and not fusion_locating:
         region = _load_preview_rect(ctx.get("run_dir"))
         if region is None:

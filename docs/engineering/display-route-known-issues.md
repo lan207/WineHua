@@ -146,6 +146,18 @@ DesktopAbility 画布），§2.9/D45 的「退出桌面」类判据与
 closeX11Canvas 路径不适用——fusion 会话的清理语义 = 最后一个承载窗
 销毁即回主页面。后续在 fusion 会话上复用 D45 判据会得到假 FAIL。
 
+**判据缺口补记（2026-10-11 实测，r20261011-225150）**：core 的
+opengl 两项 displayed 门依赖虚拟桌面画布发布的 display-seq
+（graphics_smoke main.c 的 "no compositor display sequence observed"
+观察），fusion 下该发布源不存在 → 探针自报 FAIL（当轮 guest-frames
+`bindings=1`、探针 624 帧走 fusion 通路后被 detach —— 渲染正常，判据
+缺源）。设备持久化的 desktopMode（UI 选择持久化，tablet 缺省 virtual）
+会被未声明 desktopMode 的套件静默继承：用户会话选过「多窗口模式」后，
+未钉档的 core 即在该形态下假 FAIL。处置：core / displayroute-dxvk 两套
+件已钉 `"desktopMode": "virtual"`（各带 _desktopMode_note 说明依赖）；
+其余未钉套件审计为待办。类推约束：（route × backend × desktopMode）三
+元组每个未钉死的维度都是一个「继承设备现场」的假 PASS/FAIL 面。
+
 **explorer 桌面窗处置（M4b Task-0 决策 = 接受）**：managed 模式
 user32 `get_desktop_window` 自动 spawn 的 explorer /desktop 桌面窗
 （class = atom #32769，`explorer/desktop.c:40`）会作为普通承载窗进入
