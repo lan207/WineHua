@@ -980,7 +980,20 @@ void wl_ohos_input_multimode_pointer(struct wlr_xwayland_surface *xs,
         return;
     }
     if (action == ACT_PRESS || action == ACT_RELEASE)
+    {
+        /* M4d (数据点①/② 实测): 按钮前必须过 motion —— 完整 wire 序列
+         * (D15) 的 motion 半边在本口缺失。焦点 surface 未变时原实现直发
+         * button: Xwayland 光标位置停在上一条 motion, 且 wine 菜单跟踪持
+         * X grab 时 enter 被抑制 (X 侧无 EnterNotify, 光标不更新), 按钮带
+         * 陈旧坐标经 grab 重定向落到菜单窗 → 命中判定全错: 真机 2026-10-11
+         * (a) 外点 dismiss: 坐标恰在菜单 rect 内(锚点) → 菜单不关闭;
+         * (b) 越界菜单项: 落点错位 → 关菜单无 WM_COMMAND (M4c §2.14 悬案
+         * 的收敛面)。motion 补齐后按钮按真实落点投递 (grab 重定向下坐标
+         * 同样为真)。motion 必配 frame (D9)。 */
+        wlr_seat_pointer_notify_motion(g_seat, NowMsec(), lx, ly);
+        wlr_seat_pointer_notify_frame(g_seat);
         display_input_inject_button(button, action == ACT_PRESS);
+    }
 }
 
 void wl_ohos_input_multimode_key(struct wlr_xwayland_surface *xs,
