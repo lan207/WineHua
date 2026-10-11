@@ -271,6 +271,11 @@ PASS 的点选判据。负全局坐标（菜单越出屏幕左/上，RF#5 后半
 （wayland_server.cpp:470），x11 路线缺 host→wine 的
 `wlr_xwayland_surface_configure` 应答通道（现有几何流只有 wine→host
 单向）。根治落点在 wayland_server 的 x11 分支补 configure 回写。
+**与 GAP2（§2.15 多 app 重叠输入错投）解耦（2026-10-11 定论）**：两者
+独立——多 app 重叠路由由 X 堆叠裁决（GAP2 已修，注入前 restack），
+几何写回单独不能修重叠（两 rect 都含重叠点，命中仍归堆叠）；写回改善
+的是非重叠区的 hover/命中保真与拖动后视觉一致。本缺口按原方向另行
+治本，不因 GAP2 关闭而消解。
 
 **三个执行时核实点结论（plan Self-Review #2 的实测沉淀）**：
 - OR 窗 associate 行为：wlroots 对 OR 窗与受管窗同样发 associate/
@@ -309,6 +314,16 @@ fusion 套件 3/3（job-r20261011-103109，multimode 注入改动后的回归轮
 其间 r20261011-102439 轮 1/3 = 间歇：byTitle 三用例全部 "title not
 synced" + popup 视觉判定字体条带漏检，同构建复跑全绿——D35 家族口径，
 单点复跑判绿，间歇机理未查）。截图/日志归档 `.temp/m4d-*`。
+
+**GAP2 追加收口（任务 #131, 2026-10-11 晚）**：M4d 记录的多 app X rect
+重叠输入错投**治本闭合**（根因/修复/证据详见本节末「多 app 重叠输入错
+投 —— 破案闭合」）。回归门禁（含修复构建）：fusion **3/3**
+（fusion-r20261011-154809，popup 两用例含菜单点击链在案）、core **3/4**
+（core-r20261011-155005，opengl-x86 = D49 已知签名，无新增失败）；
+wayland 对照轮（共享文件 display_input.c 改动）：点击+打字正常，
+GAP2 标记日志 0 行（改动 gated 于 x11 multimode，wayland 侧逐项零变化）。
+证据 `.temp/gap2/`；SDD ledger `.superpowers/sdd/2026-10-11-x11-gap2-overlap-input/`；
+mini-plan `docs/superpowers/plans/2026-10-11-x11-gap2-overlap-input.md`。
 
 **§2.14 越界点选悬案闭合（根因 + 修复 8a1e975）**：multimode 注入口
 （`wl_ohos_input_multimode_pointer`）的 wire 序列缺 motion 半边——
@@ -354,18 +369,53 @@ runId manual / build/m4d-oob-inline.json 编排）；notepad 上下文菜单
   KeyEventInputSubscribeManager 截走（app 收不到 F4 down）。组合键排障
   须物理键盘。
 
-**新发现（多 app 重叠输入错投，待治本）**：两个以上 wine 应用且 X
-rect 重叠时，multimode 注入按 toplevelId 正确发出，X 侧却投给别的窗：
-- 指针：X 命中测试按 **X 堆叠 + X 窗位置**——OHOS 拖动只移承载窗
-  （host→wine 几何回写缺失，§2.14 已知），wine X 窗钉在创建位 → X
-  rect 恒重叠 → 按 X 堆叠命中（激活让渡引发 wine 自我 raise）。
-- 键盘：FocusClient(wordpad) 的 activate + keyboard enter 均执行
-  （hilog "keyboard enter" 在案），X KeyPress 仍落旧窗——X 侧输入
-  焦点未随 xwm activate 切换，待深查（xwm SetInputFocus 与 wine
-  WM_TAKE_FOCUS 模型交互）。
+**多 app 重叠输入错投 —— 破案闭合（GAP2 #131, 2026-10-11）**：
+修复前实录（notepad×2 完全重叠, 注入目标 B 落 A）与根因、修复、实测见下。
+
+- **根因（两半, 机制级）**：
+  - 指针：按窗注入只决定局部坐标 + 目标 surface；X 投递由**服务端
+    hit-test（X 窗树/堆叠）** 裁决（xwayland-input.c `dispatch_absolute_motion`:
+    root 点 = focus_window 的 X 窗位置 + local）。x11 fusion 下各 app 的
+    X 窗都钉在创建位（host→wine 几何回写缺失, §2.14）→ rect 恒重叠 →
+    堆叠决定命中；而 **X 堆叠无人同步**：wine 跨进程不 restack（X z 序
+    归 WM 管）、xwm 把堆叠留给合成器（map_notify 对新窗还 restack(BELOW),
+    xwm.c:1609）——即**宿主 WM 职责缺口**（M4 多窗实现了呈现半边 + 注入
+    瞄准，路由状态同步半边未做）。实测：点 B 承载窗（tl=17）的
+    ButtonPress 全落 A 的 X 窗（0x10060/e00003），B 自激活（wine
+    foreground）后 X 顶仍是 A。
+  - 键盘（独立第二因）：KeyPress 走 DIX 输入焦点；xwm activate 对 wine
+    （ICCCM globally-active, WM_TAKE_FOCUS 模型）发的消息恒带
+    `data32[1] = CurrentTime = 0`，wine 的接受门（winex11 event.c:738 +
+    window.c:2146, 时间戳须新于前台窗 WM_STATE 事件时间）对 time=0
+    恒拒绝（wine trace WARN 原文在案）→ **合成器驱动焦点切换对 wine
+    结构性不可达**；wine 自接受路径（set_focus）在有 EWMH 时同样只做
+    XSetInputFocus（不动 win32 前台）。
+- **修复（全在我方侧代码, thirdparty 零改动）**：
+  - F1 指针/轴：注入前 X 堆叠回写（`x11_toplevel.c mm_restack_target` →
+    `wlr_xwayland_surface_restack(ABOVE)`, click-to-raise; 不变式 = root
+    点按构造 ∈ 目标 X rect ∧ 目标在顶 ⇒ hit-test 必中目标）。
+  - F2 键盘：`display_input.c SyncXInputFocus` —— FocusClient 每次调用
+    （短路口前, wine 自置前台会漂移 X 焦点故须重断言）经 xwm 连接
+    `xcb_set_input_focus` 对齐目标（= wine 自接受路径同原语, 绕过
+    time=0 门）；门 = x11_toplevel_active()（虚拟桌面/wayland 零行为
+    变化）+ 非 OR + surface 在册。
+- **实测（真机, 修复前→后同场景对照）**：点击落点 错窗
+  `0xe00003` → 目标 `0xc00003`/`0x800003`（双向可切）；键盘同编排
+  KeyPress 错窗 → 目标窗（wine WARN 同签名但已被绕过）；截图字符各归
+  各窗；拖动后点击 / 纯键盘切换（顶条 tap→打字）/ 双指滚动全 PASS。
+  证据 `.temp/gap2/`（wine_trace_*）、SDD ledger
+  `.superpowers/sdd/2026-10-11-x11-gap2-overlap-input/`。
+- **与 §2.14 几何回写的关系（解耦结论）**：host→wine 几何回写缺失是
+  独立缺口——**几何写回单独不能修重叠路由**（重叠点仍由 X 堆叠裁决，
+  两 rect 都含该点；写回改善的是非重叠区 hover/命中保真）。两者各自
+  成立, 互不替代。
+- **Deferred**：raise 侧堆叠同步（ArkTS raiseWindowGroup → X restack）
+  不加——dispatch 侧"使用时不变式"已覆盖全部输入路由消费面, 且对 wine
+  自 restack/时序竞态免疫（判据只留一处实现）。**触发条件**：未来出现
+  X 堆叠的**非输入**消费方（如按 X 序渲染/弹窗定位）再评估补齐。
 - 影响面：多 wine 应用 X rect 重叠时的按窗输入路由；单应用与不重叠
-  布局不受影响。治本方向：raiseWindowGroup 同步 X 侧 restack + 键盘
-  焦点链排查。wordpad 真实应用轮次因此改道（探针轮已闭合悬案机制）。
+  布局不受影响。wordpad 类的真实应用多窗轮次不再受阻（M4d 改道的
+  原因已消除）。
 
 **Pad 承载近似限制清单（逐项对照 FusionWindowManager incumbent）**：
 | 项 | incumbent（wayland Pad） | x11 Pad（M4d 现状） |
@@ -376,7 +426,7 @@ rect 重叠时，multimode 注入按 toplevelId 正确发出，X 侧却投给别
 | 双击标题栏最大化 | N/A（无 caption） | 同构 N/A（非新缺口） |
 | 物理滚轮 | 物理滚轮 → winewayland 轴事件 | **双指滚动已通**（M4d review gate：sendScrollEvent 补 x11 multimode 轴分支，motion 先行；真机 7 步注入 = 7 次 ButtonPress 一一对应）。物理滚轮另卡在 ArkUI 层：轴事件送达承载窗（hilog `HandleInputEvent wid:… ac:5/6/7`）但 `onAxisEvent` 不触发（subWindow：AceInputTracking 无 Consumed；WWA：有 Consumed 仍无回调）——事件链断在 sendScrollEvent 之前，与注入口无关，待查（见下） |
 | 边缘拖拽 resize | 系统拉伸 + xdg 回写 wine 几何 | 系统拉伸只改渲染，几何不回写（§2.14 已知：缺 host→wine configure 通道，待治本） |
-| 点击置顶 | raiseToAppTop + raiseWindowGroup | 同 incumbent；新增：X 侧堆叠不同步（多 app 重叠输入错投，见上） |
+| 点击置顶 | raiseToAppTop + raiseWindowGroup | 同 incumbent；X 侧堆叠同步已补齐（GAP2 #131：注入前 restack，见上「破案闭合」） |
 | subWindow 上限 | 表驱动无显式上限 | 6 窗并发实测无上限表现（创建/渲染/置顶/交互全正常）；wayland incumbent 无可比数据 |
 
 **窗口装饰落地与关闭出路（任务 #129, 2026-10-11）**：
