@@ -1019,6 +1019,27 @@ static napi_value NotifyToplevelResize(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+// 任务 #135: 承载窗全局位置上报 (host→wine 几何回写的位置半边)。
+// ArkTS 在 windowRectChange 里调 (FWM 子窗 / WWA 主窗两承载路径), 值 =
+// guest 逻辑坐标 (windowRect 原点 / effectiveScale, 与创建摆放同式)。
+// 仅 x11 路线有绝对位置语义 —— wayland toplevel 位置归合成器布局器管,
+// 静默 no-op (native 侧 x11_toplevel_active 是权威门; 序列化/去重都在
+// 映射层: 值未变跳过、拖拽拍频只打应用日志)。
+static napi_value NotifyToplevelMove(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 3) return nullptr;
+    uint32_t tl; int32_t x, y;
+    napi_get_value_uint32(env, args[0], &tl);
+    napi_get_value_int32(env, args[1], &x);
+    napi_get_value_int32(env, args[2], &y);
+    if (x11_toplevel_active()) {
+        x11_toplevel_geometry_move(tl, (int)x, (int)y);
+    }
+    return nullptr;
+}
+
 // 拖拽缩放结束 (ArkTS windowRectChange DRAG_END): 发 configure(0,0) 清 RESIZING
 // 状态, Wine 保持当前尺寸 (0 尺寸 → SWP_NOSIZE) 并退出 size-move。
 static napi_value NotifyToplevelResizeEnd(napi_env env, napi_callback_info info) {
@@ -1198,6 +1219,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"setPointerLockCallback", nullptr, SetPointerLockCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyToplevelResize",nullptr,NotifyToplevelResize,nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyToplevelResizeEnd",nullptr,NotifyToplevelResizeEnd,nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyToplevelMove",nullptr,NotifyToplevelMove,nullptr, nullptr, nullptr, napi_default, nullptr},
         {"findToplevelAt",   nullptr, FindToplevelAt,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"raiseToplevel",    nullptr, RaiseToplevel,    nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setToplevelVisible", nullptr, SetToplevelVisible, nullptr, nullptr, nullptr, napi_default, nullptr},

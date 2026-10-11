@@ -1134,9 +1134,12 @@ export class WineWindowManager {
       // 锁光标 (相对模式) 的 host window: PC 每窗 Ability 都注册, 这里等效
       try { testNapi.registerHostWindow(subWin.getWindowProperties().id); } catch (_) { /* ignore */ }
       // 拖动/系统 resize → popup 实时重新定位 (画面跟随主窗, 不再拖后瞬移)
+      // + 任务 #135: 位置回写 guest (host→wine 几何回写的移动半边; 与
+      // popup 重排同一事件源, 判据/来源单点)。
       try {
         subWin.on('windowRectChange', () => {
           PopupWindowManager.getInstance().repositionPopups(winId, subWin, this.getEffectiveScale());
+          this.reportCarrierMove(winId, subWin);
         });
       } catch (_) { /* ignore */ }
       // 兜底: 子窗口被系统销毁 (间接路径) → 走标准销毁
@@ -1156,6 +1159,23 @@ export class WineWindowManager {
       hilog.info(DOMAIN, TAG, '[MW] startFusionSubWindow #%{public}d failed → sendToplevelClose', id);
       testNapi.sendToplevelClose(id);
     }, initX, initY);
+  }
+
+  // 任务 #135: 承载窗全局位置上报 (host→wine 几何回写的移动半边 —— §2.14
+  // 缺口: 拖动承载窗后 wine 侧位置陈旧)。值源 = getWindowProperties()
+  // .windowRect (与 PopupWindowManager.positionEntry 同源, 全链唯一坐标
+  // 来源); guest 逻辑坐标 = 物理原点 / effectiveScale (创建摆放
+  // FWM.ensure `pos = gx×scale` 的逆式; strip 形态不参与换算 —— X 窗纵
+  // 坐标与承载窗原点的关系里 strip 两侧抵消, 见 x11_toplevel.c geom 注释)。
+  // 仅 x11 路线调用 (wayland toplevel 位置归合成器, 隔离红线; native 侧
+  // x11_toplevel_active 仍是权威门 + 值未变跳过)。
+  private reportCarrierMove(tl: number, win: window.Window): void {
+    if (!DisplayRouteService.getInstance().isX11()) return;
+    try {
+      const s = this.getEffectiveScale();
+      const rect = win.getWindowProperties().windowRect;
+      testNapi.notifyToplevelMove(tl, Math.round(rect.left / s), Math.round(rect.top / s));
+    } catch (_) { /* ignore: 位置上报失败非致命 (下一拍事件会重试) */ }
   }
 
   // subWindow 就绪后处理: 圆角直角化对 decor:false/true 都执行 (decor true

@@ -129,6 +129,14 @@ void wl_ohos_input_post_mm_axis(uint32_t toplevelId, int lx, int ly,
 // WM_DELETE_WINDOW, 与 wayland 路线的 xdg_toplevel_send_close 同语义)。
 void wl_ohos_input_post_mm_close(uint32_t toplevelId);
 
+// 任务 #135: host→wine 几何回写 (尺寸/位置两半)。napi 线程只入队, loop
+// 线程 drain 分派到 x11_toplevel_geometry_*_dispatch (查表 + 无变化跳过 +
+// wlr_xwayland_surface_configure 回写 + writeback 记录供 echo 抑制)。
+// size: w/h = guest 逻辑尺寸; move: x/y = guest 逻辑坐标 (上限语义见
+// x11_toplevel.h)。
+void wl_ohos_input_post_mm_geom_size(uint32_t toplevelId, int w, int h);
+void wl_ohos_input_post_mm_geom_move(uint32_t toplevelId, int x, int y);
+
 // M4c-T2: seat 键盘焦点让渡 (x11 popup 焦点链) —— activate + keyboard
 // enter, 同 multimode 口的焦点纪律 (幂等: 同 surface 短路; 无内容 surface
 // 丢弃)。必须在合成器事件循环线程调用 (wlr_seat 无锁)。对 OR 窗 activate

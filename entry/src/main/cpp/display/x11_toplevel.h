@@ -32,6 +32,32 @@ void x11_toplevel_session_reset(void);
 struct wlr_xwayland_surface *x11_toplevel_xs_of(uint32_t toplevelId);
 uint32_t x11_toplevel_id_of_xs(struct wlr_xwayland_surface *xs);
 
+/* ── 任务 #135: host→wine 几何回写 (M4a 模型缺失半边, §2.14) ──
+ * x11 fusion 下承载窗几何权威在 ArkTS (系统拉伸/系统拖拽直接改承载窗),
+ * guest 几何权威在 wine 的 X 窗 —— 反向通道原先结构性缺失 (尺寸半边被
+ * NotifyToplevelResize 的 xdg resource 查询挡死, 位置半边无任何通道)。
+ * 回写 = X 协议原语 wlr_xwayland_surface_configure (与 wine→host 应答同
+ * 函数, WM 主导 configure 语义), 两半各自只改自己那半 (尺寸半边保留
+ * xs 当前位置 / 位置半边保留 xs 当前尺寸), 由调用方分拍上报。
+ * 纪律 (与 pointer/key/close 同款): napi 线程只入队, loop 线程 dispatch
+ * 执行 (xcb 连接专用); 与 xs 现值全等 → 跳过 (防回声第一道门); 最小化
+ * 期间跳过 (镜像 xdg 侧门禁); 写入值记 entry (handle_request_configure
+ * 的 echo 抑制基准)。 */
+/* 目标 id 是否本映射层登记 (wayland_server.cpp 的 x11 分支门: 防路线旗标
+ * 与 id 空间错配时误劫 wayland toplevel —— 双隔离红线)。 */
+bool x11_toplevel_owns(uint32_t toplevelId);
+/* w/h = guest 逻辑尺寸 (X 窗坐标, = 承载窗 surface 物理尺寸 / scale);
+ * w/h <= 0 = 仅复位语义 (notifyToplevelResizeEnd 的 0 尺寸), x11 侧无
+ * size-move 态 → 视为无操作。任意线程可调 (内部入队)。 */
+void x11_toplevel_geometry_size(uint32_t toplevelId, int w, int h);
+/* x/y = guest 逻辑坐标 (X 窗坐标 = 承载窗全局原点 / scale; 创建期摆放
+ * FWM.ensure `pos = gx×scale` 的逆式, strip 在两侧抵消不进换算)。任意
+ * 线程可调 (内部入队)。 */
+void x11_toplevel_geometry_move(uint32_t toplevelId, int x, int y);
+/* loop 线程执行端 (InjectQueueDrain 分派, display_input.c 调)。 */
+void x11_toplevel_geometry_size_dispatch(uint32_t toplevelId, int w, int h);
+void x11_toplevel_geometry_move_dispatch(uint32_t toplevelId, int x, int y);
+
 /* ── Task 5: 按窗输入路由 ── */
 /* napi 线程入口 (C1): 只入队, 实际执行在 loop 线程的 *_dispatch。
  * px/py = OHOS 承载窗局部物理像素 (SendPointerEvent 契约); action:

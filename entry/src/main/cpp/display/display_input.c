@@ -522,6 +522,9 @@ struct inject_item
     bool is_mm_axis;   /* M4d-review I1: 同上, 按窗轴 (滚轮), 复用
                         * axis_which/axis_steps + mm_* 字段 */
     bool is_mm_close;  /* 任务 #129 RF#3: 按窗关闭请求, 复用 mm_toplevel_id */
+    bool is_mm_geom_size; /* 任务 #135: host→wine 几何回写 —— 尺寸半边
+                           * (mm_lx/mm_ly = w/h) */
+    bool is_mm_geom_move; /* 任务 #135: 位置半边 (mm_lx/mm_ly = x/y) */
     uint32_t keycode; /* is_button 时复用为 evdev 按钮码 */
     bool press;
     float nx, ny;
@@ -602,6 +605,12 @@ static int InjectQueueDrain(void *data)
                 item.axis_which, item.axis_steps);
         else if (item.is_mm_close)
             x11_toplevel_close_dispatch(item.mm_toplevel_id);
+        else if (item.is_mm_geom_size)
+            x11_toplevel_geometry_size_dispatch(item.mm_toplevel_id,
+                                                item.mm_lx, item.mm_ly);
+        else if (item.is_mm_geom_move)
+            x11_toplevel_geometry_move_dispatch(item.mm_toplevel_id,
+                                                item.mm_lx, item.mm_ly);
         else if (item.is_axis)
             display_input_inject_axis(item.axis_which, item.axis_steps);
         else if (item.is_text)
@@ -1148,5 +1157,29 @@ void wl_ohos_input_post_mm_close(uint32_t toplevelId)
     memset(&item, 0, sizeof(item));
     item.is_mm_close = true;
     item.mm_toplevel_id = toplevelId;
+    InjectQueuePush(&item);
+}
+
+/* 任务 #135: host→wine 几何回写两半 (napi 线程入队, loop 线程 dispatch ——
+ * xcb 连接/entry 表纪律同 mm_close)。mm_lx/mm_ly 承载 (w,h) 或 (x,y)。 */
+void wl_ohos_input_post_mm_geom_size(uint32_t toplevelId, int w, int h)
+{
+    struct inject_item item;
+    memset(&item, 0, sizeof(item));
+    item.is_mm_geom_size = true;
+    item.mm_toplevel_id = toplevelId;
+    item.mm_lx = w;
+    item.mm_ly = h;
+    InjectQueuePush(&item);
+}
+
+void wl_ohos_input_post_mm_geom_move(uint32_t toplevelId, int x, int y)
+{
+    struct inject_item item;
+    memset(&item, 0, sizeof(item));
+    item.is_mm_geom_move = true;
+    item.mm_toplevel_id = toplevelId;
+    item.mm_lx = x;
+    item.mm_ly = y;
     InjectQueuePush(&item);
 }

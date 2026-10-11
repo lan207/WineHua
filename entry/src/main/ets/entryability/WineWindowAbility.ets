@@ -112,6 +112,16 @@ export default class WineWindowAbility extends UIAbility {
         const mgr = WineWindowManager.getInstance();
         PopupWindowManager.getInstance().repositionPopups(
           this.toplevelId, mainWindow, mgr.getEffectiveScale());
+        // 任务 #135: 位置回写 guest (host→wine 几何回写移动半边; WWA 承载
+        // 路径与 FWM 子窗同款上报, 值源 = windowRect 原点 / scale; 仅 x11,
+        // native 侧仍有权威门)。坐标契约见 WineWindowManager.reportCarrierMove。
+        if (DisplayRouteService.getInstance().isX11()) {
+          try {
+            const s = mgr.getEffectiveScale();
+            const rect = mainWindow.getWindowProperties().windowRect;
+            testNapi.notifyToplevelMove(this.toplevelId, Math.round(rect.left / s), Math.round(rect.top / s));
+          } catch (_) { /* ignore */ }
+        }
         // 拖拽缩放 (DRAG_START/DRAG) → 标记缩放中, onSurfaceChanged 的
         // configure 据此带 RESIZING (Wine 才采用新尺寸); DRAG_END 发一次
         // 0 尺寸 configure 让 Wine 退出 size-move (保持当前尺寸)

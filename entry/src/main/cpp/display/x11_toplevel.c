@@ -112,6 +112,12 @@ struct x11_xs_entry {
      * 应答, 无 MapRequest/ConfigureRequest 事件), move/resize 信号源只有
      * set_geometry (xwm.c:1512)。 */
     struct wl_listener set_geometry;
+    /* 任务 #135: host→wine 回写的 echo 抑制基准 —— 最近一次回写目标
+     * (x11_toplevel_geometry_*_dispatch 写, handle_request_configure 读)。
+     * 仅抑制「wine 回声我们刚写的值」这类无操作上送, 不掩盖 app 真实
+     * 改几何 (判据 = ε=2px, 依据见 handle_request_configure 注释)。 */
+    bool wb_valid;
+    int wb_x, wb_y, wb_w, wb_h;
 };
 
 static struct x11_xs_entry g_entries[X11_TOPLEVEL_MAX];
@@ -425,8 +431,21 @@ static void handle_request_configure(struct wl_listener *listener, void *data)
      * 尺寸回写走 ResizeRenderer, 这里只上送 resize 语义事件。 */
     wlr_xwayland_surface_configure(e->xs, ev->x, ev->y, ev->width, ev->height);
     pthread_mutex_lock(&g_lock);
-    if (!e->createdPosted) {
+    /* 任务 #135 echo 抑制: 请求值与最近一次 host→wine 回写 (±2px) 吻合 =
+     * wine 回声我们刚写入的几何 —— 协议应答照发 (上行), 但不再上送 resize
+     * 事件给承载窗 (承载窗本就在这个几何上, 上送 = 自回声空转, 拖拽中会
+     * 以拍频放大成 resize 抖动)。ε=2px 实测依据: 本栈无 WM 帧, wine 的
+     * win32⇄X 装饰折算是常数偏移 (D52: 632x446@(104,130) → 640x480@(100,100)
+     * 创建实测), 请求值与回写值偏差超 2px 即 app 真实改几何 (如 SDL 锁
+     * 宽高比回推), 必须放行 —— 抑制面只覆盖「值相同」的无操作类。 */
+    const bool echo = e->wb_valid &&
+        abs(ev->x - e->wb_x) <= 2 && abs(ev->y - e->wb_y) <= 2 &&
+        abs(ev->width - e->wb_w) <= 2 && abs(ev->height - e->wb_h) <= 2;
+    if (!e->createdPosted || echo) {
         pthread_mutex_unlock(&g_lock);
+        if (echo && e->createdPosted)
+            XTL_LOG("XTL geom-echo suppressed id=%{public}u %dx%d",
+                    e->toplevelId, ev->width, ev->height);
         return;
     }
     x11_toplevel_bridge_post_resize(
@@ -948,6 +967,104 @@ void x11_toplevel_input_key_dispatch(uint32_t toplevelId, uint32_t keycode,
     pthread_mutex_unlock(&g_lock);
     if (!xs) return;
     wl_ohos_input_multimode_key(xs, keycode, press);
+}
+
+/* ── 任务 #135: host→wine 几何回写 (缺失半边, 头文件设计注释) ──
+ * 回环分析 (wine 侧源码实读, 判据落点):
+ *   - wine 对 WM 主导 configure 直接采信不回推: X11DRV_ConfigureNotify
+ *     (winex11.drv/event.c:1096) → window_configure_notify (window.c:1993) →
+ *     handle_state_change (window.c:1867) 的「unexpected/mismatch」分支把
+ *     desired+pending+current 一并置为收到值, 随后 window_request_desired_state
+ *     → window_set_config 因 EqualRect 短路 (window.c:1467) → 不发
+ *     XReconfigureWMWindow。
+ *   - 回写面因此无自发链: 回写只由承载窗几何事件驱动, wine 采纳不改承载窗。
+ *     app 主动改几何 (SetWindowPos → XReconfigureWMWindow, window.c:1514) 照
+ *     走 handle_request_configure: 与最近回写吻合的值由 echo 抑制 (上方), 不
+ *     吻合 = app 真实意图放行 → 收敛于 app 尺寸后静止。
+ * 无操作跳过 (值全等) 是防回声第一道门: 承载窗 resize() 回落 (ArkTS 尺寸精度
+ * 往返)、wine 回声场景下不发无意义 configure (也不会触发 wlr 的合成
+ * ConfigureNotify —— 尺寸不変时它会合成一条, 见 xwm.c:2384)。 */
+static void geom_writeback(uint32_t toplevelId, bool size_half, int a, int b)
+{
+    pthread_mutex_lock(&g_lock);
+    struct x11_xs_entry *e = entry_of_id(toplevelId);
+    struct wlr_xwayland_surface *xs = e ? e->xs : NULL;
+    int x, y, w, h;
+    if (!xs || !e->createdPosted || e->is_popup) {
+        pthread_mutex_unlock(&g_lock);
+        return; /* 未创建/已死/popup: 几何回写对 popup 结构性不适用 (无 WM 管) */
+    }
+    if (xs->minimized) {
+        /* 镜像 xdg 侧最小化门禁 (NotifyToplevelResize 头注释): 图标化期间
+         * 不动几何 —— 恢复后的跟随由后续承载窗事件自然补齐 (FWM.show →
+         * surface 事件链)。 */
+        pthread_mutex_unlock(&g_lock);
+        XTL_LOG("XTL geom-%{public}s id=%{public}u SKIPPED (minimized)",
+                size_half ? "size" : "move", toplevelId);
+        return;
+    }
+    x = size_half ? (int)xs->x : a;
+    y = size_half ? (int)xs->y : b;
+    w = size_half ? a : (int)xs->width;
+    h = size_half ? b : (int)xs->height;
+    if (x == (int)xs->x && y == (int)xs->y &&
+        w == (int)xs->width && h == (int)xs->height) {
+        pthread_mutex_unlock(&g_lock);
+        return; /* 无变化: 跳过 (防回声风暴第一道门, 见上) */
+    }
+    pthread_mutex_unlock(&g_lock);
+    /* 值域防御: wlr 签名 x/y=int16_t, w/h=uint16_t —— 越界截断在 X 侧是
+     * 未定义观感 (w 溢出 65535 回绕); 正常路径 (桌面逻辑尺寸) 远在域内。 */
+    if (x > 32767) x = 32767; else if (x < -32768) x = -32768;
+    if (y > 32767) y = 32767; else if (y < -32768) y = -32768;
+    if (w > 32767) w = 32767;
+    if (h > 32767) h = 32767;
+    wlr_xwayland_surface_configure(xs, (int16_t)x, (int16_t)y,
+                                   (uint16_t)w, (uint16_t)h);
+    pthread_mutex_lock(&g_lock);
+    if (e == entry_of_id(toplevelId)) { /* 同线程单跳, 复验仅防御性 */
+        e->wb_valid = true;
+        e->wb_x = x;
+        e->wb_y = y;
+        e->wb_w = w;
+        e->wb_h = h;
+    }
+    pthread_mutex_unlock(&g_lock);
+    XTL_LOG("XTL geom-%{public}s id=%{public}u (%{public}d,%{public}d %{public}dx%{public}d)",
+            size_half ? "size" : "move", toplevelId, x, y, w, h);
+}
+
+void x11_toplevel_geometry_size_dispatch(uint32_t toplevelId, int w, int h)
+{
+    /* notifyToplevelResizeEnd (windowRectChange DRAG_END) 发 0 尺寸复位:
+     * wayland 语义 = 清 RESIZING / wine 保持当前尺寸; x11 无 size-move 态,
+     * 同语义落地 = 无操作 (绝不把 0 写进 X 窗)。 */
+    if (w <= 0 || h <= 0) return;
+    geom_writeback(toplevelId, true, w, h);
+}
+
+void x11_toplevel_geometry_move_dispatch(uint32_t toplevelId, int x, int y)
+{
+    geom_writeback(toplevelId, false, x, y);
+}
+
+bool x11_toplevel_owns(uint32_t toplevelId)
+{
+    pthread_mutex_lock(&g_lock);
+    const bool owns = entry_of_id(toplevelId) != NULL;
+    pthread_mutex_unlock(&g_lock);
+    return owns;
+}
+
+/* napi/JS 线程入口 (与 x11_toplevel_input_* 同纪律): 只入队。 */
+void x11_toplevel_geometry_size(uint32_t toplevelId, int w, int h)
+{
+    wl_ohos_input_post_mm_geom_size(toplevelId, w, h);
+}
+
+void x11_toplevel_geometry_move(uint32_t toplevelId, int x, int y)
+{
+    wl_ohos_input_post_mm_geom_move(toplevelId, x, y);
 }
 
 /* 画一帧: surface->buffer 的 texture (wlroots 自管) → 该窗队列 buffer →
