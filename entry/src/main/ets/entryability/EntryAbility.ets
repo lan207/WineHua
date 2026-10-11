@@ -96,6 +96,16 @@ export default class EntryAbility extends UIAbility {
     // 仍为自动化最高优先)。消费点白名单见 DisplayRouteService 头注释。
     // native 镜像同步写一次 (guest env stamp 的唯一读点, 见 wine_env.cpp)。
     DisplayRouteService.getInstance().init(this.context);
+    // 桌面模式持久化值必须在下方 shouldUseMultiwindow() 查询前就绪：x11 链
+    // 早启用它的返回值决定 native multiwindow 位，而 WineWindowManager
+    // .init 里的 init 在此之后才跑（2026-10-11 实测时序：displayRoute applied
+    // 40.756 早于 mode policy 40.782，26ms）。不提前的后果：查询读到
+    // DEFAULT_MODE（tablet='virtual'）→ chain_start multiwindow=false → 会话
+    // 落虚拟桌面链，而 ArkTS 实时查询（此时持久化已加载='fusion'）判 fusion
+    // 不开画布 → 程序窗走 g_clients 画布路径却无宿主，窗口不可见（用户实测：
+    // 文件管理启动 explorer 窗口不出；smoke 冷启带显式 winehua.desktopMode
+    // 的 setOverrideMode 在查询前执行，故绕开了此时序——两条路径差异即此）。
+    DesktopModeService.getInstance().init(this.context);
     const explicitDisplayRoute = !!parameters && parameters['winehua.displayRoute'] !== undefined &&
       parameters['winehua.displayRoute'] !== null;
     const routeValue = explicitDisplayRoute ? value('winehua.displayRoute', '')
@@ -120,8 +130,12 @@ export default class EntryAbility extends UIAbility {
         // smoke 路径同款时序); 不开窗口故不涉 #68 窗管竞态。
         if (routeValue === 'x11') {
           // M4a 第 6 参: 多窗模式位 (route=x11 × mode=fusion 实时判定)
-          displayRouteNapi.startDisplayRouteChain(0n, false, 0, 0, false,
-            WineWindowManager.getInstance().shouldUseMultiwindow());
+          const mmEarly = WineWindowManager.getInstance().shouldUseMultiwindow();
+          displayRouteNapi.startDisplayRouteChain(0n, false, 0, 0, false, mmEarly);
+          // 留痕 (2026-10-11 事故: 本值错判为 false 且无线索, 排查需从
+          // explorer 走 g_clients 的行为间接反推——早启接线点必须打印)
+          hilog.info(DOMAIN, 'testTag', 'x11 chain early-boot multiwindow=%{public}s',
+            mmEarly ? 'true' : 'false');
         }
         hilog.info(DOMAIN, 'testTag', 'displayRoute applied: %{public}s', routeValue);
       } catch (e) {
