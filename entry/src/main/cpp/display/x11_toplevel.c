@@ -94,6 +94,10 @@ struct x11_xs_entry {
     struct wlr_buffer *guestFrame;
     int guestFlip;      /* 1 = 纵向翻 (GL/virgl), 0 = 不翻 (Vulkan/venus) ——
                          * 与 scene 路径 frame_set 的 FLIPPED_180 口径一致 */
+    /* MW-GPU: guestFrame 的纹理, set 时建、替换/移除时 destroy —— 与 scene
+     * 节点 set_buffer 同款配对 (帧 wrapper 每 acquire 新建, 纹理无法跨帧
+     * 缓存; 只建不毁 = GL/EGL 泄漏, 设备实测 60 帧/秒 50s 即触发内存清理)。 */
+    struct wlr_texture *guestTexture;
     /* M4c-T1: popup 事件状态 (仅 is_popup 条目使用) */
     bool popup_visible;      /* popup_show 已发 (unmap/destroy 双触发 hide 的去重) */
     uint32_t popup_parent_id; /* show 时用的 owner toplevelId (hide 事件 id) */
@@ -212,8 +216,13 @@ static void entry_remove(struct x11_xs_entry *e)
     e->dead = true;
     e->xs = NULL;
     e->win = NULL;
-    /* MW-GPU: 释放 guest 帧引用 (lock 在 x11_toplevel_set_guest_frame);
-     * 槽会被 entry_alloc 复用, 不清则新窗继承旧帧。 */
+    /* MW-GPU: 释放 guest 帧引用 (lock 在 x11_toplevel_set_guest_frame) 与
+     * 配对纹理; 槽会被 entry_alloc 复用, 不清则新窗继承旧帧/泄漏纹理。
+     * 纹理先拆 (EGLImage 引用缓冲内存) 再解锁缓冲。 */
+    if (e->guestTexture) {
+        wlr_texture_destroy(e->guestTexture);
+        e->guestTexture = NULL;
+    }
     if (e->guestFrame) {
         wlr_buffer_unlock(e->guestFrame);
         e->guestFrame = NULL;
@@ -730,6 +739,16 @@ void x11_toplevel_session_reset(void)
         detach_listeners(e);
         e->xs = NULL; /* 墓碑态同 entry_remove (entry_alloc 复用判据) */
         e->win = NULL;
+        /* MW-GPU: guest 帧/纹理随会话释放 (同 entry_remove —— 复位后
+         * g_entry_count=0, 不释放即永久泄漏)。 */
+        if (e->guestTexture) {
+            wlr_texture_destroy(e->guestTexture);
+            e->guestTexture = NULL;
+        }
+        if (e->guestFrame) {
+            wlr_buffer_unlock(e->guestFrame);
+            e->guestFrame = NULL;
+        }
         /* popup: destroyed 不发 (同 handle_xs_destroy) —— ArkTS 的 popup
          * 子窗经父 toplevel destroyed 的 destroyPopupsForToplevel 级联销毁
          * (本循环对 owner 发的 destroyed 即触发), 无孤儿路径。 */
@@ -1103,13 +1122,10 @@ static bool render_entry(struct x11_xs_entry *e)
      * false = 本帧没画出去, dirty 保留, remap 后首帧重绘。 */
     if (!e->xs->surface) return false;
     struct wlr_client_buffer *cb = e->xs->surface->buffer;
-    /* MW-GPU: 有 guest 零拷贝帧 (fusion GPU 窗) 优先画它 —— 此时
-     * surface->buffer 停在 map 时的初始帧 (D50 链), 内容无价值; 建纹理
-     * 失败回退 surface 路径 (画旧帧不崩)。纹理 per-frame 重建: 帧队列有界
-     * (消费者按 slot 复用), 首版接受分配开销, 缓存化待性能采样。 */
-    struct wlr_texture *src = NULL;
-    if (e->guestFrame)
-        src = wlr_texture_from_buffer(g_renderer, e->guestFrame);
+    /* MW-GPU: 有 guest 零拷贝帧纹理 (fusion GPU 窗) 优先画它 —— 此时
+     * surface->buffer 停在 map 时的初始帧 (D50 链), 内容无价值; 无纹理
+     * (未挂帧/建失败) 回退 surface 路径 (画旧帧不崩)。 */
+    struct wlr_texture *src = e->guestTexture;
     if (!src) {
         if (!cb || !cb->texture) {
             XTL_LOG("XTL render-skip nocb id=%{public}u cb=%{public}p",
@@ -1228,6 +1244,18 @@ int x11_toplevel_set_guest_frame(uint32_t xwindow, struct wlr_buffer *buffer,
                                  int flip)
 {
     if (!buffer) return 0;
+    /* MW-GPU: 纹理与帧缓冲建/毁配对 (scene 节点 set_buffer 同款节奏): 帧
+     * wrapper 每 acquire 新建 (ohos_buffer.cpp calloc), 纹理无法跨帧缓存。
+     * 锁外建纹理 (本函数只在合成器 loop 线程被调)。 */
+    struct wlr_texture *tex = wlr_texture_from_buffer(g_renderer, buffer);
+    if (!tex) {
+        /* 建纹理失败 (EGL 压力等): 不收帧 (调用方解锁自持引用), 旧帧原样 */
+        static uint32_t s_texfail;
+        if (++s_texfail % 60 == 1)
+            XTL_LOG("XTL guest-frame tex-fail xwin=%{public}u n=%{public}u",
+                    xwindow, (unsigned)s_texfail);
+        return 0;
+    }
     pthread_mutex_lock(&g_lock);
     struct x11_xs_entry *e = entry_of_window(xwindow);
     if (!e) {
@@ -1237,11 +1265,14 @@ int x11_toplevel_set_guest_frame(uint32_t xwindow, struct wlr_buffer *buffer,
             XTL_LOG("XTL guest-frame miss xwin=%{public}u n=%{public}u",
                     xwindow, (unsigned)s_miss);
         pthread_mutex_unlock(&g_lock);
+        wlr_texture_destroy(tex);
         return 0;
     }
     wlr_buffer_lock(buffer);
+    if (e->guestTexture) wlr_texture_destroy(e->guestTexture);
     if (e->guestFrame) wlr_buffer_unlock(e->guestFrame);
     e->guestFrame = buffer;
+    e->guestTexture = tex;
     e->guestFlip = flip;
     e->dirty = true;
     pthread_mutex_unlock(&g_lock);
