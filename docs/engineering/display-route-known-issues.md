@@ -108,9 +108,20 @@ Expose」（指纹 B/C），方向性错误——wine 侧证据（flush 全窗 d
 当时即可排除，二手推断（XClearArea/Expose 机制）拖了两天。断点类
 问题按「现场最后一条日志 = 最后一跳」分层取证，每跳拿本侧硬证据。
 
-**附带缺口（M4b）**：多窗模式 guest GL 帧无消费者——FrameStep
-multiwindow 早退跳过 display_guest_frames_tick()；consumer buffer 无
-DATA_PTR，per-xs 消费需 EGL 渲染器。fusion_probe（T6）用 GDI 自画绕开。
+**附带缺口（M4b → 2026-10-11 已修，MW-GPU）**：多窗模式 guest GL/Vulkan
+帧无消费者——FrameStep multiwindow 早退跳过 display_guest_frames_tick()，
+present target 永不挂（`target missing`）；且 fusion 无 g_clients，帧路由的
+client_frame_anchor / client_xwindow_generation 恒查空（[GUEST-FRAMES] 0 行）。
+修复（97811a7）：多窗分支补 tick；两查询在 multiwindow 下转接 XTL 在册表
+（记录身份序号 generation 新增）；帧消费 = x11_toplevel_set_guest_frame →
+render_entry 优先画 guest 零拷贝帧（flip 口径与 D23 同款：GL 翻 / Vulkan
+不翻），GDI 窗仍走 surface->buffer。设备验证（SLG-W10，x11+fusion，
+dxvk_modern_2_6）：switch cube attach `kind=vulkan flip=0` 持续 ~90fps
+渲染 3.5min+（截屏出图）；GL 探针 `kind=gl flip=1` 出图方向正确。
+首版逐帧纹理只建不毁在 ~50s 触发系统内存清理（2906 张 GL FBO 泄漏，
+memmgrservice 批量写 OomScoreAdj → ability 销毁）；修复（1413406）：纹理
+随帧入 entry、set 时建、替换/entry_remove/session_reset 三路 destroy+unlock
+配对。fusion_probe（T6）GDI 自画绕开的历史口径随之作废。
 
 **附带发现**：managed 模式 wine user32 的 `get_desktop_window` 会自动
 spawn explorer /desktop（非 wine_launch 分支行为）；其 desktop 窗也是
