@@ -293,6 +293,84 @@ PASS 的点选判据。负全局坐标（菜单越出屏幕左/上，RF#5 后半
 跑批中段 crash 修复后，host 抓帧时序（missing-frame）成为新的间歇项
 （D35 家族新形态），单点复跑即可判绿。
 
+### 2.15 M4d 收口：x11 fusion Pad 承载贯通 + 越界点选悬案闭合（2026-10-11）
+
+**验收状态**：M4 多窗分期收官——x11 fusion 的 Pad 承载（subWindow 路线）
+四项手测全通过：承载/双窗（fusion 套件复跑全绿，见下）、拖动/手势、
+6 窗并发压测；§2.14 越界点选悬案**破案闭合**（见下）。回归门禁：前缀组
+displayroute-win32-interactive（x11 + virtual）**21/21**（job-r20261011-
+101858，超历史基线 20/21——input-keyboard-x64 char-count 本轮亦绿）；
+core **3/4**（core-r20261011-102209，opengl-x86 = D49 已知签名）；
+fusion 套件 3/3（job-r20261011-103109，multimode 注入改动后的回归轮；
+其间 r20261011-102439 轮 1/3 = 间歇：byTitle 三用例全部 "title not
+synced" + popup 视觉判定字体条带漏检，同构建复跑全绿——D35 家族口径，
+单点复跑判绿，间歇机理未查）。截图/日志归档 `.temp/m4d-*`。
+
+**§2.14 越界点选悬案闭合（根因 + 修复 8a1e975）**：multimode 注入口
+（`wl_ohos_input_multimode_pointer`）的 wire 序列缺 motion 半边——
+完整序列为 enter→motion→press→release（D15），原实现只在焦点 surface
+切换时发 enter（携带坐标），焦点不变时直发 button。Xwayland 的光标
+位置由 motion 驱动；wine 菜单跟踪持 X grab 期间，enter 被 X 侧抑制
+（trace 实证：无 EnterNotify、光标不更新）→ 按钮携带**上一条 motion
+的陈旧坐标**经 grab 重定向投给菜单窗 → 命中判定全错。两个数据点同根因：
+① 越界菜单项点击：坐标错位 → 菜单关闭但无 WM_COMMAND（§2.14 主证）；
+② 菜单外点击：陈旧坐标恰为菜单锚点（在菜单 rect 内）→ win32 语义的
+dismiss 不发生。修复 = 按钮前无条件补 motion+frame（grab 重定向下坐标
+同样为真）。修复后复测：popup_overflow 探针（短窗 + 整条菜单越出窗底）
+uitest 点第 2 项 → **command-received True（WM_COMMAND id=202）+
+command-item2 True**（探针自证结果归档 `.temp/m4d/oob-result.json`，
+runId manual / build/m4d-oob-inline.json 编排）；notepad 上下文菜单
+外点 → popup-hide 正常 dismiss。`fusion-popup-selection` 的恒 SKIP
+标记保留（越界用例的点选自动化另立判定器，本闭合为手测证据链）。
+
+**执行时核实点（plan Self-Review 实测沉淀）**：
+- **RF#3 caption 结构性缺失**：x11 下 wine 的 X 窗 = win32 rect 减
+  WM 装饰区——D52 created 坐标 = win32 原点 + caption+border 偏移
+  （notepad (4,30)、fusion_probe 640x480 → 632x446@(104,130)）。fusion
+  栈无 WM 装饰提供方 → caption 无人绘制、不进任何 X 窗 → HTCAPTION
+  触摸路径不存在，wine `_NET_WM_MOVERESIZE`（winex11 mouse.c:1468）
+  无触发面；菜单栏是 X 窗顶部的真实命中区（popup off y=19 = 菜单栏
+  底）。wayland Pad 同构（xdg 亦无 caption），非 x11 独有。
+- **拖动定案落地（f43c764）**：WineWindow 触摸状态机新增顶条分支——
+  拖动起点 ≤40 物理像素且 fusionUsesSubWindow → `startMoving()` 系统拖拽
+  （wayland Pad incumbent 同通道），整手势零注入 wine；短按不受影响
+  （顶条点击照开菜单）。真机三次拖动全部跟手（位移实测吻合）。
+- **uitest 注入口径（Pad 192.168.1.5）**：左缘 x≲64 且屏幕上段的
+  点击 press 被系统手势消费（app 只收 Up，CLICK-PIPE 零日志）——点
+  wine 菜单栏左端（文件(F)）用 x≥70；uitest 日志的
+  `IMultimodalInputConnect 29201` 为伴随噪音，注入本身可用。
+
+**新发现（多 app 重叠输入错投，待治本）**：两个以上 wine 应用且 X
+rect 重叠时，multimode 注入按 toplevelId 正确发出，X 侧却投给别的窗：
+- 指针：X 命中测试按 **X 堆叠 + X 窗位置**——OHOS 拖动只移承载窗
+  （host→wine 几何回写缺失，§2.14 已知），wine X 窗钉在创建位 → X
+  rect 恒重叠 → 按 X 堆叠命中（激活让渡引发 wine 自我 raise）。
+- 键盘：FocusClient(wordpad) 的 activate + keyboard enter 均执行
+  （hilog "keyboard enter" 在案），X KeyPress 仍落旧窗——X 侧输入
+  焦点未随 xwm activate 切换，待深查（xwm SetInputFocus 与 wine
+  WM_TAKE_FOCUS 模型交互）。
+- 影响面：多 wine 应用 X rect 重叠时的按窗输入路由；单应用与不重叠
+  布局不受影响。治本方向：raiseWindowGroup 同步 X 侧 restack + 键盘
+  焦点链排查。wordpad 真实应用轮次因此改道（探针轮已闭合悬案机制）。
+
+**Pad 承载近似限制清单（逐项对照 FusionWindowManager incumbent）**：
+| 项 | incumbent（wayland Pad） | x11 Pad（M4d 现状） |
+|---|---|---|
+| hide/minimize | `minimize()` 近似，非自由窗口不生效不报错 | 同 incumbent（FWM.hide 不变） |
+| maximize | 全屏化 = resize 到显示尺寸（FWM.fullscreen） | 同 incumbent |
+| 标题栏装饰 | 无系统装饰，wine 像素自带（无 caption） | 同构；拖动由 ArkTS 顶条补位（f43c764，incumbent 的 wine move 请求链对无 caption 应用同样不触发） |
+| 双击标题栏最大化 | N/A（无 caption） | 同构 N/A（非新缺口） |
+| 边缘拖拽 resize | 系统拉伸 + xdg 回写 wine 几何 | 系统拉伸只改渲染，几何不回写（§2.14 已知：缺 host→wine configure 通道，待治本） |
+| 点击置顶 | raiseToAppTop + raiseWindowGroup | 同 incumbent；新增：X 侧堆叠不同步（多 app 重叠输入错投，见上） |
+| subWindow 上限 | 表驱动无显式上限 | 6 窗并发实测无上限表现（创建/渲染/置顶/交互全正常）；wayland incumbent 无可比数据 |
+
+**三形态对账更新（退役条件评估输入）**：x11 虚拟桌面 ✓（M3 起，前缀组
+持续守门）/ x11 PC 多窗 ✓（M4b：承载/状态面/popup 全绿）/ x11 Pad 多窗
+✓（M4d：本节）——**三形态硬前提全部达成**，自研窗口栈退役条件评估的
+事实基础齐备（退役评估本身 = 独立决策，输入见
+`docs/superpowers/specs/2026-10-07-display-route-x11-three-mode-gap-analysis.md`
+与本节限制清单）。
+
 ## 2. 技术悬案（M2 排查入口）
 
 ### 2.1 「最后一键」间歇不入编辑控件

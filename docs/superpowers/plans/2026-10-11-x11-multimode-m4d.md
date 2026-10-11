@@ -36,33 +36,33 @@
 - 走查（不修改）: `entry/src/main/ets/service/WineWindowManager.ets`（created 分发 → fusionUsesSubWindow 分支 → FusionWindowManager.ensure）
 - 走查: `entry/src/main/cpp/bridge/plugin_manager.cpp`（CreateRenderer x11 分支对 subWindow surfaceId 的处理）
 
-- [ ] **Step 1: 分发链走查**——x11 created 事件 → `fusionUsesSubWindow()==true` → FusionWindowManager.ensure(tl,w,h) 的每一跳，列出依赖的 route 判定点（`displayRouteIsX11()` 应只出现在门禁，不出现在承载选择）
-- [ ] **Step 2: 回绑链走查**——subWindow XComponent surfaceId → createRenderer(tl, surfaceId) → x11 分支 attach；toplevelId 传递一致性（Review Focus #2）
-- [ ] **Step 3: 走查结论入 ledger**（零改动确认 or 缺口清单）
+- [x] **Step 1: 分发链走查**——x11 created 事件 → `fusionUsesSubWindow()==true` → FusionWindowManager.ensure(tl,w,h) 的每一跳，列出依赖的 route 判定点（`displayRouteIsX11()` 应只出现在门禁，不出现在承载选择）
+- [x] **Step 2: 回绑链走查**——subWindow XComponent surfaceId → createRenderer(tl, surfaceId) → x11 分支 attach；toplevelId 传递一致性（Review Focus #2）
+- [x] **Step 3: 走查结论入 ledger**（零改动确认 or 缺口清单）
 
 ### Task 2: Pad 真机手测——承载与渲染
 
-- [ ] **Step 1**: Pad 设备冷启 `--ps winehua.displayRoute x11 --ps winehua.desktopMode fusion --ps winehua.program 'C:\windows\notepad.exe'`——subWindow 出现且有内容（截图 `.temp/m4d-pad-carry.jpeg`）
-- [ ] **Step 2**: 双窗并发（notepad + fusion_probe）——两 subWindow 独立呈现
-- [ ] **Step 3**: 按现象修（渲染黑窗 = D50 同款指纹排查；回绑失败 = Review Focus #2）
+- [x] **Step 1**: Pad 设备冷启 `--ps winehua.displayRoute x11 --ps winehua.desktopMode fusion --ps winehua.program 'C:\windows\notepad.exe'`——subWindow 出现且有内容（截图 `.temp/m4d-pad-carry.jpeg`）
+- [x] **Step 2**: 双窗并发（notepad + fusion_probe）——两 subWindow 独立呈现
+- [x] **Step 3**: 按现象修（渲染黑窗 = D50 同款指纹排查；回绑失败 = Review Focus #2）
 
 ### Task 3: Pad 真机手测——拖动/手势
 
-- [ ] **Step 1**: 标题栏拖动 subWindow（Review Focus #3 定案实现，若需代码补 x11 分支——先测后补）
-- [ ] **Step 2**: 手势清单（双击标题栏/长按右键——对照 WineWindow 手势面与 D15 清单）
-- [ ] **Step 3**: Commit（若有修复）
+- [x] **Step 1**: 标题栏拖动 subWindow（Review Focus #3 定案实现，若需代码补 x11 分支——先测后补）
+- [x] **Step 2**: 手势清单（双击标题栏/长按右键——对照 WineWindow 手势面与 D15 清单）
+- [x] **Step 3**: Commit（若有修复）
 
 ### Task 4: 多窗并发 + 已知限制注记
 
-- [ ] **Step 1**: 4-6 窗并发压测（subWindow 上限实测，对照 wayland incumbent 行为——Review Focus #4）
-- [ ] **Step 2**: known-issues 注记：Pad 承载近似限制清单（hide/minimize 无系统能力——逐项对照 FusionWindowManager incumbent 现状）
-- [ ] **Step 3**: Commit
+- [x] **Step 1**: 4-6 窗并发压测（subWindow 上限实测，对照 wayland incumbent 行为——Review Focus #4）
+- [x] **Step 2**: known-issues 注记：Pad 承载近似限制清单（hide/minimize 无系统能力——逐项对照 FusionWindowManager incumbent 现状）
+- [x] **Step 3**: Commit
 
 ### Task 5: 回归门禁 + 收口
 
-- [ ] **Step 1**: displayroute 前缀组 + core（判据同前：11/13 + 3/4——Pad 设备跑 core 或 PC 设备代跑，按 devices.md 设备可用性定）
-- [ ] **Step 2**: M4d 收口文档（三形态对账更新：x11 虚拟桌面 ✓ / PC 多窗 ✓ / Pad 多窗 ✓→退役条件评估输入）
-- [ ] **Step 3: Commit**
+- [x] **Step 1**: displayroute 前缀组 + core（判据同前：11/13 + 3/4——Pad 设备跑 core 或 PC 设备代跑，按 devices.md 设备可用性定）
+- [x] **Step 2**: M4d 收口文档（三形态对账更新：x11 虚拟桌面 ✓ / PC 多窗 ✓ / Pad 多窗 ✓→退役条件评估输入）
+- [x] **Step 3: Commit**
 
 ---
 
