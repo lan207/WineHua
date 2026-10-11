@@ -44,37 +44,24 @@ xclient_child 窗口摆位耦合）、`SmokeDevPanel.ets`（4:3 aspectRatio）�
 与 §2.1「最后一键」排查绑定；修的时候把两处一起治（队列化 pending、
 release 与 press 配对所有权）。
 
-### 1.6 虚拟桌面模式在 X 路线不可用（2026-10-04 实锤，产品决策待做）
+### 1.6 虚拟桌面模式在 X 路线不可用（2026-10-04 实锤；2026-10-12 核账：已收口）
 
-wine 虚拟桌面把 `root_window` 重定义为桌面窗（`winex11.drv/desktop.c:57`），
-此后**所有应用窗口都是桌面窗的 X 子窗口**；rootless Xwayland 的 XWM 只为
-根窗口子窗口建 wl_surface ⇒ notepad 等应用窗在 X 路线永不可见。真 X + 桌面
-环境能显示是因为合成器把重定向的桌面窗整棵子树（含子窗内容）当作一个面，
-本栈没有这层。三个连带症状一次说清（2026-10-04 仪表实测，client-state 见
-`ohos_output.c` rate 块）：
+**原判据（2026-10-04）**：wine 虚拟桌面把 `root_window` 重定义为桌面窗
+（`winex11.drv/desktop.c:57`），应用窗都是桌面窗的 X 子窗口；若按 rootless
+per-window 建面（XWM 只为根窗口子窗口建 wl_surface），桌面窗子树里的应用
+窗不可见。
 
-- **"全黑"实为暗化底色**：屏显 (17,34,50)，注册表桌面背景
-  `[Control Panel\Colors] Background="37 111 149"` 的暗化版——桌面窗的
-  buffer 有内容且每秒 +2 commit、Direct scan-out 直通；xclient 测试窗
-  同链路色彩鲜正，失色发生在桌面窗自身内容（glamor 路径，mirror buffer
-  是 GL/dmabuf，`wlr_buffer_begin_data_ptr_access` denied）。暗化机制
-  未再深挖——前提（虚拟桌面）本身已判死。
-- **无任务栏不是故障**：wine 虚拟桌面本无任务栏组件（`explorer /desktop`
-  只画背景 + launchers，当前启动参数不带 launchers）。
-- **fusion（多窗口）模式 X 路线全链路通**（同日实测）：每程序窗 = 根
-  子窗口 = XWM 可建面，notepad 上屏 + 键入回显 + 窗口叠层正确。
+**收口事实（2026-10-12 核账）**：虚拟桌面不走 per-window 建面，改走
+**桌面窗画布**（managed）呈现——桌面窗整体经画布上屏 + 自绘呈现自泵
+frame done（D50），per-window 映射只服务 fusion 形态。虚拟桌面功能面
+（双击 #137、滚轮 D29、退出 D45、装饰 #130）均已收口并由套件守门：
+**21 套件钉 virtual 为基线、2 套件钉 fusion**（#144；原「一律按 fusion
+语义声明」的处置已推翻）。x11 × virtual 链上 core/opengl 四象限固定帧
+判定四轮 PASS（gate r20261012-000708…000926，判据面见 §2.12）。
 
-**触发条件**：产品 UI 选「虚拟桌面」+ 显示路线 x11。**处置**：不是修
- 补问题而是产品决策——要么明确「X 路线配多窗口模式」（推荐，fusion 已
- 通），要么做子窗合成兼容层（自己枚举桌面窗子树并逐窗建面，大工程）。
- 在决策落地前，x11 路线的套件/文档一律按 fusion 语义声明
- （`winehua.desktopMode=fusion`）。
-
-**连带产品缺口**：fusion + x11 的产品会话 X 链路不自启——无桌面页 ⇒
- 无人调 `StartWithSurface` ⇒ 引擎退回 wayland 合成器（日志特征：
- 只有 `[WL] compositor started OK` 而无 `DisplayRoute: started`），
- notepad 静默变成 wayland 客户端。需要给 wlroots output 接产品侧
- surface 提供方（M3a T3/T4 范围）。
+**连带产品缺口（fusion + x11 产品会话 X 链不自启）**：已由 D8（产品路径
+x11 链早启）收口——现冷启日志 `displayRoute applied: x11` 必现
+（2026-10-12 gate capture 实测，四轮冷启全命中）。
 
 ### 2.11 D50：fusion 多窗模式 wine 程序不绘制（M4a-T4 发现，2026-10-10 破案）
 
