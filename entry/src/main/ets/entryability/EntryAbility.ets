@@ -72,6 +72,13 @@ export default class EntryAbility extends UIAbility {
       // 改 setOrCreate（与上方 d3d/dxvk.backend 同款双写模式）。
       AppStorage.setOrCreate<string>('winehua.fusionHost', value('winehua.fusionHost', ''));
     }
+    // [[任务#129 装饰实验]] 裸 decor subWindow 测试开关 (消费在
+    // onWindowStageCreate 的 loadContent 回调, 仅显式 want 生效不持久化)
+    const explicitTestDecor = !!parameters && parameters['winehua.testDecor'] !== undefined &&
+      parameters['winehua.testDecor'] !== null;
+    if (explicitTestDecor) {
+      AppStorage.setOrCreate<string>('winehua.testDecor', value('winehua.testDecor', ''));
+    }
     // 桌面模式显式覆盖 (fusion|virtual): 仅在 applyModePolicy 判定读取, 不持久化
     // (重启引擎场景仍按持久化值)。经 DesktopModeService 单例传递 — AppStorage
     // 跨 Ability 上下文读取不可靠 (见 DesktopModeService.setOverrideMode)。
@@ -265,6 +272,43 @@ export default class EntryAbility extends UIAbility {
         mainWin.setWindowDecorVisible(false);
       }
       hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
+      // [[任务#129 装饰实验]] winehua.testDecor=1 → 弹两个带真实内容的装饰
+      // 测试窗对照 (无内容子窗整窗不合成 —— 前几轮「shown 但不可见」即此):
+      // A) stage 子窗 createSubWindowWithOptions(decorEnabled:true)
+      // B) window.createWindow TYPE_DIALOG + decorEnabled:true
+      // decor 参数之外只有让窗可见的最小配置 (尺寸/位置/静态内容页)。
+      // 测试代码, 结论落地后随 DecorTestPage 一并删除。
+      if (AppStorage.get<string>('winehua.testDecor') === '1') {
+        windowStage.createSubWindowWithOptions('decor_test', {
+          title: 'DECOR TEST',
+          decorEnabled: true
+        }).then(async (sw: window.Window) => {
+          hilog.info(DOMAIN, 'testTag', '[DECOR-TEST] A stage subWindow created id=%{public}d', sw.getWindowProperties().id);
+          await sw.resize(700, 500);
+          await sw.moveWindowToGlobal(200, 300);
+          await sw.loadContent('pages/DecorTestPage');
+          await sw.showWindow();
+          hilog.info(DOMAIN, 'testTag', '[DECOR-TEST] A stage subWindow shown');
+        }).catch((e: Error) => {
+          hilog.error(DOMAIN, 'testTag', '[DECOR-TEST] A FAILED: %{public}s', JSON.stringify(e));
+        });
+        window.createWindow({
+          name: 'decor_test_dialog',
+          windowType: window.WindowType.TYPE_DIALOG,
+          ctx: this.context,
+          decorEnabled: true,
+          title: 'DIALOG DECOR TEST'
+        } as window.Configuration).then(async (dw: window.Window) => {
+          hilog.info(DOMAIN, 'testTag', '[DECOR-TEST] B dialog created id=%{public}d', dw.getWindowProperties().id);
+          await dw.resize(700, 500);
+          await dw.moveWindowToGlobal(900, 700);
+          await dw.loadContent('pages/DecorTestPage');
+          await dw.showWindow();
+          hilog.info(DOMAIN, 'testTag', '[DECOR-TEST] B dialog shown');
+        }).catch((e: Error) => {
+          hilog.error(DOMAIN, 'testTag', '[DECOR-TEST] B FAILED: %{public}s', JSON.stringify(e));
+        });
+      }
       // 自动化通道 (冷启动): winehua.program → 引擎就绪后直启该程序
       // (winehua.autoStart 的消费在 Index.aboutToAppear)
       this.autoRunIfRequested();
