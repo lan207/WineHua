@@ -10,9 +10,11 @@ RED。判据改动后必须复跑对应自测（判定只读归档数据，合�
 |---|---|---|---|
 | `popup/` | `fusion-popup-menu` (frame.py) | 11（含真机像素形态，`.temp/m4c-popup-1.jpeg` 不在场时优雅跳过为 10） | `python3 automation/checks/selftest/popup/gen_and_run.py` |
 | `auto_retry/` | `auto-retry` (auto_retry.py) | 8（合成 hilog 形态日志；含 SKIP×3 / PASS×4 / FAIL×1） | `python3 automation/checks/selftest/auto_retry/gen_and_run.py` |
+| `presented_route/` | `presented-route` (__init__.py) | 15（D49 x86 启动器/承载进程归属、几何矛盾、证据缺口形态；含既有守卫回归锚） | `python3 automation/checks/selftest/presented_route/gen_and_run.py` |
 
-产物（合成帧 JPEG）落在 `build/popup-selftest/`，build/ gitignored，
-每次运行重新生成——`rm -rf build/` 后从零复跑即毁灭性重建演练。
+产物落在各自 `build/*-selftest/`（popup 为合成帧 JPEG，auto_retry /
+presented_route 为合成日志与归档目录），build/ gitignored，每次运行重新
+生成——`rm -rf build/` 后从零复跑即毁灭性重建演练。
 
 ## TODO（同债未迁）
 

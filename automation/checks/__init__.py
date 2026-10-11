@@ -363,8 +363,8 @@ def presented_route(ctx: dict) -> dict:
         # —— 三通道实验实证 (c394f259bdd): msvcrt _getpid=Wine ptid、/proc
         # 直读被 wine 文件层劫持 (两用例同值), 都与 key 不同源, 盲断言会让
         # 诚实值错杀 (05:21/05:42 两轮 x64/x86 全 FAIL)。通道未就位 → 跳过
-        # 本段, 回落 spawn pid/attach 路径 (x64 快捷 PASS, x86 结构性 FAIL
-        # 已知, D49 #118)。
+        # 本段, 回落帧 key 同一性/spawn pid/attach 路径 (x64 快捷 PASS; x86
+        # 同走帧 key 同一性, 见下段)。
         self_pid = metrics.get("selfPid")
         self_pid_source = metrics.get("selfPidSource")
         if self_pid and self_pid_source == "unix-bridge":
@@ -380,33 +380,62 @@ def presented_route(ctx: dict) -> dict:
                     "metrics": {"expected": expected, "presented": presented,
                                 "presentedKey": key, "selfPid": self_pid}}
         if key_pid != spawn_pid:
-            # 粘性 latest 被别的面抢走 ≠ 本进程面没上屏。x11 虚拟桌面下探针
-            # 退出/失焦的瞬间 explorer 桌面窗刷帧即成 displayed 粘性 latest
-            # (2026-10-10 D49 实测: opengl-x86 两轮同位 FAIL, key pid 比
-            # spawn pid 大 10-12 = x11 会话全家桶的 explorer)。归档的
-            # [GUEST-FRAMES] 帧面事件是全量事实: 本 pid 的帧面 attach 过
-            # (进入呈现链) = 本进程的面确实上过屏, 归属成立。日志缺失
-            # (hilog 被冲/旧运行器) 时回落 FAIL 并注明证据缺口。
+            # 归属不能靠「key pid == spawn pid」记账相等 —— 对 x86 结构性为假
+            # (2026-10-11 实测推翻旧「explorer 抢 sticky」诊断): x86 (i386)
+            # 程序经 wine loader 二次 NCP spawn 出实际承载进程, runner 记录的
+            # spawn pid 只是它的启动器 wine_child (dlopen box64 后调
+            # box64_hmos_main 跑 wine loader)。证据 (r20261011-204807):
+            # WL_Broker StartNativeChildProcess childPid=34474 → WineChild[34474]
+            # calling box64_hmos_main; 0.7s 后 WL_Broker 再 spawn
+            # childPid=34486 + WL_NAPI ProcReg add name=winehua_graphics_smoke.exe;
+            # 窗口 (gl 960x540) 归属 34486。五轮归档实测 pid 差 12-28 不固定
+            # (差值 = 两次 spawn 间应用侧新分配的 pid 数); x64 原地 exec,
+            # 两者恒等。帧面归属改用同一性判据: key = (unix pid<<32)|xwin,
+            # 归档 [GUEST-FRAMES] 的 attach/detach 行记录的 key 与本轮结果
+            # 自报的 presentedKey 全等 ⇒ 上屏那一帧就是 ledger 里登记过的本
+            # 次窗口面 (key 含 pid+xwin, 异进程窗口不可能同 key)。几何佐证:
+            # attach 行 src=WxH 应等于本轮渲染尺寸, 不等 = 证据矛盾按 FAIL
+            # 交人工。残余盲区 (写明): 本窗口从未上屏时 presentedKey 停在
+            # 上一窗粘性值, 若其 ledger 行恰在日志拉取窗口内可假过 —— 该
+            # 形态五轮归档均未出现; 上屏停摆由 displayStallMs 段先行拦截,
+            # 无 guest key 由 presentedKey=0 前段拦截。
+            frame = _x11_guest_frame_of_key(ctx.get("run_dir"), key)
+            if frame is not None:
+                gw, gh = frame.get("src_w"), frame.get("src_h")
+                w, h = metrics.get("width"), metrics.get("height")
+                if gw and gh and w and h and (gw, gh) != (int(w), int(h)):
+                    return {"status": "FAIL", "stage": "presented-route",
+                            "message": f"帧 key 同源但几何矛盾: [GUEST-FRAMES] "
+                                       f"attach src={gw}x{gh} ≠ 本轮渲染 {w}x{h}"
+                                       f" (证据矛盾, 需人工核对)",
+                            "metrics": {"presentedKey": key, "spawnPid": spawn_pid,
+                                        "framePid": frame.get("pid"),
+                                        "frameLine": frame.get("line")}}
+                return {"status": "PASS", "stage": "presented-route",
+                        "message": f"路线一致 ({presented}) 且归属成立 "
+                                   f"(帧 key 与 [GUEST-FRAMES] {frame['kind']} 记录"
+                                   f"全等, 窗口 pid={frame.get('pid')}; spawn "
+                                   f"pid={spawn_pid} 为启动器)",
+                        "metrics": {"expected": expected, "presented": presented,
+                                    "presentedKey": key, "spawnPid": spawn_pid,
+                                    "framePid": frame.get("pid"),
+                                    "frameKind": frame["kind"]}}
             attach = _x11_guest_attach_of_pid(ctx.get("run_dir"), spawn_pid)
             if attach is None:
                 return {"status": "FAIL", "stage": "presented-route",
                         "message": f"呈现的不是本次运行进程的面: key pid={key_pid} "
                                    f"spawn pid={spawn_pid}，且归档无 [GUEST-FRAMES] "
-                                   f"attach 佐证 (日志被冲或运行器过旧)",
+                                   f"帧面记录佐证 (同 key 无记录, spawn pid 无 "
+                                   f"attach —— 日志被冲或运行器过旧)",
                         "metrics": {"expected": expected, "presented": presented,
                                     "presentedKey": key, "spawnPid": spawn_pid}}
             return {"status": "PASS", "stage": "presented-route",
                     "message": f"路线一致 ({presented}) 且归属本进程 "
                                f"(pid={spawn_pid} 面已 attach; 粘性 latest="
-                               f"{key_pid} 为桌面焦点回归帧)",
+                               f"{key_pid} 在 ledger 无记录)",
                     "metrics": {"expected": expected, "presented": presented,
                                 "presentedKey": key, "spawnPid": spawn_pid,
                                 "attachKey": attach}}
-        return {"status": "PASS", "stage": "presented-route",
-                "message": f"路线一致 ({presented}) 且归属本进程 "
-                           f"(pid={spawn_pid}, key={key})",
-                "metrics": {"expected": expected, "presented": presented,
-                            "presentedKey": key, "spawnPid": spawn_pid}}
         return {"status": "PASS", "stage": "presented-route",
                 "message": f"路线一致 ({presented}) 且归属本进程 "
                            f"(pid={spawn_pid}, key={key})",
@@ -430,6 +459,37 @@ def _x11_guest_attach_of_pid(run_dir, spawn_pid: int):
         if m and (int(m.group(1)) >> 32) == spawn_pid:
             return int(m.group(1))
     return None
+
+
+def _x11_guest_frame_of_key(run_dir, frame_key: int):
+    """从归档 [GUEST-FRAMES] 日志找 key 全等的帧面记录 (attach 优先, detach 兜底)。
+
+    attach 行: "[GUEST-FRAMES] attach key=<k> xwin=... pid=... src=WxH ... kind=..."
+    detach 行: "[GUEST-FRAMES] detach key=<k> xwin=... pid=... frames=N reason=..."
+    两行同为该窗口的生命周期事实 (detach 必曾 attach, 日志窗口被 tail 截断时
+    只剩 detach 也有同等的 key 同一性信息, 只是没有 src 几何)。
+    返回 dict(key, kind, pid, src_w, src_h, line) 或 None (文件缺失/无同 key 行)。
+    只读归档。"""
+    path = (Path(run_dir) / "device-evidence" / "guest-frames.log") if run_dir else None
+    if not path or not path.is_file():
+        return None
+    best = None
+    for line in path.read_text(errors="replace").splitlines():
+        m = re.search(r"\[GUEST-FRAMES\] (attach|detach) key=(\d+)", line)
+        if not m or int(m.group(2)) != frame_key:
+            continue
+        kind = m.group(1)
+        pid_m = re.search(r" pid=(\d+)", line)
+        src_m = re.search(r" src=(\d+)x(\d+)", line)
+        rec = {"key": frame_key, "kind": kind,
+               "pid": int(pid_m.group(1)) if pid_m else None,
+               "src_w": int(src_m.group(1)) if src_m else None,
+               "src_h": int(src_m.group(2)) if src_m else None,
+               "line": line.strip()[-200:]}
+        if kind == "attach":
+            return rec  # attach 带几何, 优先
+        best = best or rec
+    return best
 
 
 REGISTRY = {

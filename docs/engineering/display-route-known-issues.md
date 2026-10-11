@@ -359,7 +359,7 @@ popupSeq.ownerClicked=true（oob-result.json 引用见下方 §2.14 更正）；
   host 侧 X 命中查询（xwm xcb），已立项；F3B（epoch）随批。
   **部署验证（2026-10-11 夜，自动化，设备 .5）**：全新安装冷启 ×2 均干净
   （starting:wineboot→ready ≈55s，零 [AUTO-RETRY] —— D47 彩票未中，[AUTO-
-  RETRY] 链验证待故障注入）；core ×2 = 3/4（唯一 FAIL = D49 已知签名 #118）；
+  RETRY] 链验证待故障注入）；core ×2 = 3/4（唯一 FAIL = D49 已知签名 #118，当晚判定修正后重判 4/4，见下）；
   **#136 已过自动判定（含严格版）**：uitest 驱动设置页（dumpLayout 定位），
   选 Wayland 后引擎整重启（41 条 native 消息 = 41 次 mirror 重跑）高亮零回
   翻，hilog 双行 `preferred set: wayland→x11`，截图 `.temp/batch1-verify/`
@@ -368,6 +368,29 @@ popupSeq.ownerClicked=true（oob-result.json 引用见下方 §2.14 更正）；
   已入库（0754ea3）并首跑 SKIP（no-evidence，未触发=不下结论）。
 - **悬而未决**：#133（硬件）；用户对最新构建（双击/滚动/路线 UI，含复核
   批次 1 修复项）的手测判词；B1/B2 的处置口径（修 or 记档）。
+
+**D49 破案收口（2026-10-11 夜，automation 判定修正）**：core×x11 的
+opengl-x86「pid 归属」FAIL **根因推翻旧诊断**（原记「displayed 粘性值被
+桌面帧抢位」不成立）：x86 (i386) 程序经 wine loader **二次 NCP spawn** 出
+实际承载进程，runner 记录的 spawn pid 只是它的启动器 wine_child（dlopen
+box64 → box64_hmos_main 跑 wine loader）。硬证据（r20261011-204807 全量
+采集离线过滤）：`WL_Broker StartNativeChildProcess childPid=34474` →
+`WineChild[34474] calling box64_hmos_main`；0.7s 后 `WL_Broker` 再
+`childPid=34486` + `WL_NAPI [ProcReg] add name=winehua_graphics_smoke.exe`；
+窗口（gl 960x540 = 用例渲染尺寸）归属 34486。**判定修正**：归属断言从
+「key pid == spawn pid 记账相等」改为**帧 key 同一性**——归档
+[GUEST-FRAMES] attach/detach 行的 key（=(unix pid<<32)|xwin，异进程窗口
+不可能同 key）与本轮结果自报 presentedKey 全等 ⇒ 上屏帧就是 ledger 登记的
+本次窗口面；attach 行几何 src（WxH）与本轮渲染尺寸作佐证，不等按 FAIL 交
+人工。x64 未再 spawn 的恒等路径保留；「本 pid attach」回落保留（16 归档
+实测零触发）；残余盲区（本窗口从未上屏但上一窗粘性值恰在日志窗口内的假过
+形态）已写进判定器注释，16 轮归档实测均未出现。**合成自测** 15 形态 GREEN
+（旧判定器下恰 3 个新形态 MISMATCH = RED 证据；`selftest/presented_route/`，
+README 已挂）。**全量重判**：按旧消息指纹 grep 定位全部 16 个走到该分支的
+归档（10-10/10-11 两日 core），key 同一性证据（attach 或 detach）16/16
+齐备、**全部翻绿 4/4**——即两日 16 轮「3/4（opengl-x86 = D49 已知）」记录
+全部重判 4/4，无一是真实呈现失败；本节及更早各处「opengl-x86 = D49 已知
+签名」之述随之作废。任务 #118 关闭。
 
 **验收状态**：M4 多窗分期收官——x11 fusion 的 Pad 承载（subWindow 路线）
 四项手测全通过：承载/双窗（fusion 套件复跑全绿，见下）、拖动/手势、
