@@ -87,14 +87,16 @@ export default class EntryAbility extends UIAbility {
     if (explicitDesktopMode) {
       DesktopModeService.getInstance().setOverrideMode(value('winehua.desktopMode', ''));
     }
-    // 显示路线 (wayland|x11): 显式 want 覆盖, 缺省 x11 (2026-10-10 用户拍板:
-    // x11 为当前主线, 默认即 x11 方便手工随时测试; 回 wayland 用显式
-    // --ps winehua.displayRoute wayland)。不持久化 (spec 2026-10-03 §2.2)。
-    // 消费点白名单见 DisplayRouteService 头注释。
+    // 显示路线 (wayland|x11): 优先级 = 显式 want 覆盖 > 设置页持久化选择
+    // > 缺省 x11 (2026-10-10 拍板 x11 为主线; 2026-10-11 起设置页「显示路线
+    // （实验）」可选并持久化, UI 可见故无僵尸态; --ps winehua.displayRoute
+    // 仍为自动化最高优先)。消费点白名单见 DisplayRouteService 头注释。
     // native 镜像同步写一次 (guest env stamp 的唯一读点, 见 wine_env.cpp)。
+    DisplayRouteService.getInstance().init(this.context);
     const explicitDisplayRoute = !!parameters && parameters['winehua.displayRoute'] !== undefined &&
       parameters['winehua.displayRoute'] !== null;
-    const routeValue = explicitDisplayRoute ? value('winehua.displayRoute', '') : 'x11';
+    const routeValue = explicitDisplayRoute ? value('winehua.displayRoute', '')
+      : DisplayRouteService.getInstance().preferredRoute();
     // 本函数 onCreate/onNewWant 双入口: 缺省 x11 只在首施时应用 —— 重复
     // startDisplayRouteChain 幂等性无保, 且无参重拉不得把显式切到 wayland
     // 的运行中会话拉回缺省。带显式参数时随时生效 (切换/测试通道)。

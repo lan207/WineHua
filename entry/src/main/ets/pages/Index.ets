@@ -8,6 +8,7 @@ import { WineEnvService } from '../service/WineEnvService';
 import { ProcessService, ProcessInfo } from '../service/ProcessService';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { DesktopModeService, MODE_VIRTUAL, MODE_FUSION } from '../service/DesktopModeService';
+import { DisplayRouteService, ROUTE_WAYLAND, ROUTE_X11 } from '../service/DisplayRouteService';
 // [[SMOKE]] 合并到 main-ui: 删本行与侧边栏的 <SmokeDevPanel /> 调用
 import { SmokeDevPanel } from '../smoke/SmokeDevPanel';
 
@@ -47,6 +48,10 @@ struct Index {
   @State desktopModeSel: number[] = [0];
   @State desktopMode: string = MODE_FUSION;
   @State desktopModeRestartHint: boolean = false;
+
+  // -- 显示路线 (实验, Pad/PC): x11 主线 / wayland 对照 (镜像 DisplayRouteService) --
+  @State routeSel: number[] = [0];   // 0=X11, 1=Wayland
+  @State routeRestartHint: boolean = false;
   // -- PC 虚拟桌面窗口状态 (镜像 WineWindowManager) --
   @State desktopActive: boolean = false;
   @State desktopWindowActive: boolean = false;
@@ -204,6 +209,12 @@ struct Index {
           this.desktopModeSel = [modeSel];
         }
       }
+      // 显示路线镜像: 会话已应用路线 (want 覆盖 > 持久化 > 缺省) —
+      // 选中高亮与本会话实际运行一致; 设置页更改只落盘, 冷启动生效
+      const routeIdx = DisplayRouteService.getInstance().routeName() === ROUTE_X11 ? 0 : 1;
+      if (this.routeSel[0] != routeIdx) {
+        this.routeSel = [routeIdx];
+      }
     };
     env.subscribe(mirror);
     // 进程列表镜像 + 引擎事件驱动刷新 (WineEnvService 内部已绑定时序)
@@ -263,6 +274,17 @@ struct Index {
     DesktopModeService.getInstance().setMode(mode);
     this.desktopMode = mode;
     this.desktopModeRestartHint = true;
+  }
+
+  // 显示路线切换 (实验对照): 落盘持久化, 冷启动 (完全退出重开) 后生效 —
+  // 运行中会话的路线裁决不变 (EntryAbility 冷启动解析一次)
+  private selectRoute(route: string): void {
+    if (route == DisplayRouteService.getInstance().routeName()) {
+      return;
+    }
+    DisplayRouteService.getInstance().setPreferred(route);
+    this.routeSel = [route == ROUTE_X11 ? 0 : 1];
+    this.routeRestartHint = true;
   }
 
   // 设置项可见性: Pad/PC 可切 (phone 恒虚拟桌面, 无多窗口模式可切)
@@ -492,6 +514,36 @@ struct Index {
             .width('100%').padding({ top: 4 })
           if (this.desktopModeRestartHint) {
             Text('桌面模式已更改, 重启 Wine 引擎后生效')
+              .fontSize(12).fontColor('#f84')
+              .width('100%').padding({ top: 4 })
+          }
+        }
+
+        // -- 显示路线 (实验, Pad/PC): x11 = winex11 + Xwayland (当前主线,
+        // 多窗/顶条/几何回写等能力只在 x11 生效); wayland = 原生路线 (对照)。
+        // 冷启动生效 (完全退出应用重开); 命令行 --ps winehua.displayRoute
+        // 优先级更高 (自动化钉档位)。
+        if (this.isPcDevice()) {
+          Divider().color('#2a2a2a').width('100%')
+          Text('显示路线（实验）')
+            .fontWeight(FontWeight.Bold).fontColor('#999')
+            .width('100%').padding({ top: 12, bottom: 8 })
+          SegmentButton({
+            options: SegmentButtonOptions.capsule({
+              buttons: [{ text: 'X11' }, { text: 'Wayland' }],
+              multiply: false
+            }),
+            selectedIndexes: $routeSel,
+            onItemClicked: (index: number) => {
+              this.selectRoute(index == 0 ? ROUTE_X11 : ROUTE_WAYLAND);
+            }
+          })
+          .width('100%')
+          Text('X11: winex11 + Xwayland（主线）; Wayland: 原生路线（对照）')
+            .fontSize(12).fontColor('#777')
+            .width('100%').padding({ top: 4 })
+          if (this.routeRestartHint) {
+            Text('显示路线已更改, 完全退出应用（冷启动）后生效')
               .fontSize(12).fontColor('#f84')
               .width('100%').padding({ top: 4 })
           }
