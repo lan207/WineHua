@@ -70,6 +70,9 @@ struct WineWindow {
   // (若进状态机, 静止点击会被压成 Press+Release 同刻脉冲, dinput 轮询不可见)
   private touchPending: boolean = false;
   private isDragging: boolean = false;
+  // M4d RF#3: 顶条拖动 = 移动承载窗本身 (非 wine 内容拖拽)。系统拖拽接管后
+  // Move/Up 不得再注入 wine (合成事件会打断系统拖拽 / 产生幽灵按钮)。
+  private windowMoveDragging: boolean = false;
   private touchStartTime: number = 0;
   private touchStartPx: number = 0;
   private touchStartPy: number = 0;
@@ -79,6 +82,15 @@ struct WineWindow {
   private motionLogCounter: number = 0;
   private static readonly LONG_PRESS_MS: number = 500;
   private static readonly DRAG_THRESHOLD: number = 10; // 物理像素, 区分点击抖动和拖拽
+  // M4d RF#3: fusion subWindow 承载的"标题栏" = 窗口顶条。x11 下 wine 的
+  // X 窗 = win32 rect 减 WM 装饰区 (D52 created 坐标 = 原点 + caption+border
+  // 偏移, 实测 2026-10-11), caption 属于缺席的 WM —— guest 像素里没有标题栏,
+  // HTCAPTION/_NET_WM_MOVERESIZE 触摸路径结构性不可达; 顶条实为 wine 菜单栏
+  // (高度 ≈ guest 0..20 逻辑 ×2 = 40 物理像素)。短按仍走点击 (菜单可开),
+  // 仅超过拖动阈值的顶条手势转为移动承载窗 (startMoving, 与 wayland Pad
+  // incumbent 同一系统拖拽通道); wine 不感知位置 (managed 模式位置由
+  // ArkTS/系统权威, popup 偏移按父相对量不受影响)。
+  private static readonly DRAG_STRIP_PX: number = 40; // 物理像素
   // 双击检测
   private lastTapTime: number = 0;
   private lastTapPx: number = 0;
@@ -133,7 +145,7 @@ struct WineWindow {
             // Down 被 SCROLL-END 分支吞掉, 整次点击丢失; changedTouches 为空时
             // 原尾部 Cancel 分支也到不了 (被 `if (!t) return` 提前退出)
             if (ev.type === TouchType.Cancel) {
-              if (this.isDragging) {
+              if (this.isDragging && !this.windowMoveDragging) {
                 hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] CANCEL-DRAG tl=%{public}d px=(%{public}d,%{public}d)',
                   this.toplevelId, this.pendingPx, this.pendingPy);
                 testNapi.sendPointerEvent(this.toplevelId, MouseAction.Release,
@@ -143,6 +155,7 @@ struct WineWindow {
               }
               this.touchPending = false;
               this.isDragging = false;
+              this.windowMoveDragging = false;
               this.twoFingerActive = false;
               return;
             }
@@ -227,6 +240,7 @@ struct WineWindow {
               // 进入 PENDING 状态: 暂不发送事件, 等判定长按/拖拽/点击
               this.touchPending = true;
               this.isDragging = false;
+              this.windowMoveDragging = false;
               this.touchStartTime = Date.now();
               this.touchStartPx = px;
               this.touchStartPy = py;
@@ -238,6 +252,32 @@ struct WineWindow {
               if (!this.touchPending && !this.isDragging) return;
               const dist = Math.abs(px - this.touchStartPx) + Math.abs(py - this.touchStartPy);
               if (this.touchPending && dist >= WineWindow.DRAG_THRESHOLD) {
+                // M4d RF#3: fusion subWindow 顶条手势 = 移动承载窗 (定案见
+                // DRAG_STRIP_PX 注释)。短按不进此分支, 菜单点击不受影响;
+                // 系统拖拽接管后 wine 收不到任何合成事件 (窗移动对 guest
+                // 不可见, managed 模式位置由 ArkTS/系统权威)。
+                if (this.touchStartPy <= WineWindow.DRAG_STRIP_PX &&
+                    WineWindowManager.getInstance().fusionUsesSubWindow()) {
+                  const win = WineWindowManager.getInstance().getWindow(this.toplevelId);
+                  if (win) {
+                    this.touchPending = false;
+                    this.isDragging = true;
+                    this.windowMoveDragging = true;
+                    this.lastTapTime = 0;
+                    try {
+                      win.startMoving();
+                      hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] STRIP-DRAG startMoving tl=%{public}d px=(%{public}d,%{public}d)',
+                        this.toplevelId, px, py);
+                    } catch (e) {
+                      hilog.warn(DOMAIN, 'CLICK-PIPE', '[ArkTS] STRIP-DRAG startMoving failed tl=%{public}d: %{public}s',
+                        this.toplevelId, JSON.stringify(e));
+                      this.windowMoveDragging = false;
+                      this.isDragging = false;
+                      this.touchPending = true; // 回落普通内容拖拽判定
+                    }
+                    return;
+                  }
+                }
                 // 进入拖拽模式: 补发 Press (Down 时未发)
                 const btnLeft = mapMouseButton(1);
                 this.touchPending = false;
@@ -248,6 +288,10 @@ struct WineWindow {
                 testNapi.sendPointerEvent(this.toplevelId, MouseAction.Press, this.pendingPx, this.pendingPy, btnLeft);
                 testNapi.sendPointerEvent(this.toplevelId, MouseAction.Move, px, py, btnLeft);
               } else if (this.isDragging) {
+                if (this.windowMoveDragging) {
+                  // 系统拖拽接管中: 不向 wine 注入 (见 windowMoveDragging 注释)
+                  return;
+                }
                 // Pad 多窗口 (subWindow 承载): 触摸拖动 wine 标题栏 → wine 已发
                 // move 请求 (moveGrabPending), 由 OHOS startMoving 接管系统拖拽。
                 // 必须在触摸路径处理 — 本状态机的合成 mouse Move 被守卫吞掉,
@@ -281,6 +325,14 @@ struct WineWindow {
                 WineWindowManager.getInstance().raiseWindowGroup(this.toplevelId);
               } catch (_) { /* ignore */ }
               if (this.isDragging) {
+                if (this.windowMoveDragging) {
+                  // 顶条拖动 (系统拖拽接管中): 只收尾, 不向 wine 注入
+                  hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] STRIP-DRAG end tl=%{public}d px=(%{public}d,%{public}d)',
+                    this.toplevelId, px, py);
+                  this.isDragging = false;
+                  this.windowMoveDragging = false;
+                  return;
+                }
                 const btnLeft = mapMouseButton(1);
                 hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] DRAG-END tl=%{public}d px=(%{public}d,%{public}d)',
                   this.toplevelId, px, py);
@@ -405,6 +457,7 @@ struct WineWindow {
         // 双指模式未注入按钮事件, 直接清无配对问题
         this.touchPending = false;
         this.isDragging = false;
+        this.windowMoveDragging = false;
         this.twoFingerActive = false;
       }
       const px = vp2px(event.x);
