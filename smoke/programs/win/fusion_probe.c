@@ -8,6 +8,8 @@
  *                           各 2px 黑边)       (fusion-window-b 判定)
  * WM_LBUTTONDOWN 按窗计数 → result JSON clickCounts {"a":N,"b":M}
  * (wine-trace:fusion-click-a 判定: 点击窗 A 后 a>=1 且 b==0)。
+ * #135 (几何回写): result JSON geomA = A 的 win32 事实 (GetWindowRect +
+ * WM_SIZE/WM_MOVE 计数) —— host 拖拽承载窗/边缘拉伸后判「wine 是否收到新几何」。
  *
  * GDI 自画 (不依赖 GL 私有通道): 多窗模式 guest GL 帧无消费者 (D50 附带
  * 缺口, M4b), 本探针的呈现走 winex11 shm → wl_surface commit → per-xs
@@ -51,6 +53,12 @@ struct probe_state
     LONG a_orig_style;
     BOOL seq_minimized, seq_restored, seq_fullscreen, seq_unfullscreen, seq_modal;
     char seq_note[128];      /* 首个失败步骤的原因 (判定器提示用) */
+    /* #135 (几何回写): 窗口 A 的 win32 几何自证 —— host 侧拖拽承载窗/边缘拉伸后,
+     * wine 是否收到新几何 (WM_SIZE/WM_MOVE + GetWindowRect) 是「回写是否到达
+     * guest」的判据源; 修复前该窗口 rect 恒为创建值 (host 只拉伸渲染)。 */
+    unsigned wm_size_a;      /* WM_SIZE 计数 (wine 认为尺寸变了才会加) */
+    unsigned wm_move_a;      /* WM_MOVE 计数 */
+    RECT last_rect_a;        /* 心跳时点的 GetWindowRect (win32 事实) */
     ULONGLONG start_ms;      /* main 起点 tick。入口延迟必须相对它: 本构建
                               * GetTickCount64 = CLOCK_BOOTTIME (设备启动起算,
                               * wineserver monotonic_counter, wine
@@ -165,6 +173,17 @@ static LRESULT CALLBACK probe_wndproc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM
         if (hwnd == state->wnd_a) ++state->clicks_a;
         else if (hwnd == state->wnd_b) ++state->clicks_b;
         return 0;
+    case WM_SIZE:
+        if (hwnd == state->wnd_a) ++state->wm_size_a;
+        /* #135: 尺寸变化后重绘 —— 否则截图帧停在上一次 paint 的内容
+         * (R2 首轮实测: win32 尺寸已跟随但帧是旧 client rect 画的,
+         * 「重排」视觉证据不可判读)。invalidate 后 WM_PAINT 用新
+         * GetClientRect 重画。 */
+        InvalidateRect(hwnd, NULL, TRUE);
+        return 0;
+    case WM_MOVE:
+        if (hwnd == state->wnd_a) ++state->wm_move_a;
+        return 0;
     case WM_ERASEBKGND:
         return 1; /* WM_PAINT 全幅覆盖, 无需擦除 (防闪) */
     case WM_DESTROY:
@@ -208,7 +227,9 @@ static BOOL create_windows(struct probe_state *state)
 static void report_heartbeat(struct probe_state *state, const char *status,
                              const char *stage, const char *message)
 {
-    char metrics[768];
+    char metrics[1024];
+    /* #135: 刷新 A 的 win32 rect (心跳即事实采样点; GetWindowRect 取虚拟屏坐标) */
+    if (state->wnd_a) GetWindowRect(state->wnd_a, &state->last_rect_a);
     /* 路线自报 (如实环境事实, 非呈现归因): GDI/shm 呈现链没有 graphics
      * smoke 的 surfaceKey/displayStallMs 通道, presented-route 三段判定
      * 不适用 (checks 已移除, 见 test.json); expectedRoute 存在性由
@@ -222,12 +243,18 @@ static void report_heartbeat(struct probe_state *state, const char *status,
                  "{\"clickCounts\":{\"a\":%u,\"b\":%u},"
                  "\"windowsCreated\":%s,\"fixedFrame\":\"fusion-two-window-v1\","
                  "\"expectedRoute\":\"%s\",\"requestedRoute\":\"%s\","
+                 "\"geomA\":{\"x\":%ld,\"y\":%ld,\"w\":%ld,\"h\":%ld,"
+                 "\"sizes\":%u,\"moves\":%u},"
                  "\"stateSeq\":{\"minimized_a\":%s,\"restored_a\":%s,"
                  "\"fullscreen_a\":%s,\"unfullscreen_a\":%s,"
                  "\"modal_b_owned_a\":%s},\"stateNote\":\"%s\"}",
                  state->clicks_a, state->clicks_b,
                  state->windows_created ? "true" : "false",
                  expect, req,
+                 (long)state->last_rect_a.left, (long)state->last_rect_a.top,
+                 (long)(state->last_rect_a.right - state->last_rect_a.left),
+                 (long)(state->last_rect_a.bottom - state->last_rect_a.top),
+                 state->wm_size_a, state->wm_move_a,
                  state->seq_minimized ? "true" : "false",
                  state->seq_restored ? "true" : "false",
                  state->seq_fullscreen ? "true" : "false",
@@ -238,10 +265,16 @@ static void report_heartbeat(struct probe_state *state, const char *status,
         snprintf(metrics, sizeof(metrics),
                  "{\"clickCounts\":{\"a\":%u,\"b\":%u},"
                  "\"windowsCreated\":%s,\"fixedFrame\":\"fusion-two-window-v1\","
-                 "\"expectedRoute\":\"%s\",\"requestedRoute\":\"%s\"}",
+                 "\"expectedRoute\":\"%s\",\"requestedRoute\":\"%s\","
+                 "\"geomA\":{\"x\":%ld,\"y\":%ld,\"w\":%ld,\"h\":%ld,"
+                 "\"sizes\":%u,\"moves\":%u}}",
                  state->clicks_a, state->clicks_b,
                  state->windows_created ? "true" : "false",
-                 expect, req);
+                 expect, req,
+                 (long)state->last_rect_a.left, (long)state->last_rect_a.top,
+                 (long)(state->last_rect_a.right - state->last_rect_a.left),
+                 (long)(state->last_rect_a.bottom - state->last_rect_a.top),
+                 state->wm_size_a, state->wm_move_a);
     winehua_smoke_write_result(&state->options, status, stage, message, metrics);
 }
 
