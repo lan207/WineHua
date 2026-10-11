@@ -98,7 +98,11 @@ python3 automation/smoke.py check build/automation-logs/<suite>-<runId>
 | `gate` | 入口门禁：3×reuse core + 1×clean core（引擎健康与基础渲染的最小回归） |
 
 `run` 的常用参数：`--prefix reuse\|clean`、`--tests ID,ID`（选测）、`--inline FILE`
-（内联临时用例，exe 须已在 `C:\smoke`）、`--job FILE`（job JSON 文件，先文件后
+（内联临时用例，exe 须已在 `C:\smoke`。**限制 (D27/#91)**：inline 条目的
+`backend` 在设备端不下发——档位落回设备当前设置，`needs_frame` 判定也不走
+inline 路径；故 inline 仅可承载纯仪器用例（notepad 载体 / rate-hold /
+displayroute 探针）。带档位或带帧判定的用例必须走套件路径——补齐设备端
+spawn 参数与帧采集编排前勿在 inline 里加此类用例）、`--job FILE`（job JSON 文件，先文件后
 CLI 覆盖；里程碑验证编排的入库复现）、`--env KEY=VALUE`、`--d3d`、`--dxvk`、
 `--seconds`、`--timeout-ms`、`--long-seconds`、`--device`、`--timeout-minutes`、
 `--extra-ps "KEY VALUE"`（附加冷启调试键，如 `--extra-ps "winehua.fusionHost
