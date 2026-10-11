@@ -101,6 +101,9 @@ python3 automation/smoke.py check build/automation-logs/<suite>-<runId>
 （内联临时用例，exe 须已在 `C:\smoke`）、`--job FILE`（job JSON 文件，先文件后
 CLI 覆盖；里程碑验证编排的入库复现）、`--env KEY=VALUE`、`--d3d`、`--dxvk`、
 `--seconds`、`--timeout-ms`、`--long-seconds`、`--device`、`--timeout-minutes`、
+`--extra-ps "KEY VALUE"`（附加冷启调试键，如 `--extra-ps "winehua.fusionHost
+ability"` 在 Pad 上强制 PC/2in1 的 ability 承载跑 fusion 套件——显式 want 经
+publishLaunchRequest 随冷启/二次 want 生效，不持久化）、
 `--retry-failed`（D35 防抖：判定 FAIL 的用例单独重跑一次，终判取重试、首判留档
 于自完备子归档 `retry-R<N>/`——`check` 可独立重判。默认关；套件级 checks 不参与
 重试。背景：成套跑每轮随机 1 项间歇失败是 D30 残留时序窗，单测复跑即绿）。

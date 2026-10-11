@@ -674,6 +674,7 @@ def cmd_push(args: argparse.Namespace) -> int:
     extra = " ".join(x for x in (
         f"--ps winehua.desktopMode {mode}" if mode else "",
         f"--ps winehua.displayRoute {route}" if route else "",
+        f"--ps {args.extra_ps}" if getattr(args, "extra_ps", "") else "",
     ) if x)
     ensure_app_running(hdc, device, extra)
     log(f"push {payload} → {device}")
@@ -843,8 +844,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         # 与系统版本决定, 同一套件在不同设备上测的不是一回事)。CLI 显式给
         # 且与声明不同 → 覆盖生效但打 NOTE 留痕。
         suite_mode = ""
-        if args.suite:
-            sp = SUITES_DIR / f"{args.suite}.json"
+        # suite 名取 CLI > job 声明 —— 只带 --job 跑时同样钉死档位
+        # (2026-10-11 实测: 只带 --job 时 args.suite 为空, suite_mode 漏采,
+        #  冷启缺 winehua.desktopMode, 全新安装按持久化默认落 virtual 桌面,
+        #  fusion 套件 byTitle/按窗点击全败 —— 表现为 D35 间歇假象)
+        suite_name = args.suite or job.get("suite", "")
+        if suite_name:
+            sp = SUITES_DIR / f"{suite_name}.json"
             if sp.is_file():
                 suite_mode = json.loads(sp.read_text()).get("desktopMode", "")
         cli_mode = getattr(args, "desktop_mode", None)
@@ -881,6 +887,11 @@ def cmd_run(args: argparse.Namespace) -> int:
              f"--ps winehua.run_id {run_id} --ps winehua.prefix {args.prefix}")
     if args.suite:
         start += f" --ps winehua.suite {args.suite}"
+    if getattr(args, "extra_ps", ""):
+        # 附加调试键 (如 winehua.fusionHost)。publishLaunchRequest 在
+        # onCreate/onNewWant 双入口对显式 want 随时生效; 承载判定
+        # (fusionUsesSubWindow) 在窗口创建时读, 冷启/二次 want 均可靠。
+        start += f" --ps {args.extra_ps}"
     if args.long_seconds:
         start += f" --ps winehua.long_seconds {args.long_seconds}"
     log(f"run {args.suite or 'job'} (runId={run_id}, prefix={args.prefix}, "
@@ -1496,6 +1507,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--run-id", default="")
     run.add_argument("--long-seconds", type=int, default=0)
     run.add_argument("--skip-push", action="store_true")
+    run.add_argument("--extra-ps", default="",
+                     help="附加 --ps 调试键 (值形如 'winehua.fusionHost ability'，"
+                          "不带 --ps 前缀)。随冷启与二次 want 下发, 例: 在 Pad 上"
+                          "强制 PC/2in1 的 ability 承载跑 fusion 套件")
     run.add_argument("--tests", default="",
                      help="逗号分隔的 testId 选测（suite 子集）")
     run.add_argument("--inline", default="",
