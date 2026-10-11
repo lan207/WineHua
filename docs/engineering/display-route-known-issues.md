@@ -592,6 +592,12 @@ hilog 全量落盘 + stderr 只截尾部 ~1MB（t5q 整拉 744MB 失败教训）
 区别是「停滞」不是崩溃 —— 同样按「保现场 + 重试」处理；判据：设备侧进程
 CPU 全 idle 即不是自旋死锁，先别当代码 bug 查。
 
+**D47 处置（2026-10-11，止血）**：首启窗口（本进程从未 ready）首次
+`state:failed` 自动重试一次 —— 与失败卡片「重试」同款 `restartEngine` 编排
+（`WineEnvService.scheduleColdStartAutoRetry`）；再败停在失败卡片，与手工处置
+终点一致；bgStart 后台拉起失败的重试保持无感呈现。治本仍是 box64 dynarec 对
+wineboot 代码段的翻译问题（引擎侧）。
+
 ### 2.4 X 路线 GL 呈现：走私有通道（2026-09-30 落地；GLX 补栈为被否决方案）
 
 **现状（已修，实测）**：`winex11.drv` 增私有 present 驱动

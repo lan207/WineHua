@@ -169,6 +169,11 @@ export class WineEnvService {
   // EngineGuide 的 failed 分支承接自救 (重试/重置)。
   // enterReady/failInit/ready-degraded 时清除
   private bgStart: boolean = false;
+  // D47 止血 (临时): 首启失败自动重试双标记 — 每进程一次 (防连败锁进自动循环) +
+  // 仅本进程从未 ready 的首启窗口内生效 (会话中 wineserver 死亡维持人工卡片)。
+  // 定界与实测依据见 scheduleColdStartAutoRetry 注释。
+  private coldStartFailRetried: boolean = false;
+  private engineEverReady: boolean = false;
 
   private hasRawfileWineData: boolean = false;
   private ctx: common.Context | null = null;
@@ -528,7 +533,11 @@ export class WineEnvService {
       // 此前首启失败会永久停在初始化 spinner 无自救入口
       this.engineState = 'failed';
       this.engineStage = detail;
+      const wasBg = this.bgStart;  // failInit 会清 bgStart, 自动重试须保留呈现方式
       this.failInit(`Wine 引擎启动失败 (${detail || 'unknown'})`);
+      // D47 止血: 首启首次失败自动重试一次 (必须在 failInit 之后 — busy 标记已清,
+      // restartEngine 的 isBusy 门才放行)
+      this.scheduleColdStartAutoRetry(detail, wasBg);
     } else if (name == 'stopping') {
       this.engineState = 'stopping';
     } else if (name == 'stopped') {
@@ -554,6 +563,7 @@ export class WineEnvService {
   private enterReady(): void {
     this.engineState = 'ready';
     this.engineStage = '';
+    this.engineEverReady = true;  // D47: 自动重试仅限此前窗口 (从未 ready 的首启)
     this.initFailed = false;
     this.initBusy = false;
     this.opBusy = false;
@@ -882,6 +892,38 @@ export class WineEnvService {
     this.bgStart = false;
   }
 
+  // D47 止血 (临时): 全新安装首启 wineboot 偶发 box64 SIGSEGV 崩溃 → state:failed
+  // (D40 家族, known-issues §2.3)。既有实测处置 = 重试一次即成 (2026-10-11 两次
+  // 现场: 首启失败一次、点失败卡片「重试」即过) — 本方法把这一步自动化: 首启
+  // 第一次失败自动走「重试」按钮同款编排 (restartEngine), 再败才停在失败卡片
+  // (与手工重试的终点完全一致, 编排出意外时也零回归 —— 卡片照常给出自救入口)。
+  // 定界 (实测依据):
+  // - 只挂 state:failed 一个调用点 (wineboot/wineserver spawn 类)。picker/目录/
+  //   前缀超时等分支各有自己的预算与治本 (#14/#16/#78), 不在此列。
+  // - 只在本进程从未 ready 的窗口内 (engineEverReady): 会话运行中 wineserver 非
+  //   预期死亡维持人工卡片语义, 不顺手扩。
+  // - 每进程一次 (coldStartFailRetried): 连败时把用户锁进自动循环比卡片更糟。
+  // - 呈现延续原方式: wasBg 失败的重试仍走后台 (bgStart 无感承诺不被重试破坏)。
+  // 治本待办 = box64 dynarec 对 wineboot 代码段的翻译问题 (引擎侧, 不在本分支
+  // 代码内)。
+  private scheduleColdStartAutoRetry(detail: string, wasBg: boolean): void {
+    if (this.coldStartFailRetried || this.engineEverReady) {
+      return;
+    }
+    this.coldStartFailRetried = true;
+    hilog.warn(DOMAIN, 'wine', '[AUTO-RETRY] cold-start engine fail (%{public}s), retrying once',
+      detail);
+    setTimeout(() => {
+      // 1s 窗口内被别的路径接管 (用户点重试/重置、native 又推进) 则让位;
+      // restartEngine 的 isBusy 门是第二道兜底
+      if (this.engineState != 'failed') {
+        hilog.warn(DOMAIN, 'wine', '[AUTO-RETRY] skipped (state=%{public}s)', this.engineState);
+        return;
+      }
+      this.restartEngine(!wasBg);
+    }, 1000);
+  }
+
   // prefix 是否已在盘上 (drive_c 存在): 引导"首次/二次进入"文案分野 —
   // 首次启动含解压数据+建 prefix, 耗时显著多于暖启动, 需提前给耗时预期
   hasPrefixOnDisk(): boolean {
@@ -1108,17 +1150,19 @@ export class WineEnvService {
   // 内存 registry/句柄全保留, 用户以为重启了其实什么都没重置)。
   // 修历史 bug: 桌面存活时裸 startSession 会再 spawn 一套 wineserver/explorer
   // → 双桌面同时渲染, 界面卡死
-  restartEngine(): void {
-    hilog.warn(DOMAIN, 'wine', 'restartEngine: engineState=%{public}s sessionAlive=%{public}s initFailed=%{public}s',
-      this.engineState, this.sessionAlive, this.initFailed);
+  // foreground 入参 (2026-10-11 D47): 默认 true = 按钮路径全 UI 呈现不变 (停/启
+  // 均带 overlay); 首启自动重试对 bgStart 后台失败传 false, 重试全程保持无感。
+  restartEngine(foreground: boolean = true): void {
+    hilog.warn(DOMAIN, 'wine', 'restartEngine: engineState=%{public}s sessionAlive=%{public}s initFailed=%{public}s fg=%{public}s',
+      this.engineState, this.sessionAlive, this.initFailed, foreground);
     if (this.isBusy()) {
       return;
     }
     this.opBusy = true;
     (async (): Promise<void> => {
-      await this.stopSession(true);
+      await this.stopSession(foreground);
       this.opBusy = false;
-      this.startSession(true);
+      this.startSession(foreground);
     })();
   }
 
