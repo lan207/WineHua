@@ -8,6 +8,7 @@ extern "C" {
 #endif
 
 struct wlr_xwayland_surface;
+struct wlr_buffer;
 struct NativeWindow; /* 真身 SDK 侧 typedef OHNativeWindow; 文件作用域前置
                       * 声明 —— 原型作用域声明会在 .c 侧报 conflicting
                       * types (build 实测) */
@@ -103,6 +104,20 @@ void x11_toplevel_resize_window(uint32_t toplevelId, int w, int h);
  * entry, 有新 commit 则画进该窗队列 buffer 并呈现; 未 attach 跳帧 (skip
  * 计数采样日志); xs 首帧到达时补发 created 事件。合成器线程调用。 */
 void x11_toplevel_render_tick(void);
+
+/* MW-GPU: fusion 承载窗挂 guest 零拷贝帧 (display_guest_frames PullFrame →
+ * ohos_output_client_frame_set 的 multiwindow 分支路由入口)。返回 1 = 已
+ * 收下 (本 entry 持一份引用, 替换/销毁时释放); 0 = 无该在册窗, 调用方自
+ * 行释放。合成器 loop 线程调用。 */
+int x11_toplevel_set_guest_frame(uint32_t xwindow, struct wlr_buffer *buffer,
+                                 int flip);
+
+/* MW-GPU: guest 帧路由 (display_guest_frames) 的窗口查询面 —— fusion 无
+ * g_clients, ohos_output 的 client_frame_anchor / client_xwindow_generation
+ * 在 multiwindow 下转接至此。几何 = X 全局坐标; 身份 = 记录序号。返回 0 =
+ * 该 X 窗不在册。合成器 loop 线程调用 (与帧路由同拍)。 */
+int x11_toplevel_guest_anchor(uint32_t xwindow, int *x, int *y, int *w, int *h);
+int x11_toplevel_guest_generation(uint32_t xwindow, uint64_t *generation);
 
 #ifdef __cplusplus
 }

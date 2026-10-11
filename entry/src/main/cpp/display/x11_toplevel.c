@@ -18,6 +18,7 @@
 #include <wlr/render/allocator.h>
 #include <wlr/render/pass.h>
 #include <wlr/render/wlr_renderer.h>
+#include <wlr/render/wlr_texture.h> /* MW-GPU: wlr_texture_from_buffer (guest 帧) */
 #include <wlr/types/wlr_buffer.h> /* wlr_client_buffer 完整定义 (surface->buffer) */
 #include <wlr/types/wlr_compositor.h>
 #include <wlr/xwayland/xwayland.h>
@@ -82,6 +83,17 @@ struct x11_xs_entry {
     bool dead;          /* destroy 已到: session_reset 时不再重复补发 */
     bool dirty;         /* surface commit 待渲染 (render_tick 消费) */
     uint32_t skip_count; /* 未 attach 窗口的跳帧计数 (采样日志) */
+    /* MW-GPU: 记录身份序号 —— guest 帧路由的 generation 判据 (fusion 无
+     * g_clients, 窗口身份由本表提供)。分配时自增, 终身不变; 墓碑槽复用
+     * 换新记录即换新序号 ("同 id 是否新窗" 单点判据)。 */
+    uint64_t generation;
+    /* MW-GPU: fusion 下 guest gfx 零拷贝帧 (venus/virgl present)。desktop
+     * 路线帧进 scene 图块; fusion 无 scene 提交, frame_set 路由到本字段,
+     * render_entry 有它时优先画 (GDI 窗无此帧, 仍走 surface->buffer)。
+     * 引用语义 = 本 entry lock 一份, 替换/entry 移除时 unlock。 */
+    struct wlr_buffer *guestFrame;
+    int guestFlip;      /* 1 = 纵向翻 (GL/virgl), 0 = 不翻 (Vulkan/venus) ——
+                         * 与 scene 路径 frame_set 的 FLIPPED_180 口径一致 */
     /* M4c-T1: popup 事件状态 (仅 is_popup 条目使用) */
     bool popup_visible;      /* popup_show 已发 (unmap/destroy 双触发 hide 的去重) */
     uint32_t popup_parent_id; /* show 时用的 owner toplevelId (hide 事件 id) */
@@ -122,6 +134,7 @@ struct x11_xs_entry {
 
 static struct x11_xs_entry g_entries[X11_TOPLEVEL_MAX];
 static size_t g_entry_count;
+static uint64_t g_entryGeneration; /* 记录身份序号 (见 x11_xs_entry.generation) */
 static bool g_active = false;
 static struct wlr_allocator *g_alloc;   /* chain_start 注入 (buffer 目标) */
 static struct wlr_renderer *g_renderer; /* render pass 用 */
@@ -199,6 +212,12 @@ static void entry_remove(struct x11_xs_entry *e)
     e->dead = true;
     e->xs = NULL;
     e->win = NULL;
+    /* MW-GPU: 释放 guest 帧引用 (lock 在 x11_toplevel_set_guest_frame);
+     * 槽会被 entry_alloc 复用, 不清则新窗继承旧帧。 */
+    if (e->guestFrame) {
+        wlr_buffer_unlock(e->guestFrame);
+        e->guestFrame = NULL;
+    }
 }
 
 /* 空槽分配: 优先复用墓碑槽 (地址稳定, 见 entry_remove 注释), 无则追加。 */
@@ -629,6 +648,7 @@ void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs)
     }
     memset(e, 0, sizeof(*e));
     e->xs = xs;
+    e->generation = ++g_entryGeneration;
     /* M4c-T1: OR 分叉在最早入口 (plan RF#1) —— 判据只看 xs->override_redirect
      * (spec §3.5 红线, 不依赖 surface 存在; OR 窗 associate 是否发生不进判据)。 */
     e->is_popup = xs->override_redirect;
@@ -1083,14 +1103,24 @@ static bool render_entry(struct x11_xs_entry *e)
      * false = 本帧没画出去, dirty 保留, remap 后首帧重绘。 */
     if (!e->xs->surface) return false;
     struct wlr_client_buffer *cb = e->xs->surface->buffer;
-    if (!cb || !cb->texture) {
-        XTL_LOG("XTL render-skip nocb id=%{public}u cb=%{public}p",
-                e->toplevelId, (void *)cb);
-        return true;
+    /* MW-GPU: 有 guest 零拷贝帧 (fusion GPU 窗) 优先画它 —— 此时
+     * surface->buffer 停在 map 时的初始帧 (D50 链), 内容无价值; 建纹理
+     * 失败回退 surface 路径 (画旧帧不崩)。纹理 per-frame 重建: 帧队列有界
+     * (消费者按 slot 复用), 首版接受分配开销, 缓存化待性能采样。 */
+    struct wlr_texture *src = NULL;
+    if (e->guestFrame)
+        src = wlr_texture_from_buffer(g_renderer, e->guestFrame);
+    if (!src) {
+        if (!cb || !cb->texture) {
+            XTL_LOG("XTL render-skip nocb id=%{public}u cb=%{public}p",
+                    e->toplevelId, (void *)cb);
+            return true;
+        }
+        src = cb->texture;
     }
     XTL_LOG("XTL render id=%{public}u tex=%{public}p %dx%d -> dst",
-            e->toplevelId, (void *)cb->texture,
-            cb->base.width, cb->base.height);
+            e->toplevelId, (void *)src,
+            src->width, src->height);
     /* 逐帧 render 日志: commit 驱动 (静止窗零日志), 频率安全。D50 排查期
      * 保留 —— 收口时降为失败路径日志。 */
 
@@ -1113,13 +1143,18 @@ static bool render_entry(struct x11_xs_entry *e)
 
     struct wlr_render_texture_options opts;
     memset(&opts, 0, sizeof(opts));
-    opts.texture = cb->texture;
+    opts.texture = src;
     opts.dst_box.x = 0;
     opts.dst_box.y = 0;
     opts.dst_box.width = dst->width;
     opts.dst_box.height = dst->height;
     /* 0 不是合法 transfer function (SRGB = 1<<0), 必须显式给 */
     opts.transfer_function = WLR_COLOR_TRANSFER_FUNCTION_SRGB;
+    /* MW-GPU: guest 帧行序修正 —— GL(virgl) 翻, Vulkan(venus) 不翻 (与
+     * scene 路径 frame_set 的 FLIPPED_180 同口径); GDI 路径 memset 后
+     * 即 NORMAL, 不变。 */
+    if (e->guestFrame && e->guestFlip)
+        opts.transform = WL_OUTPUT_TRANSFORM_FLIPPED_180;
     wlr_render_pass_add_texture(pass, &opts);
 
     if (!wlr_render_pass_submit(pass)) {
@@ -1138,6 +1173,79 @@ static bool render_entry(struct x11_xs_entry *e)
     }
     XTL_LOG("XTL present ok id=%{public}u", e->toplevelId);
     return true;
+}
+
+/* MW-GPU: 按 X 窗号查在册 entry。持锁调用。 */
+static struct x11_xs_entry *entry_of_window(uint32_t xwindow)
+{
+    for (size_t i = 0; i < g_entry_count; ++i) {
+        struct x11_xs_entry *c = &g_entries[i];
+        if (!c->dead && c->xs && c->xs->window_id == xwindow)
+            return c;
+    }
+    return NULL;
+}
+
+/* MW-GPU: guest 帧路由的窗口查询面 —— fusion 无 g_clients 记录 (多窗分支
+ * HandleNewSurface 不建 client, 窗口只在本映射层在册), ohos_output 的同名
+ * client_* 查询在 multiwindow 下转接至此。语义与 client 路径对齐: 几何 =
+ * X 全局坐标 (与 C 路径 xs->x/y 同源), 身份 = generation。返回 0 = 不在册。 */
+int x11_toplevel_guest_anchor(uint32_t xwindow, int *x, int *y, int *w, int *h)
+{
+    pthread_mutex_lock(&g_lock);
+    struct x11_xs_entry *e = entry_of_window(xwindow);
+    if (!e) {
+        pthread_mutex_unlock(&g_lock);
+        return 0;
+    }
+    if (x) *x = e->xs->x;
+    if (y) *y = e->xs->y;
+    if (w) *w = e->xs->width;
+    if (h) *h = e->xs->height;
+    pthread_mutex_unlock(&g_lock);
+    return 1;
+}
+
+int x11_toplevel_guest_generation(uint32_t xwindow, uint64_t *generation)
+{
+    pthread_mutex_lock(&g_lock);
+    struct x11_xs_entry *e = entry_of_window(xwindow);
+    if (!e) {
+        pthread_mutex_unlock(&g_lock);
+        return 0;
+    }
+    if (generation) *generation = e->generation;
+    pthread_mutex_unlock(&g_lock);
+    return 1;
+}
+
+/* MW-GPU: fusion 承载窗挂 guest 零拷贝帧 (display_guest_frames 的 PullFrame
+ * → ohos_output_client_frame_set multiwindow 分支路由到此)。引用语义与
+ * scene 路径同款: 这里 lock 一份持有, 替换 / entry 移除时 unlock。返回 1 =
+ * 已收下; 0 = 无此在册窗 (调用方自行释放该帧)。持锁执行, 纪律同
+ * render_entry (napi 侧 attach 最多等一帧)。 */
+int x11_toplevel_set_guest_frame(uint32_t xwindow, struct wlr_buffer *buffer,
+                                 int flip)
+{
+    if (!buffer) return 0;
+    pthread_mutex_lock(&g_lock);
+    struct x11_xs_entry *e = entry_of_window(xwindow);
+    if (!e) {
+        /* 拿帧窗口不在册 (销毁竞态 / popup 未挂 / id 未登记) —— 采样留证 */
+        static uint32_t s_miss;
+        if (++s_miss % 120 == 1)
+            XTL_LOG("XTL guest-frame miss xwin=%{public}u n=%{public}u",
+                    xwindow, (unsigned)s_miss);
+        pthread_mutex_unlock(&g_lock);
+        return 0;
+    }
+    wlr_buffer_lock(buffer);
+    if (e->guestFrame) wlr_buffer_unlock(e->guestFrame);
+    e->guestFrame = buffer;
+    e->guestFlip = flip;
+    e->dirty = true;
+    pthread_mutex_unlock(&g_lock);
+    return 1;
 }
 
 void x11_toplevel_render_tick(void)

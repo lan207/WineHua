@@ -829,6 +829,12 @@ static void FrameStep(bool via_vsync)
      * per-xs 呈现), 帧钟只驱动 per-xs 渲染循环。所有驱动源 (vsync 直推 /
      * timer 兜底) 都经本函数, 分叉在此单点。 */
     if (g_out.multiwindow) {
+        /* MW-GPU: 「无 output 提交」不等于「guest 帧路由可跳过」——
+         * display_guest_frames 还负责挂零拷贝 present target (venus/virgl),
+         * 早退会让 guest present 永久 target missing (cube/GL 不出图根因,
+         * 2026-10-11 现场实锤)。取到的帧经 frame_set 的 multiwindow 分支
+         * 路由进 x11_toplevel 承载窗, render_tick 同拍画进子窗队列。 */
+        display_guest_frames_tick();
         x11_toplevel_render_tick();
         return;
     }
@@ -1560,6 +1566,11 @@ static struct ohos_client_surface *FindClientByWindow(uint32_t xwindow)
 
 int wl_ohos_output_client_frame_anchor(uint32_t xwindow, int *x, int *y, int *w, int *h)
 {
+    /* MW-GPU: fusion 无 g_clients (多窗分支不建 client, spec §3.2) —— 窗口
+     * 只在 XTL 映射层在册。查询转接 XTL, 否则 TryAttach 锚判恒失败
+     * (guest 帧永不挂: [GUEST-FRAMES] 0 行)。 */
+    if (g_out.multiwindow)
+        return x11_toplevel_guest_anchor(xwindow, x, y, w, h);
     struct ohos_client_surface *c = FindClientByWindow(xwindow);
     struct wlr_xwayland_surface *xs;
     if (!c)
@@ -1585,6 +1596,9 @@ int wl_ohos_output_client_xwindow_alive(uint32_t xwindow)
 
 int wl_ohos_output_client_xwindow_generation(uint32_t xwindow, uint64_t *generation)
 {
+    /* MW-GPU: 同上 —— 身份序号来自 XTL 记录 (fusion 唯一登记处)。 */
+    if (g_out.multiwindow)
+        return x11_toplevel_guest_generation(xwindow, generation);
     struct ohos_client_surface *c = FindClientByWindow(xwindow);
     if (!c)
     {
@@ -1599,6 +1613,24 @@ int wl_ohos_output_client_xwindow_generation(uint32_t xwindow, uint64_t *generat
 int wl_ohos_output_client_frame_set(uint32_t xwindow, struct wlr_buffer *buffer,
                                     int flip_vertical, uint64_t surface_key)
 {
+    /* MW-GPU: fusion 无 scene 提交路径 —— guest 帧改路由 per-xs 承载窗
+     * (x11_toplevel 渲染循环画进子窗队列); desktop 的两条路径 (client
+     * scene 节点 / D23 子窗 face) 语义不动。 */
+    if (g_out.multiwindow)
+    {
+        const int taken =
+            x11_toplevel_set_guest_frame(xwindow, buffer, flip_vertical);
+        if (taken)
+        {
+            /* 与 desktop 路径同款: 打「交出去的时刻」(§2.6 不变量检查器) */
+            wl_ohos_consumer_buffer_note_handoff(buffer, g_out.frame_seq,
+                                                 wl_ohos_egl_sync_count());
+            g_out.last_frame_key = surface_key;
+            __atomic_store_n(&g_out.last_frame_ns, (uint64_t)NowNs(),
+                             __ATOMIC_RELAXED);
+        }
+        return taken;
+    }
     struct ohos_client_surface *c = FindClientByWindow(xwindow);
     struct wlr_xwayland_surface *xs;
     if (!c)
