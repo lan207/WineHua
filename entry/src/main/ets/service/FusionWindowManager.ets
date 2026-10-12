@@ -196,7 +196,8 @@ export class FusionWindowManager {
 
       // 位置: wine 逻辑 × scale; 有 guest 坐标 (x11 created) 按 guest 位置
       // 摆放 (双窗并排), 否则右下方向层叠 (无系统排布, 自定)。
-      // 高度 +stripPxOf 为回退路线补偿位 (当前恒 0, 见该方法注释)
+      // 高度 +stripPxOf 为顶条补偿位 (任务 #129 路线; x11 fusion 子窗非 0,
+      // 其余形态恒 0, 见该方法注释)
       try {
         await subWin.resize(this.toPx(entry.w),
                             this.toPx(entry.h) + this.stripPxOf(tl));
@@ -291,7 +292,8 @@ export class FusionWindowManager {
     e.w = Math.max(1, w);
     e.h = Math.max(1, h);
     if (e.fullscreen) return; // 全屏期间不响应内容尺寸 (由 fullscreen/restore 掌管)
-    // +stripPxOf 为回退路线补偿位 (当前恒 0, 见该方法注释)
+    // +stripPxOf 为顶条补偿位 (任务 #129 路线; x11 fusion 子窗非 0, 其余形态
+    // 恒 0, 见该方法注释)
     e.subWin.resize(this.toPx(e.w), this.toPx(e.h) + this.stripPxOf(tl))
       .catch(() => { /* ignore */ });
   }

@@ -561,6 +561,9 @@ export class SmokeRunner {
     }
     if (action.type === 'displayroute') {
       // [[SMOKE]] M0-T7: 触发显示路线 bring-up (displayRouteNapi → entry WineHua_DisplayRoute_Start)
+      // (全库无动作生产者: 现无 job/探针产出 type=displayroute 的 inject 请求;
+      //  bring-up 主路径 = job.displayroute 字段 (runJob 顶部)。此分支留作
+      //  手动 app 内实验口, 勿当作在用路径。)
       displayRouteNapi.startDisplayRouteChain();
       await new Promise<void>((r) => setTimeout(r, 300));
       return '';
@@ -604,7 +607,7 @@ export class SmokeRunner {
       const cy: number = rect.height / 2;
       // button 契约 = evdev 码 (同 injectMouse/injectSwipe 的 mapMouseButton
       // 预处理); 直传 ArkTS 值 1 上 wire 后 Xwayland 不认 (BTN_LEFT=0x110),
-      // 点击静默丢弃 —— 19261010 轮 clickCounts a=0 的根因
+      // 点击静默丢弃 —— 20261010 轮 clickCounts a=0 的根因
       const btn: number = mapMouseButton(1);   // 左键
       testNapi.sendPointerEvent(tl, 3, cx, cy, btn);   // Move
       await new Promise<void>((r) => setTimeout(r, 60));

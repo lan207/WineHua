@@ -138,6 +138,9 @@ int main(int argc, char **argv)
         memset(&in, 0, sizeof(in));
         in.type = INPUT_MOUSE;
         in.mi.dwFlags = MOUSEEVENTF_WHEEL;
+        /* 方向与 host 臂相反 (host 请求 notches:+3 → 断言 +360): 本臂目的
+         * 只验 win32 焦点分发/累积路径自身 (与方向无关), 反向发送即顺带
+         * 覆盖负向累计。两臂断言各按自身输入定符号。 */
         for (i = 0; i < 3; ++i)
         {
             in.mi.mouseData = (DWORD)(SHORT)(-120); /* 向下 3 格 */

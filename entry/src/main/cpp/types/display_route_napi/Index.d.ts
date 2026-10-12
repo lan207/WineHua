@@ -7,16 +7,19 @@
  * 启动 x11 出图链。surfaceId 非零 = 同步绑 XComponent → NativeWindow 直推;
  * scriptEnabled = 真机门自动注入脚本 (测试编排专用, 产品恒 false);
  * outW/outH = x11 台架输出尺寸 (缺省 0 ⇒ 800x600);
- * canvasEglPresent = 画布绑定走 EGL swap (语义见 ohos_output.h)。
+ * canvasEglPresent = 画布绑定走 EGL swap (语义见 ohos_output.h);
+ * multiwindow = M4a 多窗模式位 (route=x11 × mode=fusion, 实时判定见
+ * WineWindowManager.shouldUseMultiwindow; 缺省 false = 旧行为)。
  * 无参调用 = 不绑 surface 启动链。
  */
 export const startDisplayRouteChain: (surfaceId?: bigint, scriptEnabled?: boolean,
-  outW?: number, outH?: number, canvasEglPresent?: boolean) => boolean;
+  outW?: number, outH?: number, canvasEglPresent?: boolean,
+  multiwindow?: boolean) => boolean;
 
 /** 停止出图链。 */
 export const stopDisplayRouteChain: () => boolean;
 
-/** 路线选择 ("fusion"/"x11")。 */
+/** 路线选择 ("wayland"/"x11"; 其余值被 wine_env.cpp 静默忽略)。 */
 export const setDisplayRoute: (route: string) => boolean;
 
 /** 进程内路线镜像读取口 (wine_env.cpp 唯一写点): true = x11 路线。

@@ -322,9 +322,9 @@ export class PopupWindowManager {
   }
 
   // 全局坐标 = 父窗口 windowRect (全局物理 px) + Wine 逻辑 offset × scale
-  // (+ stripPxOf 为手动补偿位, 任务 #129 回退路线保留, 当前恒 0: 若回退
-  // 自绘顶条, off 是 guest 坐标里 popup 相对 owner X 窗的偏移, owner X 窗
-  // 内容在承载窗里从顶条下方开始, 不补 y 则菜单 popup 错位进顶条区)
+  // (+ stripPxOf 为顶条补偿位, 任务 #129 路线: off 是 guest 坐标里 popup 相对
+  // owner X 窗的偏移, owner X 窗内容在承载窗里从顶条下方开始, 不补 y 则菜单
+  // popup 错位进顶条区; x11 fusion 子窗非 0, 其余形态恒 0)
   private async positionEntry(entry: PopupEntry, parentWin: window.Window, scale: number): Promise<void> {
     if (!entry.subWin) return;
     const rect = parentWin.getWindowProperties().windowRect;

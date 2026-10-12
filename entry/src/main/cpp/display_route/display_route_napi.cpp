@@ -9,12 +9,15 @@
  * 同包加载。
  *
  * 接口一览:
- *   startDisplayRouteChain(sid?, script?, w?, h?, canvasEgl?) — 启动出图链
- *     (sid 非零 = 同步绑 XComponent → NativeWindow 直推; script = 真机门
- *     自动注入脚本, 测试编排专用, 产品恒 false; w/h = x11 台架输出尺寸;
- *     canvasEgl = 画布绑定走 EGL swap, 语义见 ohos_output.h)
+ *   startDisplayRouteChain(sid?, script?, w?, h?, canvasEgl?, multiwindow?) —
+ *     启动出图链 (sid 非零 = 同步绑 XComponent → NativeWindow 直推;
+ *     script = 真机门自动注入脚本, 测试编排专用, 产品恒 false; w/h = x11
+ *     台架输出尺寸; canvasEgl = 画布绑定走 EGL swap, 语义见 ohos_output.h;
+ *     multiwindow = M4a 多窗模式位 (route=x11 × mode=fusion, 实时判定见
+ *     WineWindowManager.shouldUseMultiwindow; 缺省 false = 旧行为))
  *   stopDisplayRouteChain() — 停链
- *   setDisplayRoute(route) — 路线选择 ("fusion"/"x11")
+ *   setDisplayRoute(route) — 路线选择 ("wayland"/"x11"; 其余值被
+ *     wine_env.cpp WineHua_SetDisplayRoute 静默忽略)
  *   resizeDisplayRouteOutput(w, h) — 画布尺寸动态响应 (折叠/旋转)
  *   injectDisplayRouteKey(keycode, press) — evdev 键注入
  *   injectDisplayRouteMotion(nx, ny, phase) — 指针注入 (0..1, 0=enter

@@ -300,14 +300,15 @@ static void LogPresentSegment(struct timespec ts_enter);
  * 背景: 矩形移动场景曾出现「宿主送出的帧背景整块黑」(局部 damage 落到从没
  * 画过背景的队列槽位, 见 PresentFrameZeroCopy 的修复说明)。这里对每帧送屏
  * 前的背景采样点做校验, 偏离即 ERROR + 落 PPM 取证 —— 修复回归的第一现场。
- * 时间线 (XPOS/PRES) 与落盘预算默认关, 用 drive_c 下的 marker 文件打开
- * (diag-present-timeline / WINEHUA_PRESENT_DUMP), 避免常驻日志量。 */
+ * 时间线 (XPOS/PRES) 默认关, drive_c marker (diag-present-timeline) 打开;
+ * 落盘预算默认 40 张 (f12d510 诊断期设定——异常帧才触发、上限封顶),
+ * 环境变量 WINEHUA_PRESENT_DUMP 可调 (=0 关)。 */
 static int64_t NowNs(void);
 static int DiagFlagFile(const char *name);
 
-/* 诊断开关 (默认关, 验证/排障时在 drive_c 下放 marker 文件打开):
- *   drive_c/diag-present-timeline  XPOS/PRES 呈现时间线日志
- *   WINEHUA_PRESENT_DUMP: 异常帧落盘预算 (张), 背景像素校验常驻 (门禁) */
+/* 诊断开关:
+ *   drive_c/diag-present-timeline  XPOS/PRES 呈现时间线日志 (默认关, marker 打开)
+ *   WINEHUA_PRESENT_DUMP: 异常帧落盘预算 (张; 缺省 40, 0=关), 背景像素校验常驻 (门禁) */
 static int DiagTimelineOn(void)
 {
     static int on = -1;
@@ -1014,8 +1015,9 @@ static void FrameStep(bool via_vsync)
                  * (提前 return, damage 全丢) / scene outputs 空 / damage 裁剪
                  * 成空集。判据组合: 客户端 seq 推进而 needsFrame=0 ⇒ damage
                  * 丢失实锤; nodeEnabled/nOut/out 尺寸区分三类成因。
-                 * (wlr_scene_output.pending_commit_damage 在无名嵌套结构体里,
-                 * 本文件编译标准下不可直接访问 —— 用公共状态等价判别。)
+                 * (pending_commit_damage 是 WLR_PRIVATE 命名成员、可直接读,
+                 * 见 wl_ohos_output_force_redraw 用法; 本插桩采用公共状态
+                 * 等价判别, 不依赖该成员。)
                  * 推旗标: hdc file send -b app.hackeris.winehua <任意文件>
                  *   /data/storage/el2/base/files/.wine/drive_c/scene-damage-diag */
                 if (DiagFlagFile("scene-damage-diag")) {
