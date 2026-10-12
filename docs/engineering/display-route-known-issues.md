@@ -1371,6 +1371,23 @@ el2 视图切换窗口内，`rm -rf` 对真实路径**静默无效**（同时刻
 同树 mkdir 被 SELinux 恒定拒；亚秒后手动 rm 即成功，gate 重跑即愈）。持续
 持有（本例：app 运行中占用）重试耗尽后照旧报错，force-stop 协议不变。
 
+### 3.7 XIM 判据前置检查（server spawn 一次性，无 ready 即无 server）
+
+`TrySpawnXimServer`（`display_compositor.cpp`）只由 `HandleXwaylandReady`
+触发，且 `static spawned` 在 spawn 尝试**之前**置位——进程生命周期内只试一次，
+失败（`xim_bridge_channel_init` 失败 / `StartNativeChildProcess` 非 0）不重试；
+也没有 xclient 测试窗那样的 retrigger 补拉（`TrySpawnXclientTestClient` 在
+displayroute script retrigger 时补拉，防「产品链先建、门开晚于 ready」）。
+⇒ 凡 ready 时机发生在当前二进制生效之前（复用已存会话 / 热更未重启进程），
+本进程内 XIM server 不存在，XOpenIM 类判据静默失败（M4-T4 判据实测，
+2026-10-08）。
+
+**判据前置**：先取证 xim 活着——沙箱 `.x11-rt/xim_server_stderr.log` 有追加，
+或 hilog 有 `xim NCP spawned`；两者皆无则重启会话再判，不带着无 server 的
+会话解释判据结果。**未定性**：Xwayland 链重启（退出桌面后再进入）后旧 XIM
+子进程的存活与复用行为未实测；`spawned` 置位早于尝试（失败也算已试）是后续
+改进（重试 / 补拉如要做）必须一并处理的点。
+
 ## 4. 前置条件（场景切换才触发）
 
 - **沙箱安全审计**：wlroots/xserver 补丁含三处在桌面 Linux 语境"看起来

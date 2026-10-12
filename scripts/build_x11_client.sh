@@ -67,10 +67,18 @@ build_autotools() {  # $1=源码目录
 }
 
 # ── 0. xtrans (libX11 configure 硬依赖 xtrans.pc; 纯头文件包) ──
-# WineHua 补丁 (scripts/patches/xtrans-abstract-client.patch): 客户端
-# local 传输走 abstract 名——沙箱无 /tmp, 不打则 XOpenDisplay 永远 ENOENT
-# (M0-T9 真机实证)。补丁打在解包后的源码上; libX11 编译时 #include 的就是
-# 本包装进 $PRE/include 的 Xtranssock.c, 改动随之生效。
+# WineHua 补丁 (scripts/patches/xtrans-abstract-client.patch): xtrans 客户端
+# local 传输走 abstract 名 (沙箱无 /tmp)。消费链核实 (2026-10-13): libX11 内
+# 的引用点全部在 XIM (src/xlibi18n/xim_trans.c 与 modules/im/ximcp/, 经
+# `#include <X11/Xtrans/transport.c>` → 再 include 本包装进 $PRE/include 的
+# Xtranssock.c; 装后副本带 "WineHua (M0-T9)" 标记, 下方有断言) —— 补丁经此
+# 随 libX11 生效, 服务 XIM 传输层 (缺它 XIM 客户端连接走 fs 路径)。
+# 勘误 (2026-10-13 复核): 核心 XOpenDisplay 连接**不走** xtrans —— libX11 1.8
+# 连接在 libxcb (src/OpenDis.c 调 _XConnectXCB; libX11.so 直接 NEEDED
+# libxcb.so.1), libxcb 1.17 `_xcb_open` 原生先试 abstract 名 (两侧 config.h
+# 均 HAVE_ABSTRACT_SOCKETS=1)。原「不打则 XOpenDisplay 永远 ENOENT (M0-T9)」
+# 归因不实: 当时「无 /tmp」能连通的实际链条是 wlroots 侧改绑标准 abstract 名
+# + 客户端 libxcb 原生先试 abstract; 别按旧归因理解或"修正"本补丁。
 XTRANS_SRC="$BUILD_DIR/$T/xtrans-1.5.2"
 if [ ! -f "$SPC/xtrans.pc" ] || ! grep -q "WineHua (M0-T9)" "$XTRANS_SRC/Xtranssock.c" 2>/dev/null; then
     fetch_and_unpack "https://xorg.freedesktop.org/archive/individual/lib/xtrans-1.5.2.tar.xz" \

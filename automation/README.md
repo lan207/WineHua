@@ -66,9 +66,11 @@ smoke/tests + smoke/suites ──build──▶ build/smoke-payload/{x64,x86}/*.
 系统版本组合才用 modern，其余 → legacy），同一套件在不同设备上测的
 就不是同一个东西。
 
-`env` 里的 `WINEDEBUG` 与 `WINEHUA_WINEDEBUG` 都不生效：前者被设备端显式忽略
-（`wine_child.cpp` 的 profile 选择要自己判断 exe 类型），后者的读取早于 `__env` 应用
-（同文件 458 行 vs 479 行，属实现缺陷）。`smoke.py` 装载套件时直接拦下这两类声明。
+`env` 里的 `WINEDEBUG` 不生效：它被设备端显式忽略——`wine_child.cpp` 的
+`select_winedebug_profile` 要自己判断 exe 类型与覆盖来源，通用 `__env` 覆盖会让
+它恒等于 App 侧下发值、profile 选择失效；`smoke.py` 装载套件时直接拦下这类声明。
+显式 Wine 诊断走 `WINEHUA_WINEDEBUG`：M1-T5 起随 `__env`/`--env` 下发生效
+（设备端在 profile 决策点前就从覆盖列表里摘取该键，见 `wine_child.cpp` Main()）。
 Wine 日志看 hilog 的 `WineChild-stderr` tag。
 
 ## 判定
