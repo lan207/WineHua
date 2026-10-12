@@ -793,9 +793,12 @@ void wl_ohos_input_post_clipboard(const char *utf8)
  *   (终证判据, 2026-10-04 从 "hi" 扩展)
  * notepad 以**无参数**启动 (载体用例 argvMode=raw/argv=[], 见
  * smoke/suites/displayroute.json): 不再有"把 smoke 参数当文件名"的弹框,
- * 键直达文本区。坐标与 xclient_child mode=2 的窗口摆位耦合 (win1 @60,80
- * 320x240, win2 @380,300 280x200; 帧 800x600), notepad 坐标 = 真机实测几何
- * (874x655 @4,30, r0929092617-t5o) —— 两侧常量成对维护。 */
+ * 键直达文本区。坐标与 xclient_child mode=2 的窗口摆位耦合 (win1
+ * @1000,600 320x240 —— D30 挪离 smoke 工作区, win2 @380,300 280x200),
+ * notepad 坐标 = 真机实测几何 (874x655 @4,30, r0929092617-t5o)。**分母
+ * 统一 = 实际帧 1400x920** (2026-10-13 修 case 2/4 的 800x600 残留:
+ * 错误分母把落点拉伸 ×1.75/×1.53, case 2 目标 (520,400) 实际落
+ * (910,613) 空桌面) —— 两侧常量成对维护。 */
 #define KEY_A 30 /* linux/input-event-codes.h evdev 键码 */
 #define KEY_B 48
 #define KEY_C 46
@@ -824,8 +827,9 @@ static int ScriptTick(void *data)
             wl_event_source_timer_update(g_release_timer, 300);
         wl_event_source_timer_update(g_script_timer, 4000);
         break;
-    case 2: /* 悬停到 win2 中心: (380+140, 300+100) = (520,400) */
-        display_input_inject_motion(520 / 800.0f, 400 / 600.0f, 1);
+    case 2: /* 悬停到 win2 中心: (380+140, 300+100) = (520,400); 分母 =
+             * 实际帧 1400x920 (同 case 1; 2026-10-13 修 800x600 残留) */
+        display_input_inject_motion(520 / 1400.0f, 400 / 920.0f, 1);
         display_input_inject_key(KEY_B, true);
         if (g_release_timer)
             wl_event_source_timer_update(g_release_timer, 300);
@@ -838,10 +842,11 @@ static int ScriptTick(void *data)
             wl_event_source_timer_update(g_release_timer, 300);
         wl_event_source_timer_update(g_script_timer, 4000);
         break;
-    case 4: /* 悬停 notepad 文本区 (主窗内点 217,190) + KEY_H。显式重选焦点:
+    case 4: /* 悬停 notepad 文本区 (屏幕坐标点 217,190) + KEY_H。显式重选焦点:
              * 双窗口重聚焦覆盖 (焦点指针的销毁自清在 Track*, surface destroy
-             * 监听里)。 */
-        display_input_inject_motion(217 / 800.0f, 190 / 600.0f, 1);
+             * 监听里)。分母 = 实际帧 1400x920, 与下方命中测试同基准
+             * (2026-10-13 修 800x600 残留: 旧分母落 (379,291) 打空)。 */
+        display_input_inject_motion(217 / 1400.0f, 190 / 920.0f, 1);
         FocusClient(wl_ohos_output_client_topmost_at(217, 190));
         if (g_display)
             wl_display_flush_clients(g_display);
