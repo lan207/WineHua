@@ -547,7 +547,7 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
     # 验收断言: C 基线 + zh_CN.UTF-8 (产品 locale, LANG=zh_CN.UTF-8) 必须在包内
     for lc in C zh_CN.UTF-8; do
         [ -f "$wine_data/share/X11/locale/$lc/XLC_LOCALE" ] ||
-            err "X11 locale data missing: $lc/XLC_LOCALE (libX11 构建段未产出? 查 build_x11.sh)"
+            err "X11 locale data missing: $lc/XLC_LOCALE (libX11 构建段未产出? 查 build_x11_client.sh)"
     done
 
     # guest GPU 库 (Mesa/VirGL, 供 GraphicsBroker 注入到 Wine LD_LIBRARY_PATH)
@@ -644,7 +644,12 @@ xkb_keymap {
 XKB_KEYMAP
     # 注意 -R 会重锚所有相对路径, 源/目标均用绝对路径
     # (SYSROOT_EXT/STAGING_DIR 定义即绝对, 不再拼 $PWD)
-    /usr/bin/xkbcomp -w 1 "-R$xkb_src" "$xkm_tmp/keymap.txt" \
+    # xkbcomp 是宿主工具依赖 (版本敏感, 1.4.7 行为见「X keymap 双编译器
+    # 分叉」记档); 可 XKBCOMP_BIN 覆盖。落位项目内 host-tools 是既定方向
+    # (同 96239cc scanner), 阻塞项 = 宿主缺 libxkbfile 头, 原生构建待补。
+    XKBCOMP="${XKBCOMP_BIN:-/usr/bin/xkbcomp}"
+    [ -x "$XKBCOMP" ] || err "缺 xkbcomp: $XKBCOMP (装宿主包或设 XKBCOMP_BIN)"
+    "$XKBCOMP" -w 1 "-R$xkb_src" "$xkm_tmp/keymap.txt" \
         "$wine_data/xkm/server-0.xkm" > "$xkm_tmp/xkbcomp.log" 2>&1
     # xkm 魔数 = 0x0f "mkx" (xkbfile.h XKM file header)
     if ! head -c 4 "$wine_data/xkm/server-0.xkm" 2>/dev/null | od -An -tx1 | grep -q "0f 6d 6b 78"; then

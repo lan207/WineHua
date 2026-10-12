@@ -56,6 +56,9 @@ fi
 
 echo "== 2. present 页结构: wine win32u ↔ mesa vtest socket =="
 WINE_PAGE="thirdparty/wine/dlls/win32u/winehua_present.c"
+# wine 侧 MAGIC/VERSION 宏定义在 include/wine/winehua_present.h (winehua_present.c
+# 只消费); 旧弱判据下 mesa 单侧命中即过, wine 侧宏实值从未被核过
+WINE_HDR="thirdparty/wine/include/wine/winehua_present.h"
 MESA_PAGE="thirdparty/mesa/src/gallium/winsys/virgl/vtest/virgl_vtest_socket.c"
 # 只比字段声明 (顺序 + 类型 + 名字): 大括号风格/缩进不参与, 那是噪音
 a="$(awk '/struct winehua_present_surface_page/{on=1} on{print} on && /};/{exit}' "$ROOT/$WINE_PAGE" \
@@ -68,9 +71,12 @@ if [ "$a" = "$b" ]; then ok "页结构一致"; else
 fi
 for pair in "MAGIC 0x57535053" "VERSION 1"; do
   set -- $pair
-  if ! grep -q "define WINEHUA_PRESENT_SURFACE_$1 $2" "$ROOT/$WINE_PAGE" "$ROOT/$MESA_PAGE"; then
-    bad "WINEHUA_PRESENT_SURFACE_$1 不是 $2 (两侧都要)"
-  fi
+  # 两侧逐一检查 (grep 多文件时任一命中即 rc=0——只改一侧会漏过, 正是本检查
+  # 要抓的失效面; 实测文案「两侧都要」与旧实现在此不等价)
+  for side in "$WINE_HDR" "$MESA_PAGE"; do
+    grep -q "define WINEHUA_PRESENT_SURFACE_$1 $2" "$ROOT/$side" \
+      || bad "WINEHUA_PRESENT_SURFACE_$1 不是 $2 —— $side 未命中 (两侧都要)"
+  done
 done
 
 echo "== 3. display-fps 路径: graphics_broker (Windows 字面量) ↔ perf_utils (Unix 字面量) =="

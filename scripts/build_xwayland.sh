@@ -115,16 +115,20 @@ fi
 # 静态库 (-fPIC, 将被链入 libxwayland_ohos.so), pc 按上游 libsha1.pc.in 手写。
 # bionic 无内置 SHA1 API; 不钉此项时 xserver auto 探测会撞上 guest 侧 x86_64
 # nettle.pc (gnutls_staging) → 链接报 incompatible with aarch64linux (实测)。
-LIBSHA1_SRC="$BUILD_DIR/libsha1-master"
+# 源码钉 commit 而非 refs/heads/master (动态档哈希随上游漂移, 干净环境构建必断;
+# 本项为此前唯一动态 master 源, 其余 fetch_and_unpack 均已钉 tag/版本)。
+LIBSHA1_SHA="cd6a3f811c597126dd932ad6118e65e416f24edf"
+LIBSHA1_DIR="libsha1-$LIBSHA1_SHA"
+LIBSHA1_SRC="$BUILD_DIR/$LIBSHA1_DIR"
 if [ ! -f "$HOST_EXT_PC/libsha1.pc" ]; then
-    fetch_and_unpack "https://github.com/dottedmag/libsha1/archive/refs/heads/master.tar.gz" \
-        "1fcf23b10d9e253f392d5608ce014577bbecd7aa62b1746892c5ad2f98ab7caa" "libsha1-master"
+    fetch_and_unpack "https://github.com/dottedmag/libsha1/archive/$LIBSHA1_SHA.tar.gz" \
+        "4a19feadacd2020c6b583d5269021f65ea902b8195268e69a1e695a00ac64f8e" "$LIBSHA1_DIR"
     "$OHOS_SDK/native/llvm/bin/clang" --target=$T --sysroot=$SYSROOT \
         -fPIC -O2 -I"$LIBSHA1_SRC" -c "$LIBSHA1_SRC/sha1.c" \
-        -o "$BUILD_DIR/libsha1-master/sha1.o"
-    "$OHOS_SDK/native/llvm/bin/llvm-ar" rcs "$BUILD_DIR/libsha1-master/libsha1.a" \
-        "$BUILD_DIR/libsha1-master/sha1.o"
-    cp "$BUILD_DIR/libsha1-master/libsha1.a" "$HOST_EXT_LIB/"
+        -o "$LIBSHA1_SRC/sha1.o"
+    "$OHOS_SDK/native/llvm/bin/llvm-ar" rcs "$LIBSHA1_SRC/libsha1.a" \
+        "$LIBSHA1_SRC/sha1.o"
+    cp "$LIBSHA1_SRC/libsha1.a" "$HOST_EXT_LIB/"
     cp "$LIBSHA1_SRC/libsha1.h" "$HOST_EXT_INC/"
     cat > "$HOST_EXT_PC/libsha1.pc" << EOF
 Name: libsha1
@@ -154,9 +158,10 @@ if [ ! -f "$HOST_EXT_LIB/libxwayland_ohos.so" ] \
     # 首次构建)。先复位子模块工作区到基线 (checkout 只动已跟踪文件, 再删补丁
     # 新增的未跟踪文件), 保证 apply 永远从干净基线出发——否则 sentinel 命中
     # 会把「树里是旧补丁」误判为「已应用」, 新补丁 hunks 静默丢失 (实测踩坑)。
-    # 复位清单必须覆盖补丁触碰的全部已跟踪文件 (dix/getevents.c 是 #93 诊断
-    # 探针新增的补丁文件; 漏列则二次构建 apply 撞上已应用 hunk 直接失败)
-    git -C "$XSERVE_SRC" checkout -- hw/xwayland xkb/ddxLoad.c dix/getevents.c
+    # 复位清单必须覆盖补丁触碰的全部已跟踪文件 (漏列则二次构建 apply 撞上
+    # 已应用 hunk 直接失败; dix/getevents.c 的 #93 诊断探针已从补丁移出,
+    # 复位清单随之收窄)
+    git -C "$XSERVE_SRC" checkout -- hw/xwayland xkb/ddxLoad.c
     rm -f "$XSERVE_SRC/hw/xwayland/xwayland_ohos_main.c"
     git -C "$XSERVE_SRC" apply --check "$XS_PATCH" \
         || err "xserver 补丁无法应用 (submodule 工作区与补丁基线不符)"

@@ -190,8 +190,9 @@ deploy() {
         2>/dev/null | grep -m1 updateTime | tr -dc '0-9') || true
     hdc -t "$device" file send "$hap" /data/local/tmp/ | grep -q "FileTransfer finish" \
         || { err "hdc file send 失败 (未见 FileTransfer finish)"; }
-    # 已装包且与本地同 sha 时跳过 install (bm install -r 对同包也会刷新 updateTime,
-    # 无法用时间戳区分, 这里以 --dev-check 比对推上去的 hap 与本地 sha 一致为准)
+    # 安装生效断言: bm install -r 对同包也会刷新 updateTime——前后时间戳"变化"
+    # 才是安装生效的正面证据; 未变 = 安装未生效 (实测假成功面), 下方检查拒绝
+    # 报成功。
     hdc -t "$device" shell bm install -p /data/local/tmp/entry-default-signed.hap -r \
         | grep -q "successfully" || { err "bm install 失败"; }
     install_after=$(hdc -t "$device" shell bm dump -n app.hackeris.winehua \

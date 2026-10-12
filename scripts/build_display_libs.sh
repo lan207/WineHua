@@ -2,7 +2,7 @@
 # build_display_libs.sh — host 侧显示基础库: pixman + libdrm + xkbcommon → host-ext/<NATIVE_ARCH>
 # 侧别: 三者均 host 组件 (wlroots/Xwayland 消费) — 架构侧别纪律见 .claude/rules/build-and-log.md
 # (guest 侧 xkbcommon 走 build_xkbcommon.sh; wayland-protocols 数据走 build_wayland.sh)
-# 用法: make deps 自动调用; 也可独立执行 bash scripts/build_display_libs.sh
+# 用法: make display-libs 自动调用 (逐 NATIVE_ARCH); 也可独立执行 bash scripts/build_display_libs.sh
 # 版本钉死 + sha256 校验; 产物断言失败即非零退出
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

@@ -228,8 +228,10 @@ meson_build() {
 
 # ── Host 侧交叉构建辅助 (架构侧别纪律见 .claude/rules/build-and-log.md) ──
 # 供 host 组件 (wlroots/Xwayland/pixman 等) 使用; 与 guest 的 meson_build 物理隔离:
-# pkg-config 只搜 HOST_EXT + SDK sysroot, 严禁混入 guest 的 sysroot-ext 库
-# (数据类 .pc 如 wayland-protocols 无 -l, 放最后兜底)。
+# 搜索顺序 = HOST_EXT(+share) → SDK sysroot → guest sysroot-ext 尾兜 (数据类 .pc
+# 如 wayland-protocols 无 -l)。新增 host 依赖一律装 HOST_EXT (先命中即正确);
+# 尾段 SYSROOT_EXT_PC(guest 库 pc) 在列是现状——host 查询若落到它, guest 架构
+# 会在链接期暴露; 名义口径「严禁混入」, 收紧该目录前先核实无消费方。
 gen_host_cross() {
     local cross="$BUILD_DIR/ohos-host-${NATIVE_ARCH}-cross.txt"
     local pcwrap="$BUILD_DIR/pkg-config-host-${NATIVE_ARCH}.sh"

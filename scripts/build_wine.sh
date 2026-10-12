@@ -135,7 +135,8 @@ build_ohos_unix() {
         # guest 无桌面 GLX 栈: OpenGL 走 wayland/EGL, winex11 编出但无 GLX
         # (configure.ac 的 WINEHUA_ALLOW_X11_NO_GLX 豁免, soname 检查空 =
         # glx.c 编译出)。不设则上游行为 = 缺 libGL 即 configure 失败。
-        # GLX-over-EGL 裁决属 M1-T6 spike, 落地后由此供 libGL。
+        # x11 路线 GL 呈现走私有通道 (opengl_winehua.c, 2026-09-30 落地);
+        # GLX 补栈为被否决方案 (known-issues §2.4) —— 豁免维持。
         export WINEHUA_ALLOW_X11_NO_GLX=1
         # --without-xshm (M1-T5): OHOS 应用沙箱 seccomp 禁 SysV IPC, MIT-SHM
         # 两侧都不可用——Xwayland 侧 shmat() SIGSYS 直接 Fatal abort (实测

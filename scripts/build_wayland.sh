@@ -45,6 +45,9 @@ log "=== 构建 Wayland (x86_64, $WL_VERSION) ==="
 WP_VERSION=$(sed -n "s/^[[:space:]]*version[[:space:]]*:[[:space:]]*'\([^']*\)'.*/\1/p" "$WP_SRC/meson.build" | head -1)
 [ -n "$WP_VERSION" ] || err "无法从 $WP_SRC/meson.build 解析 version"
 WP_INSTALLED=$(pkg-config --modversion wayland-protocols 2>/dev/null || echo none)
+# wayland 本体同款版本守卫（1.22→1.26 bump 时此处曾有缺口: 旧产物在位即
+# 静默跳过、全链拿旧库; 与 7347fcf/95ec707/bda56b0 系列 bump 的守卫对齐）
+WL_INSTALLED=$(pkg-config --modversion wayland-client 2>/dev/null || echo none)
 
 if [ -f "$SYSROOT_EXT_LIB/libwayland-client.so.0" ] \
    && [ -f "$SYSROOT_EXT_LIB/libwayland-server.so.0" ] \
@@ -52,6 +55,7 @@ if [ -f "$SYSROOT_EXT_LIB/libwayland-client.so.0" ] \
    && [ -f "$SYSROOT_EXT_INC/wayland-server.h" ] \
    && [ -f "$SYSROOT_EXT_PC/wayland-client.pc" ] \
    && [ -f "$SYSROOT_EXT_PC/wayland-server.pc" ] \
+   && [ "$WL_INSTALLED" = "$WL_VERSION" ] \
    && [ "$WP_INSTALLED" = "$WP_VERSION" ]; then
     log "Wayland 已就绪，跳过"
     exit 0
