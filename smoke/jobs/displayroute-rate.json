@@ -1,5 +1,6 @@
 {
   "displayroute": true,
+  "desktopMode": "virtual",
   "inline": [
     {
       "testId": "rate-hold",

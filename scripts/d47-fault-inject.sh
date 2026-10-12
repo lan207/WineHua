@@ -89,6 +89,8 @@ for i in $(seq 1 10); do [ -z "$(app_pid)" ] && break; sleep 1; done
 echo "    #1 已打断（mid-wineboot）"
 
 echo "[4/7] 重拉新进程，等重拉 boot 的 state:failed（≤360s）"
+# 本节起的成败判据一律锚定重拉进程 $P2（脚本纪律 ②/③）: 清环后缓冲仍可能残留
+# P1 打断前的中途行（如 P1 自身 failed/AUTO-RETRY），不锚定会张冠李戴。
 sleep 2
 rsh "aa start -a EntryAbility -b $BUNDLE" >/dev/null
 P2=""
@@ -97,13 +99,13 @@ for i in $(seq 1 20); do P2="$(app_pid)"; [ -n "$P2" ] && break; sleep 1; done
 echo "    #2 app pid=$P2"
 FAILED_SEEN=0
 for i in $(seq 1 180); do
-  if [ -n "$(rsh "grep -a 'state:failed' $CAP | head -1")" ]; then
+  if [ -n "$(rsh "grep -a 'state:failed' $CAP | grep -a ' $P2 ' | head -1")" ]; then
     FAILED_SEEN=1; break
   fi
   sleep 2
 done
 if [ "$FAILED_SEEN" = 1 ]; then
-  echo "    state:failed 已出现: $(rsh "grep -a 'state:failed' $CAP | head -1" | tail -c 120)"
+  echo "    state:failed 已出现: $(rsh "grep -a 'state:failed' $CAP | grep -a ' $P2 ' | head -1" | tail -c 120)"
 else
   echo "FAIL: 重拉 boot 360s 内未 failed（干净恢复 = 本轮未触发, 重跑或换中断点）"
   exit 1
@@ -112,15 +114,15 @@ fi
 echo "[5/7] 等 [AUTO-RETRY] 行与重试后 ready"
 RETRY_SEEN=0
 for i in $(seq 1 30); do
-  if [ -n "$(rsh "grep -a 'AUTO-RETRY' $CAP | head -1")" ]; then RETRY_SEEN=1; break; fi
+  if [ -n "$(rsh "grep -a 'AUTO-RETRY' $CAP | grep -a ' $P2 ' | head -1")" ]; then RETRY_SEEN=1; break; fi
   sleep 1
 done
 [ "$RETRY_SEEN" = 1 ] || { echo "FAIL: state:failed 后 30s 内无 [AUTO-RETRY] 行（止血未触发）"; exit 1; }
-echo "    [AUTO-RETRY]: $(rsh "grep -a 'AUTO-RETRY' $CAP | head -1" | tail -c 140)"
+echo "    [AUTO-RETRY]: $(rsh "grep -a 'AUTO-RETRY' $CAP | grep -a ' $P2 ' | head -1" | tail -c 140)"
 echo "    等重试 boot 至 ready (≤300s)"
 READY_SEEN=0
 for i in $(seq 1 150); do
-  if [ -n "$(rsh "grep -a 'state:ready' $CAP | head -1")" ]; then READY_SEEN=1; break; fi
+  if [ -n "$(rsh "grep -a 'state:ready' $CAP | grep -a ' $P2 ' | head -1")" ]; then READY_SEEN=1; break; fi
   sleep 2
 done
 [ "$READY_SEEN" = 1 ] || { echo "FAIL: 重试后 300s 内未达 ready"; exit 1; }

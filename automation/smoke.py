@@ -873,10 +873,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         sp = SUITES_DIR / f"{suite_name}.json"
         if sp.is_file():
             suite_mode = json.loads(sp.read_text()).get("desktopMode", "")
+    # job 级 desktopMode: 纯 inline job (无 suite 键) 的钉档落点 —— 此前只存在
+    # 于 _note 的运行命令文档里, 换人/漏带 CLI 参数即回退设备当前设置 (与套件级
+    # pin 要治的漂移同类)。优先级 suite > job: suite 的 desktopMode 是其判定
+    # 契约的一部分 (如 preview-rect 裁剪只在 virtual 成立), job 不覆盖。
+    job_mode = job.get("desktopMode", "")
     cli_mode = getattr(args, "desktop_mode", None)
     if suite_mode and cli_mode and cli_mode != suite_mode:
         log(f"NOTE: CLI --desktop-mode {cli_mode} 覆盖套件声明 {suite_mode}")
-    pin_mode = cli_mode or suite_mode or None
+    pin_mode = cli_mode or suite_mode or job_mode or None
     if not args.skip_push:
         push_args = argparse.Namespace(payload=args.payload, device=args.device,
                                        desktop_mode=pin_mode,

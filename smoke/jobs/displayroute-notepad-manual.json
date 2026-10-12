@@ -1,5 +1,6 @@
 {
   "displayroute": true,
+  "desktopMode": "virtual",
   "displayrouteScript": false,
   "timeoutMinutes": 40,
   "checks": [

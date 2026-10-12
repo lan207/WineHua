@@ -1,5 +1,6 @@
 {
   "displayroute": true,
+  "desktopMode": "fusion",
   "displayrouteScript": false,
   "timeoutMinutes": 20,
   "checks": [],
