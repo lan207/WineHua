@@ -293,10 +293,17 @@ wine 菜单跟踪交互差异」两说——**均被 M4d 推翻**：真因在我
 §2.15）。影响面（M4c 时认定，现仍有效）：窗界内菜单（notepad 形态）
 不受影响。复现资产：`smoke/jobs/popup-overflow-x11.json`
 （`--desktop-mode fusion --display-route x11`，uitest 按物理坐标点选）。
-套件判定口径（Ruling）：自动判定只覆盖已验证行为（渲染/关闭链）——
-`fusion-popup-selection` 判定器对越界用例恒 SKIP 并注明移交，不做会假
-PASS 的点选判据。负全局坐标（菜单越出屏幕左/上，RF#5 后半）行为未测，
-不进自动化套件，只有手动路径。
+**门禁接线（2026-10-13，判定重连）**：该 job 从 raw/argv=[] +
+judge=external（探针自证永远不落盘，归档只有 external-vehicle SKIP 占位）
+改为缺省 std 协议 —— runner 下发 `--automation/--result`，探针 checks[]
+随归档由 result-json 判定器裁决；几何前置断言同步重设计（删除恒假的
+menu-below-window 自比，改用菜单显示后 GetMenuItemRect 实测矩形 + Δ
+修正，见探针注释），`menu-item2-rect/center` 落归档供点选定位。点选仍
+由人工 uitest 触发，无人点击 = FAIL（不进无人套件）。
+套件判定口径（Ruling）：fusion 套件内的自动判定只覆盖已验证行为（渲染/
+关闭链）—— `fusion-popup-selection` 判定器对套件内越界用例仍恒 SKIP 并
+注明「门禁在专用 job」，不做会假 PASS 的点选判据。负全局坐标（菜单越出
+屏幕左/上，RF#5 后半）行为未测，不进自动化套件，只有手动路径。
 
 **OHOS 拖拽 resize / 拖动承载窗在 x11 路线不回写 wine（M4a 模型缺口，
 2026-10-11 任务 #135 治本闭合）**：原文（症状 + 根因）：fusion+x11 下拖拽
@@ -510,7 +517,9 @@ dismiss 不发生。修复 = 按钮前无条件补 motion+frame（grab 重定向
 uitest 点第 2 项 → **command-received True（WM_COMMAND id=202）+
 command-item2 True**（runId manual / build/m4d-oob-inline.json 编排）；
 notepad 上下文菜单外点 → popup-hide 正常 dismiss。`fusion-popup-selection`
-的恒 SKIP 标记保留（越界用例的点选自动化另立判定器，本闭合为手测证据链）。
+的恒 SKIP 标记保留（越界用例的点选自动化**另立判定器已立**：专用 job
+`smoke/jobs/popup-overflow-x11.json` 2026-10-13 起走 std 协议随归档判定，
+人工 uitest 点选 + result-json 裁决；套件内保持恒 SKIP —— 门禁在 job）。
 **记录更正（2026-10-11 复核）**：原引 `.temp/m4d/oob-result.json` 作探针
 自证不成立——该文件整体 status=FAIL（1/6：menu-below-window 159<162 三像素
 off-by，未披露），且写入时刻早于 8a1e975 修复 commit 11 分钟（其「修复后」

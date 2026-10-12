@@ -17,7 +17,7 @@ smoke/tests/<用例名>/test.json    ← 用例定义：exe 从哪来、叫什�
 smoke/suites/<套件名>.json        ← 套件挂载：什么档位、什么参数、超时多少
 ```
 
-两部分缺一不可：**没挂进任何套件的用例不会进载荷**，设备上根本没有它的 exe。要单独构建的话用 `python3 automation/smoke.py build --case <用例名>`（手动工具走这条）。
+两部分缺一不可：**没挂进任何套件的用例不会进载荷**，设备上根本没有它的 exe。要单独构建的话用 `python3 automation/smoke.py build --case <用例名>`（手动工具走这条；例外：job 级人工门禁 `popup-overflow` 已在根 Makefile 载荷目标显式 `--case`，随标准载荷构建）。
 
 ## 2. 用例定义：test.json
 

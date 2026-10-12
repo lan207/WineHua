@@ -175,20 +175,20 @@ def fusion_popup(ctx: dict) -> dict:
 
 
 def fusion_popup_selection(ctx: dict) -> dict:
-    """M4c-T4 Ruling: 越界点选拒绝做自动判据 —— 恒 SKIP 并注明移交。
+    """越界点选不做套件内自动判据 —— 恒 SKIP 并注明出处。
 
-    T3 悬案：越界菜单项点击到达 wine 且菜单关闭，但不产生 WM_COMMAND
-    （四轮控制变量——几何/owner 先导点击/SetForegroundWindow/坐标换算
-    ——全部排除，唯一全绿组合 = notepad 真实流）。悬案收敛位置 =
-    Xwayland rootless OR 窗指针路由 vs 探针消息循环形态，未闭合；复现
-    资产在库（smoke/jobs/popup-overflow-x11.json）。本判定器存在的意义
-    = 把「这一格没验」显式写进每轮 host-summary，而不是让 oob 用例的
-    PASS 被读成「越界点选已验证」。SKIP 是合法答案，不硬造 PASS。"""
+    悬案已闭合：M4d 破案真因 = multimode 注入口缺 motion 半边（修复
+    8a1e975，见 docs/engineering/display-route-known-issues.md §2.14）。
+    点选自动化另立门禁：专用 job smoke/jobs/popup-overflow-x11.json
+    （2026-10-13 起该 job 走标准 result 协议 --automation/--result，探针
+    checks[] 随归档由 result-json 判定；点击仍由人工 uitest 按物理坐标
+    触发）。本 suite 用例不注入点选，保持 SKIP —— 套件无人点击时会假
+    FAIL。SKIP 是合法答案，不硬造 PASS。"""
     return {"status": "SKIP", "stage": "fusion-popup-selection",
-            "message": "越界点选路由悬案移交 M4d（T3: 点击到达 wine 菜单"
-                       "关闭但不产生 WM_COMMAND；复现资产 smoke/jobs/"
-                       "popup-overflow-x11.json）——本用例不注入点选，"
-                       "渲染/关闭链由 visual:fusion-popup-menu 与 "
+            "message": "越界点选不走套件内自动判定（悬案已闭合 8a1e975；"
+                       "门禁 = 专用 job smoke/jobs/popup-overflow-x11.json，"
+                       "人工 uitest 点击 + 归档 result-json 判定）——本用例不"
+                       "注入点选，渲染/关闭链由 visual:fusion-popup-menu 与 "
                        "fusion-popup 另判"}
 
 

@@ -97,7 +97,10 @@ $(WINE_SMOKE_EXES): $(STAMPS)/wine-$(CONFIG)
 
 $(SMOKE_PAYLOAD_MANIFEST): $(SMOKE_PAYLOAD_INPUTS)
 	@echo "=== smoke payload ==="
-	python3 $(ROOT)/automation/smoke.py build
+	# popup-overflow 是 job 级人工门禁 (smoke/jobs/popup-overflow-x11.json),
+	# 不接入任何套件 —— 按 testing-cases.md §1 不会自动进载荷; 但它是门禁
+	# 不是手动工具: 缺 exe = 新环境跑门禁必炸, 故显式随标准载荷构建。
+	python3 $(ROOT)/automation/smoke.py build --case popup-overflow
 	test -f $@
 
 # Guest runtime build scripts can also be invoked directly while iterating on
