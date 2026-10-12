@@ -41,6 +41,29 @@ int xim_bridge_channel_init(void)
     return sv[1]; /* 调用方 (spawn) 持有并转移所有权 */
 }
 
+/* 全量写: MSG_NOSIGNAL + 短写/EINTR 循环。
+ * MSG_NOSIGNAL 是硬需求 (2026-10-13 加固): 对端 (XIM 子进程) 已死时, 裸
+ * write 会发 SIGPIPE 把**主进程直接写死** (默认信号动作, cppcrash —— 表现
+ * 是"用户打字时应用闪退"); 带上它以 EPIPE 失败返回即可。消息小且互斥串行,
+ * 不引入 NONBLOCK/队列 —— 失败即丢本次 commit 并报错。 */
+static int write_all(int fd, const void *buf, size_t len)
+{
+    const uint8_t *p = (const uint8_t *)buf;
+    while (len > 0)
+    {
+        ssize_t n = send(fd, p, len, MSG_NOSIGNAL);
+        if (n < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        p += n;
+        len -= (size_t)n;
+    }
+    return 0;
+}
+
 int xim_bridge_send_text(const char *utf8)
 {
     if (!utf8 || g_chan_fd < 0)
@@ -51,12 +74,12 @@ int xim_bridge_send_text(const char *utf8)
 
     uint32_t hdr[2] = {XIM_CHAN_MAGIC, (uint32_t)len};
     pthread_mutex_lock(&g_chan_mutex);
-    ssize_t n1 = write(g_chan_fd, hdr, sizeof(hdr));
-    ssize_t n2 = n1 == sizeof(hdr) ? write(g_chan_fd, utf8, len) : -1;
+    int ok = write_all(g_chan_fd, hdr, sizeof(hdr)) == 0 &&
+             write_all(g_chan_fd, utf8, len) == 0;
     pthread_mutex_unlock(&g_chan_mutex);
-    if (n1 != (ssize_t)sizeof(hdr) || n2 != (ssize_t)len)
+    if (!ok)
     {
-        OHERR("send failed n1=%{public}zd n2=%{public}zd", n1, n2);
+        OHERR("send failed errno=%{public}d (peer gone? EPIPE=32)", errno);
         return -1;
     }
     return 0;

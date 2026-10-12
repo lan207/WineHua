@@ -726,41 +726,105 @@ static void DrainPendingCommit(void)
             text.size(), target->im_id, ic, (unsigned long)focus);
 }
 
-/* socket 读线程: 主进程转投的 commit 请求 → 落槽 (Task 4)。 */
-void *ChanThread(void *arg)
+/* 全量读: true = 取满 len; false = EOF/错误 (EINTR 重试)。 */
+static bool ChanReadExact(void *buf, size_t len)
 {
-    (void)arg;
-    uint32_t hdr[2];
-    while (g_run.load())
+    uint8_t *p = (uint8_t *)buf;
+    while (len > 0)
     {
-        ssize_t n = read(g_chan_fd, hdr, sizeof(hdr));
+        ssize_t n = read(g_chan_fd, p, len);
         if (n == 0)
-            break; /* 主端关闭 */
+            return false;
         if (n < 0)
         {
             if (errno == EINTR)
                 continue;
+            return false;
+        }
+        p += n;
+        len -= (size_t)n;
+    }
+    return true;
+}
+
+/* 坏头重同步 (有界): 逐字节滑窗找回 magic, 命中即对齐到「magic 已读、
+ * 接下来 4B 是 len」的帧边界。seed = 已被当坏头读掉的 4 字节 —— 真
+ * magic 可能跨在这个边界上, 不施种子会把这一次出现整个跳过 (静默丢
+ * 一条 commit)。帧协议小 (len <= 64KB), magic 4 字节在 utf8 载荷里
+ * 碰撞概率可忽略; 扫 4096 字节仍找不到 = 通道不可信, 放弃读线程
+ * (XIM server 无 respawn 路径, 与其在错位流上无限报错, 不如干净停摆
+ * —— 调用方按通道已死处理)。 */
+static bool ChanResync(uint32_t seed)
+{
+    uint32_t window = seed;
+    size_t consumed = 0;
+    if (window == 0x57485349u)
+        return true;
+    while (consumed < 4096)
+    {
+        uint8_t b;
+        ssize_t n = read(g_chan_fd, &b, 1);
+        if (n == 0)
+            return false;
+        if (n < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            return false;
+        }
+        ++consumed;
+        window = (window << 8) | b;
+        if (window == 0x57485349u)
+            return true;
+    }
+    return false;
+}
+
+/* socket 读线程: 主进程转投的 commit 请求 → 落槽 (Task 4)。
+ * 2026-10-13 加固: 原实现在坏头/短读时只打日志 continue —— 帧流一次错位
+ * (如主端半帧写入) 后每次读都错位, 通道从此永久坏且只刷错误。现改为
+ * 有界重同步 (ChanResync); 主端配对修复见 xim_bridge.c 的 MSG_NOSIGNAL。 */
+void *ChanThread(void *arg)
+{
+    (void)arg;
+    while (g_run.load())
+    {
+        uint32_t magic = 0, len = 0;
+        if (!ChanReadExact(&magic, sizeof(magic)))
+            break; /* EOF/错误: 主端收摊 */
+        if (magic != 0x57485349u)
+        {
+            OHERR("chan: bad magic 0x%{public}x, resync", magic);
+            if (!ChanResync(magic))
+            {
+                OHERR("chan: resync failed, give up");
+                break;
+            }
+        }
+        if (!ChanReadExact(&len, sizeof(len)))
             break;
-        }
-        if (n != sizeof(hdr) || hdr[0] != 0x57485349u)
+        if (len == 0 || len > 64 * 1024)
         {
-            OHERR("chan: bad header n=%{public}zd magic=%{public}u", n, hdr[0]);
-            continue;
+            OHERR("chan: bad len %{public}u, resync", len);
+            if (!ChanResync(len) || !ChanReadExact(&len, sizeof(len)))
+            {
+                OHERR("chan: resync failed, give up");
+                break;
+            }
+            if (len == 0 || len > 64 * 1024)
+            {
+                OHERR("chan: bad len after resync %{public}u, give up", len);
+                break;
+            }
         }
-        std::string text(hdr[1], '\0');
-        size_t off = 0;
-        while (off < hdr[1])
-        {
-            n = read(g_chan_fd, &text[off], hdr[1] - off);
-            if (n <= 0)
-                return NULL;
-            off += (size_t)n;
-        }
+        std::string text(len, '\0');
+        if (!ChanReadExact(&text[0], len))
+            break; /* 帧体中途 EOF: 落入统一收尾 */
         pthread_mutex_lock(&g_commit_mutex);
         bool overwrite = !g_commit_pending.empty();
         g_commit_pending = text;
         pthread_mutex_unlock(&g_commit_mutex);
-        fprintf(stderr, "[xim-server] chan text len=%u queued%s\n", hdr[1],
+        fprintf(stderr, "[xim-server] chan text len=%u queued%s\n", (unsigned)len,
                 overwrite ? " (overtook unsent)" : "");
     }
     OHLOG("chan: closed");
@@ -915,9 +979,14 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
                                 PropModeReplace,
                                 (const unsigned char *)val, (int)strlen(val));
                 XSendEvent(g_dpy, req->requestor, False, 0, (XEvent *)&sev);
+                /* XGetAtomName 每次调用分配字符串, 必须 XFree (2026-10-13:
+                 * 原实现把返回值直塞 fprintf, 每请求泄漏一块)。 */
+                char *target_name = XGetAtomName(g_dpy, req->target);
                 fprintf(stderr, "[xim-server] selection served target=%s req=0x%lx\n",
-                        XGetAtomName(g_dpy, req->target),
+                        target_name ? target_name : "(null)",
                         (unsigned long)req->requestor);
+                if (target_name)
+                    XFree(target_name);
             }
             else if (ev.type == ClientMessage)
             {

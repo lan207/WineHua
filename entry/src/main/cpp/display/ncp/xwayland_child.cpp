@@ -153,15 +153,50 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
                 int out = open(dst.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
                 if (out >= 0)
                 {
+                    /* 2026-10-13 加固: 原实现 (void)!write 丢弃返回值 —— 短写会
+                     * 静默留下截断的 xkm, 而 Xwayland 缓存查找按名短路 (存在即
+                     * 用), 坏缓存比无缓存更糟。改为全量写; 失败删残file 并报错。 */
                     char buf[8192];
+                    bool ok = true;
                     ssize_t r;
-                    while ((r = read(in, buf, sizeof(buf))) > 0)
-                        (void)!write(out, buf, r);
+                    while (ok && (r = read(in, buf, sizeof(buf))) != 0)
+                    {
+                        if (r < 0)
+                        {
+                            if (errno == EINTR)
+                                continue;
+                            ok = false;
+                            break;
+                        }
+                        ssize_t off = 0;
+                        while (ok && off < r)
+                        {
+                            ssize_t w = write(out, buf + off, (size_t)(r - off));
+                            if (w < 0)
+                            {
+                                if (errno == EINTR)
+                                    continue;
+                                ok = false;
+                                break;
+                            }
+                            off += w;
+                        }
+                    }
                     close(out);
+                    if (ok)
+                    {
+                        OH_LOG_INFO(LOG_APP, "xkm cache staged %{public}s → %{public}s",
+                                    src.c_str(), dst.c_str());
+                    }
+                    else
+                    {
+                        unlink(dst.c_str());
+                        OH_LOG_ERROR(LOG_APP,
+                                     "xkm cache staging failed (partial removed) dst=%{public}s",
+                                     dst.c_str());
+                    }
                 }
                 close(in);
-                OH_LOG_INFO(LOG_APP, "xkm cache staged %{public}s → %{public}s",
-                            src.c_str(), dst.c_str());
             }
         }
     }
