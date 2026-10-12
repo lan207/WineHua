@@ -22,7 +22,7 @@ diff --git a/xwayland/server.c b/xwayland/server.c
 index 8401c9e6..d6e22233 100644
 --- a/xwayland/server.c
 +++ b/xwayland/server.c
-@@ -24,31 +24,45 @@ static void safe_close(int fd) {
+@@ -24,31 +24,47 @@ static void safe_close(int fd) {
  	}
  }
  
@@ -67,7 +67,9 @@ index 8401c9e6..d6e22233 100644
 +	// Unrecognized option)
 +	argv[i++] = "-verbose";
 +	argv[i++] = "7";
-+	argv[i++] = "-nolock";
++	// (WineHua: 此处曾传 -nolock 意图禁锁文件——实测无效: 非 root 只收
++	// "Warning: the -nolock option can only be used by root" 且不置位
++	// (xserver os/utils.c:850 仅 uid==0 置位, shim 为应用 uid); lock 文件随 socket 目录处置, 见 sockets.c 段)
 +	// OHOS (WineHua M1-T5): 禁用 MIT-SHM 扩展。XShmAttach → Xwayland 侧
 +	// shmat() 触发应用沙箱 seccomp SIGSYS, Xwayland 直接 Fatal abort
 +	// (实测 stderr: "Caught signal 31 (Bad system call). Server aborting"),
