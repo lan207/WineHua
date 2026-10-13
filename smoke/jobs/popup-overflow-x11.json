@@ -1,7 +1,7 @@
 {
   "displayroute": true,
   "desktopMode": "fusion",
-  "displayrouteScript": false,
+  "displayrouteXclient": false,
   "timeoutMinutes": 20,
   "checks": [],
   "inline": [

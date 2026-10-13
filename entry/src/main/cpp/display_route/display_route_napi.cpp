@@ -9,10 +9,10 @@
  * 同包加载。
  *
  * 接口一览:
- *   startDisplayRouteChain(sid?, script?, w?, h?, canvasEgl?, multiwindow?) —
+ *   startDisplayRouteChain(sid?, xclient?, w?, h?, canvasEgl?, multiwindow?) —
  *     启动出图链 (sid 非零 = 同步绑 XComponent → NativeWindow 直推;
- *     script = 真机门自动注入脚本, 测试编排专用, 产品恒 false; w/h = x11
- *     台架输出尺寸; canvasEgl = 画布绑定走 EGL swap, 语义见 ohos_output.h;
+ *     xclient = xclient 测试窗 (速率仪/内容源), 测试编排专用, 产品恒 false;
+ *     w/h = x11 台架输出尺寸; canvasEgl = 画布绑定走 EGL swap, 语义见 ohos_output.h;
  *     multiwindow = M4a 多窗模式位 (route=x11 × mode=fusion, 实时判定见
  *     WineWindowManager.shouldUseMultiwindow; 缺省 false = 旧行为))
  *   stopDisplayRouteChain() — 停链
@@ -39,7 +39,7 @@ extern "C" void WineHua_DisplayRoute_Stop();
 extern "C" void WineHua_SetDisplayRoute(const char* route);
 extern "C" bool WineHua_DisplayRouteIsX11();
 extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
-                                                      bool script_enabled,
+                                                      bool xclient_enabled,
                                                       int out_w, int out_h,
                                                       bool canvas_egl_present,
                                                       bool multiwindow);
@@ -56,9 +56,9 @@ static napi_value StartDisplayRouteChain(napi_env env, napi_callback_info info) 
     size_t argc = 6;
     napi_value args[6];
     napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-    bool script_enabled = false;
+    bool xclient_enabled = false;
     if (argc >= 2) {
-        napi_get_value_bool(env, args[1], &script_enabled);
+        napi_get_value_bool(env, args[1], &xclient_enabled);
     }
     /* 可选 w/h (x11 台架 = surface 实际尺寸); 缺省 0 ⇒ 800x600 */
     int out_w = 0, out_h = 0;
@@ -84,7 +84,7 @@ static napi_value StartDisplayRouteChain(napi_env env, napi_callback_info info) 
         uint64_t surface_id = 0;
         bool lossless = false;
         napi_get_value_bigint_uint64(env, args[0], &surface_id, &lossless);
-        WineHua_DisplayRoute_StartWithSurface(surface_id, script_enabled, out_w,
+        WineHua_DisplayRoute_StartWithSurface(surface_id, xclient_enabled, out_w,
                                               out_h, canvas_egl_present,
                                               multiwindow);
     } else {

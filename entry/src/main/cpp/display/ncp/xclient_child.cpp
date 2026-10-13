@@ -333,8 +333,9 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
         sleep(8);
     }
 
-    // 窗口摆位与 display_input.c 的 T2 注入脚本坐标成对维护:
-    // win1 @1000,600 320x240 (品红/青), win2 @380,300 280x200 (绿/黄)。
+    // 窗口摆位: win1 @1000,600 320x240 (品红/青), win2 @380,300 280x200
+    // (绿/黄)。(原与 display_input.c 注入脚本坐标成对维护 —— 脚本 2026-10-13
+    // 退役, 该约束解除; 摆位本身保留, 仍是 D30 实测值。)
     // D30 (r20261007-065721 探针实证): win1 原摆 60,80 正盖住 smoke 测试窗
     // 区 (用例窗 ~@60,50 326x272)——新用例窗 surface 首帧未提交时
     // (topmost_at 的 has_content 跳过), 常驻重绘的 MiniX-1 赢得命中,

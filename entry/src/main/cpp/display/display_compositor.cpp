@@ -133,16 +133,17 @@ void WlServerLogBridge(const char *fmt, va_list args)
 }
 
 // displayfd 握手完成的 hilog 直证 (wlroots 自身日志走 stderr, 主进程不可见)
-// xclient 测试客户端门控 (M3a): mode=2 双窗口+周期移动是 M0-T9/M1-T2 的
-// bring-up 测试资产 (与 display_input 注入脚本坐标成对), 只应在 smoke 编排
-// (script_enabled=true) 拉起。无条件 spawn 让产品桌面里常驻一个 320x240
+// xclient 测试客户端门控 (M3a): mode=2 双窗口+周期移动是 bring-up 测试
+// 资产 (速率仪 XCLIENT-STAT 的一半 + 视觉判定固定图案内容源; 2026-10-13
+// 起与注入脚本的"坐标成对"约束随脚本退役解除), 只应在 smoke 编排
+// (xclient_enabled=true) 拉起。无条件 spawn 让产品桌面里常驻一个 320x240
 // 测试窗在桌面上晃 —— 真实桌面 shell (explorer, 引擎会话拉起) 的输入命中
 // 也被它搅局 (2026-10-04 实测: 点击命中测试只能看到测试窗)。原则 #23。
 static bool g_xclient_test_client_enabled;
 static bool g_xwayland_ready_seen;
 static bool g_xclient_spawned;
 
-/* 拉起条件三合一: 门开 (最新 script 意图) + Xwayland 就绪 + 未拉过。
+/* 拉起条件三合一: 门开 (最新 xclient 意图) + Xwayland 就绪 + 未拉过。
  * 从两个时机调用: Xwayland ready (常规路径) / retrigger 刷新 (补拉) ——
  * 竞态下 retrigger 可能晚于 ready (2026-10-04 实测: 产品链先建 → ready
  * 时门还关着 → smoke 触发补开门时 ready 事件已过, 不补拉则 smoke 套件
@@ -155,7 +156,7 @@ void HandleXwaylandReady(struct wl_listener *listener, void *data)
     OH_LOG_INFO(LOG_APP, "Xwayland ready signal received (displayfd handshake OK)");
     g_xwayland_ready_seen = true;
     if (!g_xclient_test_client_enabled)
-        OH_LOG_INFO(LOG_APP, "xclient test client skipped (script disabled, product desktop)");
+        OH_LOG_INFO(LOG_APP, "xclient test client skipped (test client disabled, product desktop)");
     TrySpawnXclientTestClient();
     TrySpawnXimServer();
 }
@@ -433,7 +434,7 @@ extern "C" bool wlr_ohos_spawn_xwayland(struct wlr_xwayland_server *server,
 
 // ── smoke 调试入口 ─────────────────────────────────────────────────────
 extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
-                                                      bool script_enabled,
+                                                      bool xclient_enabled,
                                                       int out_w, int out_h,
                                                       bool canvas_egl_present,
                                                       bool multiwindow);
@@ -485,8 +486,6 @@ static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
         fputs("ready\n", f);
         fclose(f);
     }
-    wl_ohos_input_script_restart();
-    /* script 是否真的 re-armed 由 restart 自己打点 (定时器缺建时不再无声) */
     OH_LOG_INFO(LOG_APP, "displayroute retrigger: marker rewritten");
     /* 画布晚到挂载 (D8): 槽里有窗口 = 本次重触发带着出画面任务。链已建
      * 而 output 无窗时挂上即开始 present; output 已有窗 (smoke 画布先行)
@@ -609,12 +608,12 @@ extern "C" void WineHua_DisplayRoute_Resize(int w, int h)
 
 // surfaceId 非零时 (ArkTS XComponent) 建 NativeWindow, T8 出图链随之启动;
 // 为 0 时维持 T7 行为 (仅合成器内核 + Xwayland, 不建 output)。
-// script_enabled = 真机门自动注入脚本 (smoke 验证编排, 默认关 —— 测试资产
-// 不默认进产品行为, 原则 #23)。
+// xclient_enabled = xclient 测试窗 (速率仪 + 视觉判定固定图案内容源,
+// smoke 验证编排专用, 默认关 —— 测试资产不默认进产品行为, 原则 #23)。
 // canvas_egl_present = 画布 (DesktopAbility 全屏窗) 绑定, present 走
 // EGL swap (该 surface 对手工 FlushBuffer 冻结; 语义见 ohos_output.h)。
 extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
-                                                      bool script_enabled,
+                                                      bool xclient_enabled,
                                                       int out_w, int out_h,
                                                       bool canvas_egl_present,
                                                       bool multiwindow)
@@ -623,15 +622,14 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
     if (g_started)
     {
         OH_LOG_INFO(LOG_APP, "already started, refresh for retrigger");
-        // 重触发携带本次调用方的 script 意图 (最新意图优先): 冷启时产品桌面页
-        // 与 smoke 编排都会调 StartWithSurface, 谁先到谁建链; 若重触发不刷新
-        // script 门, 门就永远停在先到者的值 —— 2026-10-04 实测: DesktopWindow
-        // 先启 (script=false), 随后 rate job 的 displayroute 触发 (script=true)
-        // 落在早退上, xclient 测试窗不再出现, smoke 套件依赖的注入编排失效。
+        // 重触发携带本次调用方的 xclient 意图 (最新意图优先): 冷启时产品桌面
+        // 页与 smoke 编排都会调 StartWithSurface, 谁先到谁建链; 若重触发不
+        // 刷新此门, 门就永远停在先到者的值 —— 2026-10-04 实测: DesktopWindow
+        // 先启 (false), 随后 rate job 的 displayroute 触发 (true) 落在早退
+        // 上, xclient 测试窗不再出现, 速率仪/内容源随之失效。
         // 产品桌面运行中不会被重触发 (surface 重建走 stop/start 全链), 不存在
         // "smoke 运行中被产品意图打断"的反向场景。
-        wl_ohos_input_set_script_enabled(script_enabled);
-        g_xclient_test_client_enabled = script_enabled;
+        g_xclient_test_client_enabled = xclient_enabled;
         if (surface_id != 0)
         {
             // 画布晚到 (D8): 链已建而画布后才到 —— 从 surface 建 NativeWindow
@@ -663,11 +661,9 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
     }
     g_started = true;
     g_stop = false;
-    // 脚本门在 seat_create (子线程) 之前定值: 开启态决定注入编排定时器
-    // 是否武装。每轮显示路线触发都经这里, retrigger 路径同样先过此门。
-    wl_ohos_input_set_script_enabled(script_enabled);
-    // xclient 测试客户端与注入脚本同源 (同一 smoke 编排语义), 共用此门。
-    g_xclient_test_client_enabled = script_enabled;
+    // xclient 测试窗门 (每轮显示路线触发都在子线程拉起前定值; 2026-10-13
+    // 起只控测试窗拉起 —— 注入脚本退役后不再有定时器武装半边)。
+    g_xclient_test_client_enabled = xclient_enabled;
 
     if (surface_id != 0)
     {

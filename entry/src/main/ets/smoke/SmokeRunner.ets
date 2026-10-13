@@ -197,11 +197,12 @@ export class SmokeRunner {
         // 标记 (display_compositor 链尾写入) 后才 spawn, 否则 X client
         // 抢在 X socket 就绪前连接 (winemine 首跑实测竞态)。
         removeFileIfExists(`${DRIVE_C}/displayroute-ready`);
-        // 第二参 = 真机门自动注入脚本 (T1-T5 验证编排): 本路径是 displayroute
-        // 回归验证流, 编排即判据载体, 缺省开; 手动面板/injectAction 路径不传 =
-        // 默认关 (测试资产不默认进产品行为)。job 可显式关 (手动验收类 job
-        // 用产品级干净会话, 见 SmokeTypes.displayrouteScript)。
-        const scriptFlag = request.job.displayrouteScript !== false;
+        // 第二参 = xclient 测试窗门 (速率仪/内容源): 本路径是 displayroute
+        // 回归验证流, 缺省开; 手动面板/injectAction 路径不传 = 默认关
+        // (测试资产不默认进产品行为)。job 可显式关 (手动验收类 job 用
+        // 产品级干净会话, 见 SmokeTypes.displayrouteXclient)。原注入脚本
+        // 半边已 2026-10-13 退役, 此门现只控测试窗。
+        const xclientFlag = request.job.displayrouteXclient !== false;
         // D5: 画布优先 —— 链是 first-caller-wins (g_started 后到者仅
         // refresh), 所以必须等画布就绪再启动链。裸启动流程画布由 wayland
         // 段开窗, 与 job 触发存在竞态: v10 实测触发早 120ms 到, 画布未
@@ -224,13 +225,13 @@ export class SmokeRunner {
         }
         if (canvas !== null && canvas.w > 0) {
           const s = wm.getEffectiveScale();
-          displayRouteNapi.startDisplayRouteChain(BigInt(canvas.surfaceId), scriptFlag,
+          displayRouteNapi.startDisplayRouteChain(BigInt(canvas.surfaceId), xclientFlag,
             Math.round(canvas.w / s), Math.round(canvas.h / s), true);
         } else {
           hilog.warn(DOMAIN, TAG, 'displayroute: canvas not ready in 5s, fallback to dr surface');
           // T8: XComponent surface 就绪则带出图链 (AppStorage 桥, SmokeDevPanel 写)
           const drSid = AppStorage.get<string>('smoke.drSurfaceId') ?? '';
-          displayRouteNapi.startDisplayRouteChain(drSid !== '' ? BigInt(drSid) : 0n, scriptFlag);
+          displayRouteNapi.startDisplayRouteChain(drSid !== '' ? BigInt(drSid) : 0n, xclientFlag);
         }
         // 早退 = 本次运行确实没有测试要跑: 既无 inline, 也无套件/选测声明。
         // (M2-T3 实测: 只看 inline 会把「displayroute + 套件用例」的编排

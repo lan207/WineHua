@@ -117,17 +117,18 @@ publishLaunchRequest 随冷启/二次 want 生效，不持久化）、
 ### displayroute 验证编排（M1 出口判据复现）
 
 `smoke/jobs/displayroute-notepad.json` = M1-T5 notepad 端到端编排：displayroute
-bring-up（含注入脚本门开启）→ X 路线 notepad，脚本在 t=8/12/16/20/20.5/21s 驱动
-双窗口焦点切换 + 模态应答 + "hi" 键入（编排定义见 `display_input.c` 头注释）。
+bring-up → X 路线 notepad（载体用例）。注入脚本（双窗口焦点切换 + "hi" 键入的
+定时序列）已于 2026-10-13 退役删除，行为判定改由 wine-trace 判定器承担（见下）。
 
 ```bash
 python3 automation/smoke.py run --suite core --job smoke/jobs/displayroute-notepad.json
 ```
 
-**判定口径**：run 的 result-json 检查**预期 FAIL**（notepad 不写结果文件）——
-判据是行为面：归档帧/hilog 里确认 win1→win2→win1 键回显、模态框 N 应答、
-notepad 文本区出现 "hi"。WINEHUA_WINEDEBUG 诊断通道已开（M1-T5 修复），
-wine_stderr 的 `+x11drv/+event` 轨迹可逐键核对注入路径。
+**判定口径**：载体用例设备端落 SKIP 占位（notepad 不写结果文件），行为判据 =
+`wine-trace` 判定器 —— 归档 `device-evidence/wine_stderr_*.log` 断言
+spawn→winex11(route=x11)→X 连接→建窗→FocusIn 链路（用例 env 开
+WINEHUA_WINEDEBUG 提供 trace）。注入脚本已于 2026-10-13 退役，「逐键核对
+注入路径」的历史口径不再适用。
 
 设备选择：`--device` → `WINEHUA_DEVICE` → `hdc list targets` 唯一设备。hdc 路径：
 `WINEHUA_HDC` → PATH。

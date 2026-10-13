@@ -61,12 +61,8 @@ static struct wlr_xwayland *g_xwayland; /* GAP2 (#131): X 硬件焦点同步口
 static struct wlr_surface *g_kbd_focus; /* 已 keyboard enter 的 surface */
 static struct wlr_surface *g_ptr_focus; /* 已 pointer enter 的 surface */
 static struct wlr_xwayland_surface *g_ptr_focus_xs; /* 命中的 xs (D36 点击置前用) */
-static struct wl_event_source *g_press_timer;
-static struct wl_event_source *g_release_timer;
-static uint32_t g_held_keycode; /* 已按下待释放的键 (release 定时器目标) */
 static struct wl_display *g_display; /* 键/焦点批次的显式 flush 用 */
 static int64_t g_focus_switched_ms; /* 最近一次焦点切换时刻 (settle 判定) */
-static bool g_script_enabled; /* 真机门自动注入脚本 (默认关, smoke 开启) */
 
 /* 焦点 surface 的存活绑定: client (Xwayland) 销毁 wl_surface 时 wlroots
  * 先发 events.destroy 再释放内存 —— 监听自清指针。不清的话
@@ -293,8 +289,6 @@ void display_input_inject_key(uint32_t keycode, bool press)
     }
     OHLOG("inject key evdev=%{public}u %{public}s", keycode,
           press ? "press" : "release");
-    if (press)
-        g_held_keycode = keycode;
 
     if (g_loop && g_key_timer &&
         (uint32_t)(NowMsec() - g_focus_switched_ms) < FOCUS_SETTLE_MS)
@@ -782,128 +776,6 @@ void wl_ohos_input_post_clipboard(const char *utf8)
     InjectQueuePush(&item);
 }
 
-/* ── T1/T2/T5 真机门自动注入脚本: 定时器驱动确定性输入序列 ──────────────
- * 仅存在于 displayroute smoke 链 (本身就是测试路径, principles #22 不进
- * 产品)。
- *   t=8s  KEY_A → 最上层窗口 (win1) 回显
- *   t=12s motion 到 win2 中心 (悬停切换焦点) + KEY_B → win2 回显
- *   t=16s motion 回 win1 中心 + KEY_C → win1 回显, 且 12~16s 间 win1 无键
- *   t=20s motion 到 notepad 文本区中心 + KEY_H
- *   t=21.5/23/24.5/26s KEY_E/L/L/O → notepad 文本区出现 "HELLO"
- *   (终证判据, 2026-10-04 从 "hi" 扩展)
- * notepad 以**无参数**启动 (载体用例 argvMode=raw/argv=[], 见
- * smoke/suites/displayroute.json): 不再有"把 smoke 参数当文件名"的弹框,
- * 键直达文本区。坐标与 xclient_child mode=2 的窗口摆位耦合 (win1
- * @1000,600 320x240 —— D30 挪离 smoke 工作区, win2 @380,300 280x200),
- * notepad 坐标 = 真机实测几何 (874x655 @4,30, r0929092617-t5o)。**分母
- * 统一 = 实际帧 1400x920** (2026-10-13 修 case 2/4 的 800x600 残留:
- * 错误分母把落点拉伸 ×1.75/×1.53, case 2 目标 (520,400) 实际落
- * (910,613) 空桌面) —— 两侧常量成对维护。 */
-#define KEY_A 30 /* linux/input-event-codes.h evdev 键码 */
-#define KEY_B 48
-#define KEY_C 46
-#define KEY_E 18
-#define KEY_H 35
-#define KEY_I 23
-#define KEY_L 38
-#define KEY_O 24 /* 注意不是 32 —— evdev 32=KEY_D, 2026-10-04 实测打成了 "d" */
-
-static struct wl_event_source *g_script_timer;
-static int g_script_step;
-
-static int ScriptTick(void *data)
-{
-    (void)data;
-    ++g_script_step;
-    switch (g_script_step)
-    {
-    case 1: /* 悬停到 win1 中心 + KEY_A: MiniX-1 @1000,600 320x240 (与
-             * xclient_child.cpp 摆位成对维护, D30 挪离 smoke 工作区)。
-             * 归一化分母 = 实际帧 1400x920 (§1.4 的 800x600 假设在本链
-             * 不成立, 整体收敛随 M2 分辨率参数化)。 */
-        display_input_inject_motion(1160 / 1400.0f, 720 / 920.0f, 1);
-        display_input_inject_key(KEY_A, true);
-        if (g_release_timer)
-            wl_event_source_timer_update(g_release_timer, 300);
-        wl_event_source_timer_update(g_script_timer, 4000);
-        break;
-    case 2: /* 悬停到 win2 中心: (380+140, 300+100) = (520,400); 分母 =
-             * 实际帧 1400x920 (同 case 1; 2026-10-13 修 800x600 残留) */
-        display_input_inject_motion(520 / 1400.0f, 400 / 920.0f, 1);
-        display_input_inject_key(KEY_B, true);
-        if (g_release_timer)
-            wl_event_source_timer_update(g_release_timer, 300);
-        wl_event_source_timer_update(g_script_timer, 4000);
-        break;
-    case 3: /* 悬停回 win1 中心 + KEY_C (win1 新位, 同 case 1) */
-        display_input_inject_motion(1160 / 1400.0f, 720 / 920.0f, 1);
-        display_input_inject_key(KEY_C, true);
-        if (g_release_timer)
-            wl_event_source_timer_update(g_release_timer, 300);
-        wl_event_source_timer_update(g_script_timer, 4000);
-        break;
-    case 4: /* 悬停 notepad 文本区 (屏幕坐标点 217,190) + KEY_H。显式重选焦点:
-             * 双窗口重聚焦覆盖 (焦点指针的销毁自清在 Track*, surface destroy
-             * 监听里)。分母 = 实际帧 1400x920, 与下方命中测试同基准
-             * (2026-10-13 修 800x600 残留: 旧分母落 (379,291) 打空)。 */
-        display_input_inject_motion(217 / 1400.0f, 190 / 920.0f, 1);
-        FocusClient(wl_ohos_output_client_topmost_at(217, 190));
-        if (g_display)
-            wl_display_flush_clients(g_display);
-        display_input_inject_key(KEY_H, true);
-        if (g_release_timer)
-            wl_event_source_timer_update(g_release_timer, 300);
-        wl_event_source_timer_update(g_script_timer, 1500);
-        break;
-    case 5: /* KEY_E ── HELLO 终证序列 (2026-10-04: 目标链判据从 "hi"
-             * 扩为 "HELLO"; 1.5s 间隔避开 §1.5 单槽 pending key 的
-             * settle 丢键窗口) */
-        display_input_inject_key(KEY_E, true);
-        if (g_release_timer)
-            wl_event_source_timer_update(g_release_timer, 300);
-        wl_event_source_timer_update(g_script_timer, 1500);
-        break;
-    case 6: /* KEY_L */
-        display_input_inject_key(KEY_L, true);
-        if (g_release_timer)
-            wl_event_source_timer_update(g_release_timer, 300);
-        wl_event_source_timer_update(g_script_timer, 1500);
-        break;
-    case 7: /* KEY_L */
-        display_input_inject_key(KEY_L, true);
-        if (g_release_timer)
-            wl_event_source_timer_update(g_release_timer, 300);
-        wl_event_source_timer_update(g_script_timer, 1500);
-        break;
-    case 8: /* KEY_O → notepad 文本区出现 "HELLO", 序列结束 */
-        display_input_inject_key(KEY_O, true);
-        if (g_release_timer)
-            wl_event_source_timer_update(g_release_timer, 300);
-        break; /* 序列结束, 不重排 */
-    default:
-        break;
-    }
-    return 0;
-}
-
-static int KeyReleaseTick(void *data)
-{
-    (void)data;
-    /* 释放实际按下的键: 硬编码 KEY_A 曾让 KEY_B/C 永不释放, X server
-     * auto-repeat 以 press/release 对洪水重发 (T2 实测 c×646)。 */
-    display_input_inject_key(g_held_keycode, false);
-    return 0; /* 不重排 = one-shot */
-}
-
-static int KeyPressTick(void *data)
-{
-    (void)data;
-    display_input_inject_key(KEY_A, true);
-    if (g_release_timer)
-        wl_event_source_timer_update(g_release_timer, 300);
-    return 0;
-}
-
 int wl_ohos_input_seat_create(struct wl_display *wl, struct wl_event_loop *loop)
 {
     g_loop = loop;
@@ -942,37 +814,18 @@ int wl_ohos_input_seat_create(struct wl_display *wl, struct wl_event_loop *loop)
                               WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
     wlr_seat_set_keyboard(g_seat, &g_kb);
 
-    /* 真机门自动注入: T2 脚本序列 (case 1 即 T1 的 KEY_A 步)。
-     * 门控 = wl_ohos_input_set_script_enabled (默认关): 编排是测试资产
-     * (定时重放按键 + 硬编码窗口几何), 不经开启就重放 = 产品路径里藏
-     * 幽灵输入 (原则 #23: 定制默认关闭、关闭态 = 无此行为)。手动注入
-     * (队列/手动键) 不受此门影响。 */
+    /* 手动注入用的两个定时器 (队列键投递 + 脉冲释放)。真机门自动注入脚本
+     * 已于 2026-10-13 退役 (职能被 smoke 编排 / 归档判定覆盖), 本处不再
+     * 武装任何自走注入。 */
     if (g_loop)
     {
-        g_release_timer = wl_event_loop_add_timer(g_loop, KeyReleaseTick, NULL);
         g_key_timer = wl_event_loop_add_timer(g_loop, DeliverPendingKey,
                                               &g_pending_key);
         g_pulse_release_timer = wl_event_loop_add_timer(g_loop,
                                                         DeliverPulseRelease,
                                                         NULL);
-        if (g_script_enabled)
-        {
-            g_script_timer = wl_event_loop_add_timer(g_loop, ScriptTick, NULL);
-            if (g_script_timer && g_release_timer)
-            {
-                wl_event_source_timer_update(g_script_timer, 8000);
-            }
-            else
-            {
-                /* 兜底: 脚本定时器建失败退回 T1 单键序列 */
-                g_press_timer = wl_event_loop_add_timer(g_loop, KeyPressTick, NULL);
-                if (g_press_timer && g_release_timer)
-                    wl_event_source_timer_update(g_press_timer, 8000);
-            }
-        }
     }
-    OHLOG("seat up (keymap=%{public}s, script @8/12/16s)",
-          g_kb.keymap ? "ok" : "MISSING");
+    OHLOG("seat up (keymap=%{public}s)", g_kb.keymap ? "ok" : "MISSING");
     return 0;
 }
 
@@ -983,30 +836,6 @@ void wl_ohos_input_xwayland_set_seat(struct wlr_xwayland *xwayland)
     g_xwayland = xwayland; /* GAP2: SyncXInputFocus 用 (xwm 连接) */
     wlr_xwayland_set_seat(xwayland, g_seat);
     OHLOG("xwayland seat attached");
-}
-
-void wl_ohos_input_script_restart(void)
-{
-    if (!g_loop)
-        return;
-    /* 建链时 script_enabled=false (产品桌面页先到抢建) 而重触发翻转为
-     * true 的路径: seat_create 没建脚本定时器, 这里必须补建 —— 否则
-     * restart 静默 no-op 而调用方照打 "re-armed" (2026-10-05 hello 实测:
-     * inject key 0 条, 注入脚本一次没跑, HELLO 终证落空)。 */
-    if (!g_script_timer && g_script_enabled)
-        g_script_timer = wl_event_loop_add_timer(g_loop, ScriptTick, NULL);
-    if (!g_script_timer)
-        return;
-    g_script_step = 0;
-    wl_event_source_timer_update(g_script_timer, 8000);
-    OHLOG("inject script re-armed (t=8/12/16/20/20.5/21s)");
-}
-
-void wl_ohos_input_set_script_enabled(bool enabled)
-{
-    /* 只在 seat_create 前生效 (开启态决定定时器是否武装); 链建后再翻转
-     * 不追认 —— 显示路线每轮触发走完整 seat 生命周期 (retrigger 重进)。 */
-    g_script_enabled = enabled;
 }
 
 /* ── M4a-T5: x11 多窗模式按窗路由口 (x11_toplevel_input_* 的执行端) ──

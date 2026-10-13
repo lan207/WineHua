@@ -11,21 +11,21 @@
 
 ## 1. 代码埋雷（按触发时机排序）
 
-### 1.4 800×600 三处独立写死（随 M2 分辨率参数化一起收敛）
+### 1.4 800×600 独立写死（随 M2 分辨率参数化一起收敛）
 
-`ohos_output.c`（输出实际尺寸）、`display_input.c`（注入脚本几何分母 +
-xclient_child 窗口摆位耦合）、`SmokeDevPanel.ets`（4:3 aspectRatio）。
-注释已互相点名但仍是漂移起点：改分辨率漏一处即"注入整体偏移"或"比例
-失配"，且三层分散难一次看全。**修法**：随 M2 PC 模式/多 output 的分辨
-率参数化设计单一来源（ohos_output 导出查询，ETS 侧从配置/ready 标记
-读），不要现在单独修——M2 改分辨率还得再动一次。
+`ohos_output.c`（输出实际尺寸）、`SmokeDevPanel.ets`（4:3 aspectRatio）。
+（`display_input.c` 的注入脚本几何分母 + xclient_child 摆位耦合 2026-10-13
+随脚本退役整体删除，本层写死不复存在。）注释已互相点名但仍是漂移起点：
+改分辨率漏一处即出图/呈现比例失配，且两层分散难一次看全。**修法**：随 M2
+PC 模式/多 output 的分辨率参数化设计单一来源（ohos_output 导出查询，ETS
+侧从配置/ready 标记读），不要现在单独修——M2 改分辨率还得再动一次。
 
 **现状清单（2026-10-01 复核，按符号记避免行号漂移）**：
 
 | 层 | 位置 | 内容 |
 |---|---|---|
 | 输出（真相源） | `display/ohos_output.c` `wl_ohos_output_chain_start` | `wlr_headless_add_output` / `wlr_output_state_set_custom_mode` / 背景 `wlr_scene_rect_create` / `SET_BUFFER_GEOMETRY`，同一函数内 4~5 个 `800, 600` |
-| 注入 | `display/display_input.c` | 归一化分母**已**走查询（`wl_ohos_output_frame_size()`）；但注入脚本里的窗口摆位/点击坐标是按 800×600 画布实测的常量（注释：win1 @0,320 320x240、notepad 坐标=真机实测几何） |
+| 注入 | `display/display_input.c` | 归一化分母**已**走查询（`wl_ohos_output_frame_size()`）；注入脚本（窗口摆位/点击按 800×600 实测的常量）已于 2026-10-13 退役删除，本层无分辨率写死 |
 | 界面 | `ets/smoke/SmokeDevPanel.ets` | 预览 XComponent `.aspectRatio(4 / 3)` |
 
 **触发条件（到点必做，不是"有空再说"）**：PC 模式 / 多 output / 要按真机
@@ -1050,11 +1050,12 @@ automation 支持）⇒ 记事本把 `--automation` 等**当文件名**逐个打
    结果文件，等文件必然拖满 timeout 并被判失败 —— 那是把「无自报」误判成
    「没跑成」。改为：runner 只跑声明时长的窗口，到点 `terminateWineProcess`，
    落一条 `status=SKIP` / `stage=external-vehicle` 的**无结论**结果（设备端不判），
-   行为判定归编排与外部证据。SKIP ≠ 绿：它不含「行为正确」的断言。
+   行为判定归编排侧判定器（wine-trace 等）与外部证据。SKIP ≠ 绿：它不含
+   「行为正确」的断言。
 2. **启动参数**：`argvMode: "raw"` + `argv: []`（套件条目与 job inline 两处）
    ⇒ 记事本**无参数**启动，不再有「文件不存在」弹框。
 3. **注入脚本**（`display_input.c`）：删掉应答该弹框的 `KEY_N` 步骤，H/I 直接
-   进文本区。
+   进文本区。（脚本本体 2026-10-13 已退役删除，本步骤为历史记录。）
 
 **验收（r20260930-190858 / r191114，设备 .5）**：用例不再超时（SKIP，job 判定
 PASS 且两条 bring-up marker 全过）；guest trace 该轮**对话框创建 0 次**；

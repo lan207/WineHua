@@ -1,7 +1,7 @@
 {
   "displayroute": true,
   "desktopMode": "virtual",
-  "displayrouteScript": false,
+  "displayrouteXclient": false,
   "timeoutMinutes": 40,
   "checks": [
     "marker:displayroute-egl-import-probe",
