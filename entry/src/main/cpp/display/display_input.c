@@ -20,6 +20,7 @@
 #define WLR_USE_UNSTABLE
 #include "display_input.h"
 #include "ohos_output.h"
+#include "desktop_fit.h"   /* 游戏全屏适配: letterbox 逆映射 (C 壳, 单一实现) */
 #include "xim_bridge.h"
 #include "x11_toplevel.h" /* M4a-T5: mm 注入 drain 分派 (C1: loop 线程) */
 #include <wlr/types/wlr_data_device.h>
@@ -29,6 +30,7 @@
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <math.h>
 #include <pthread.h>
 #include <time.h>
 #include <unistd.h>
@@ -63,6 +65,15 @@ static struct wlr_surface *g_ptr_focus; /* 已 pointer enter 的 surface */
 static struct wlr_xwayland_surface *g_ptr_focus_xs; /* 命中的 xs (D36 点击置前用) */
 static struct wl_display *g_display; /* 键/焦点批次的显式 flush 用 */
 static int64_t g_focus_switched_ms; /* 最近一次焦点切换时刻 (settle 判定) */
+
+/* 游戏全屏适配 (2026-10-15): 最近一次 motion 是否落在 letterbox 黑边区
+ * (画布逻辑系, 由 display_input_inject_motion 按 present 同源 fit 判定)。
+ * 语义: 黑边区 = 死区 —— 点击/滚轮吞掉 (用户拍板), motion 钳到内容边缘
+ * (保留拖拽/边缘跟随, 防相对模式幽灵增量, 同 wayland 臂 ClampToContent
+ * 依据)。吞下的按下按位记账, 其抬起配平同吞; 非吞按下会清同键位残留,
+ * 丢抬起不泄漏 (见 button 注入注释)。 */
+static int g_ptr_in_letterbox;
+static uint32_t g_swallowed_btn_mask;
 
 /* 焦点 surface 的存活绑定: client (Xwayland) 销毁 wl_surface 时 wlroots
  * 先发 events.destroy 再释放内存 —— 监听自清指针。不清的话
@@ -326,6 +337,34 @@ void display_input_inject_motion(float nx, float ny, int phase)
     wl_ohos_output_frame_size(&fw, &fh);
     int fx = (int)(nx * (float)fw);
     int fy = (int)(ny * (float)fh);
+    /* 游戏全屏适配 (2026-10-15): 桌面内容 letterbox 逆映射 —— 与
+     * ohos_egl_import.c present 的正变换同源 (WineHua_ComputeDesktopFit,
+     * 唯一实现)。桌面 == 画布 (恒等) 或桌面矩形无效时原样直通, 与改动前
+     * 逐点一致。黑边区: 坐标钳到内容边缘 (不吞 motion —— 钳制保留拖拽/
+     * 边缘跟随语义且相对增量不成幽灵, 同 geometry.h ClampToContent 依据);
+     * 黑边区的按下/滚轮由 button/axis 侧吞掉。 */
+    {
+        int dx = 0, dy = 0, dw = 0, dh = 0;
+        struct DesktopFitRect fit;
+        if (wl_ohos_output_desktop_rect(&dx, &dy, &dw, &dh) &&
+            WineHua_ComputeDesktopFit(fw, fh, dw, dh, &fit) &&
+            (fit.dstW != fw || fit.dstH != fh)) {
+            g_ptr_in_letterbox = (fx < fit.offX || fx >= fit.offX + fit.dstW ||
+                                  fy < fit.offY || fy >= fit.offY + fit.dstH);
+            double ux = dx + WineHua_FitUnmapX(&fit, (double)fx);
+            double uy = dy + WineHua_FitUnmapY(&fit, (double)fy);
+            if (g_ptr_in_letterbox) {
+                if (ux < dx) ux = dx;
+                if (ux > dx + dw - 1) ux = dx + dw - 1;
+                if (uy < dy) uy = dy;
+                if (uy > dy + dh - 1) uy = dy + dh - 1;
+            }
+            fx = (int)lround(ux);
+            fy = (int)lround(uy);
+        } else {
+            g_ptr_in_letterbox = 0;
+        }
+    }
     struct wlr_xwayland_surface *xs = wl_ohos_output_client_topmost_at(fx, fy);
     /* D9 拖拽排查 (2026-10-05): notepad 4.6s 按住仅收到 1 条 MotionNotify,
      * ArkTS/队列/drain 全通 —— 断点在本函数的 hit-test 丢弃还是 seat 投递,
@@ -401,6 +440,28 @@ void display_input_inject_button(uint32_t button, bool press)
 {
     if (!g_seat)
         return;
+    /* 游戏全屏适配 (2026-10-15): letterbox 黑边区按下/抬起吞掉 (用户拍板
+     * 口径)。按下吞掉记账, 其抬起配平同吞; 游戏内按下的抬起不受位置影响
+     * (按下时的归属即意图)。非吞按下清同键位残留 —— 丢抬起的会话残留
+     * 不会把后续抬起误吞 (自愈)。 */
+    uint32_t bit = (button >= 0x110 && button <= 0x112) ? (1u << (button - 0x110)) : 0u;
+    if (bit && g_ptr_in_letterbox)
+    {
+        if (press)
+        {
+            g_swallowed_btn_mask |= bit;
+            OHLOG("inject button evdev=0x%{public}x press SWALLOWED (letterbox)", button);
+            return;
+        }
+        if (g_swallowed_btn_mask & bit)
+        {
+            g_swallowed_btn_mask &= ~bit;
+            OHLOG("inject button evdev=0x%{public}x release SWALLOWED (letterbox)", button);
+            return;
+        }
+    }
+    if (press)
+        g_swallowed_btn_mask &= ~bit; /* 非吞按下: 清残留 (见上) */
     if (!g_ptr_focus)
     {
         static int said;
@@ -472,6 +533,15 @@ void display_input_inject_axis(int which, int steps)
 {
     if (!g_seat)
         return;
+    /* 游戏全屏适配 (2026-10-15): letterbox 黑边区滚轮吞掉 —— 与点击同
+     * 口径 (黑边 = 死区); 节流日志防刷屏。 */
+    if (g_ptr_in_letterbox)
+    {
+        static uint32_t said;
+        if (said++ % 50 == 0)
+            OHLOG("inject_axis SWALLOWED (letterbox) n=%{public}u", said);
+        return;
+    }
     if (!g_ptr_focus)
     {
         static int said;

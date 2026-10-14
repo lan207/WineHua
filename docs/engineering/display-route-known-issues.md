@@ -715,6 +715,42 @@ fusion-r20261011-pc-ability，唯一缺口为上页所述 Pad 模拟布局差异
 子窗）自绘顶条落地，关闭出路盘点闭合；PC/2in1 系统装饰分叉已落、
 pending-hardware 实测。
 
+### 2.16 游戏全屏 letterbox 适配：Pad 呈现 + 输入（2026-10-15 落地；PC 承载跟随待硬件）
+
+**现象与归属**：虚拟桌面里游戏 CDS 切 800×600 后，画面只在左上角、四周是
+宿主背景色。不是坏点：guest 链是上游 wine 原语义（CDS → 桌面窗缩至 800×600，
+`win32u/defwnd.c:2957`，本机 wine-10 trace 实证）；Linux 上「桌面窗 = 屏幕」，
+没有宿主层需要介入，所以两侧都不存在「认出桌面窗 / 缩放桌面窗」的逻辑——
+缺口在宿主 x11 臂呈现（wlroots scene 按 X 坐标 1:1 摆，无 fit 概念）。
+**本适配是产品语义扩展（2026-10-15 用户拍板），不是对齐 Linux**：Pad 画布
+保持全屏，桌面内容等比缩放居中 + letterbox 纯黑 + letterbox 吞输入；
+PC/2in1 承载窗跟随内容尺寸（Linux 式）。
+
+**机制落点**：
+- 身份与矩形：`display/ohos_output.c` 首映射 X client = 桌面窗（与既有
+  `g_desktop_shell_mapped` 同一判据）+ FrameStep 变化检测上报
+  `evt:desktop-content-resize:WxH`；实测交叉校验 title="shell - Wine 桌面" /
+  class="explorer.exe"。
+- 呈现（单点消费）：`display/ohos_egl_import.c` present 层 fit——u_uv 子矩形
+  采样 + glViewport + 缩小时纯黑 glClear；恒等路径逐像素不变（零回归）。
+  不走 per-node 缩放：wlroots scene 每次 commit 都会 `set_dest_size` 收回。
+- 输入：`display/display_input.c` motion 逆映射 + letterbox 内钳到内容边；
+  按键/滚轮在 letterbox 吞掉（press/release 配对掩码，非吞按下自愈）。
+- 几何唯一实现：`display/desktop_fit.h`(C 面) → `compositor/frame/geometry.cpp`
+  `ComputeFitRect`/`FitUnmapDisplayX/Y`（COMPOSITOR_UNIFICATION S4 四变换纪律）。
+- PC 臂：`ProcessService.ets` 事件转发 → `WineWindowManager.applyDesktopContentSize`
+  （`desktopSeparateWindow` 门控 + 等尺寸短路）。
+
+**实测证据（.7，r20261015-020216 会话）**：rect 链 1400×920→800×600→1400×920
+（两次进出，含首次启动游戏自退）；letterbox 截图实测（物理 px）：左边条
+171 / 内容 2455 / scale 1.5344（设计值 173/2453/1.5333）；letterbox 内 uitest
+点击 = press+release 成对 `SWALLOWED (letterbox)` 且游戏无响应；退出游戏后
+桌面全屏恢复。用户手测「基本 OK」（含菜单点选进对局）。
+
+**边界/待办**：PC/2in1 承载窗跟随 = pending-hardware 实测（与 #133/#154 同批）；
+多 output 未涉及；本适配无套件守门（人工 + 日志实证），如需门禁可加
+desktop-rect 断言。
+
 ## 2. 技术悬案（M2 排查入口）
 
 ### 2.1 「最后一键」间歇不入编辑控件

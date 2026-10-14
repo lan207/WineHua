@@ -49,6 +49,12 @@ void wl_ohos_output_force_redraw(void);
 // 停在 ready-degraded —— 实测 2026-10-04, smoke runner 永不启动)。
 int WineHua_DisplayRoute_DesktopShellMapped(void);
 
+// 桌面内容矩形 (游戏全屏适配, 2026-10-15): 桌面窗 (= 首个映射 client, 见上)
+// 的活几何, 游戏 CDS 后它收缩为游戏分辨率。letterbox 呈现/输入逆映射的
+// 唯一事实源 (compositor/frame/geometry.cpp 的 C 壳消费)。返回 0 = 无有效
+// 桌面 (链未起/桌面退场), 调用方按恒等/直通处理。
+int wl_ohos_output_desktop_rect(int *x, int *y, int *w, int *h);
+
 // X 窗口可见性谓词: surface->buffer (最后有效像素) 存在即视为有内容。
 // 不得用 surface->mapped —— Xwayland 例行空 commit 会翻转它 (0.20
 // surface_commit_state: NULL buffer commit → unmap), T2 实测闪断。

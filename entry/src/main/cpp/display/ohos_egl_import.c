@@ -50,6 +50,8 @@
 #include <libdrm/drm_fourcc.h>
 
 #include "ohos_buffer.h"
+#include "ohos_output.h"   /* wl_ohos_output_desktop_rect (letterbox fit 源) */
+#include "desktop_fit.h"   /* WineHua_ComputeDesktopFit / FitUnmap (C 壳) */
 
 #define TAG_ERR(...) OH_LOG_ERROR(LOG_APP, "[" LOG_TAG "] " __VA_ARGS__)
 #define TAG_INFO(...) OH_LOG_INFO(LOG_APP, "[" LOG_TAG "] " __VA_ARGS__)
@@ -733,7 +735,14 @@ static GLuint WindowBlitProgram(void)
         "precision mediump float;\n"
         "varying vec2 uv;\n"
         "uniform sampler2D s;\n"
-        "void main(){ gl_FragColor = texture2D(s, uv); }\n";
+        /* u_uv = 采样子矩形 (x0,y0,x1,y1) 于全局 uv 系 (y 向下, 同 uv):
+         * 恒等 (0,0,1,1); 游戏全屏适配时 = 桌面窗在帧中的区域 (见 present
+         * 调用点的 letterbox 段)。uniform 每次绘制必设 — GL 默认全 0,
+         * 漏设会把整帧采到左上角一个点上。 */
+        "uniform vec4 u_uv;\n"
+        "void main(){ vec2 t = vec2(mix(u_uv.x, u_uv.z, uv.x),"
+        " mix(u_uv.y, u_uv.w, uv.y));"
+        " gl_FragColor = texture2D(s, t); }\n";
     GLuint v = glCreateShader(GL_VERTEX_SHADER);
     glShaderSource(v, 1, &vs, NULL);
     glCompileShader(v);
@@ -850,7 +859,35 @@ int wl_ohos_egl_window_present(struct wlr_buffer *frame,
         glEnableVertexAttribArray((GLuint)ploc);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, tex);
-        glViewport(0, 0, frame->width, frame->height);
+        /* ── 游戏全屏适配 (2026-10-15): 桌面内容 → 画布 letterbox 适配 ──
+         * 游戏 CDS 后 wine 把桌面窗缩到游戏分辨率 (上游语义), 桌面内容在
+         * 帧里缩到左上角。口径 (用户拍板): 画布恒全屏, 桌面内容等比放大
+         * 居中, 剩余区域用纯黑 letterbox 填充。几何唯一实现 =
+         * WineHua_ComputeDesktopFit (compositor/frame/geometry.cpp, 与
+         * display_input.c 的逆映射同源)。桌面矩形无效 (链初/退场) 时恒等
+         * 直通 —— 与改动前逐像素一致。frame 尺寸 = canvas 逻辑尺寸 (buffer
+         * geometry, 见 wl_ohos_output_resize), 故分母直接用 frame->width/h。 */
+        GLint uloc = glGetUniformLocation(prog, "u_uv");
+        int dx = 0, dy = 0, dw = 0, dh = 0;
+        struct DesktopFitRect fit;
+        if (uloc >= 0 && wl_ohos_output_desktop_rect(&dx, &dy, &dw, &dh) &&
+            WineHua_ComputeDesktopFit(frame->width, frame->height, dw, dh, &fit)) {
+            glUniform4f(uloc,
+                        (float)dx / (float)frame->width,
+                        (float)dy / (float)frame->height,
+                        (float)(dx + dw) / (float)frame->width,
+                        (float)(dy + dh) / (float)frame->height);
+            /* GL viewport 原点在左下: offY 是内容上边距, 按底边折算 */
+            glViewport(fit.offX, frame->height - fit.offY - fit.dstH,
+                       fit.dstW, fit.dstH);
+            if (fit.dstW < frame->width || fit.dstH < frame->height) {
+                glClearColor(0.0f, 0.0f, 0.0f, 1.0f); /* letterbox 纯黑 */
+                glClear(GL_COLOR_BUFFER_BIT);
+            }
+        } else {
+            if (uloc >= 0) glUniform4f(uloc, 0.0f, 0.0f, 1.0f, 1.0f);
+            glViewport(0, 0, frame->width, frame->height);
+        }
         glDisable(GL_BLEND);
         glDisable(GL_DEPTH_TEST);
         glDisable(GL_SCISSOR_TEST);

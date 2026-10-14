@@ -164,6 +164,20 @@ export class ProcessService {
       if (evt === 'desktop-ready') {
         this.desktopShellSeen = true;
       }
+      // 游戏全屏适配 (2026-10-15): 桌面内容矩形变化 (native FrameStep 变化
+      // 检测上报, "evt:desktop-content-resize:{w}x{h}", w/h = 桌面逻辑尺寸)
+      // → PC/2in1 承载窗跟随 (WineWindowManager.applyDesktopContentSize;
+      // Pad 侧该方法是空操作, 缩放由 native letterbox 承担)。纯 ArkTS 转发,
+      // 不在本回调做同步 native 调用 (D47 时序纪律)。
+      if (evt.startsWith('desktop-content-resize:')) {
+        const dim = evt.substring('desktop-content-resize:'.length);
+        const parts = dim.split('x');
+        const w = parseInt(parts[0], 10);
+        const h = parseInt(parts[1], 10);
+        if (w > 0 && h > 0) {
+          WineWindowManager.getInstance().applyDesktopContentSize(w, h);
+        }
+      }
     });
   }
 

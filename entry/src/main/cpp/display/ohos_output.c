@@ -240,14 +240,47 @@ static void ClientDissociate(struct wl_listener *listener, void *data)
  * 条 evt:desktop-ready (超时后迟到的映射走 ArkTS degraded 升级路径)。 */
 static int g_desktop_shell_mapped;
 
+/* 桌面窗 (= 首个映射 client, 见上) 的 client 引用: "游戏全屏适配"
+ * (2026-10-15) 的 fit 源。语义 = 唯一规则「首个映射的 X client 是桌面
+ * shell」, 与 g_desktop_shell_mapped 同源; ClientDestroy 置空。不是身份
+ * 数据库 —— 它在 X 协议里没有角色标记 (wayland 臂的 app_id 标记是私有协议
+ * 带的), 这是链上已有信号的直接复用。 */
+static struct ohos_client_surface *g_desktop_client;
+
+/* 桌面内容矩形变化检测 (FrameStep 每拍比对; 变化时打日志 + 上报 PC 跟随)。
+ * 每轮链路由 chain_start 复位 (同 g_desktop_shell_mapped 纪律)。 */
+static int g_deskrect_have;
+static int g_deskrect_x, g_deskrect_y, g_deskrect_w, g_deskrect_h;
+
 int WineHua_DisplayRoute_DesktopShellMapped(void)
 {
     return g_desktop_shell_mapped;
 }
 
+/* 桌面内容矩形取数口 (游戏全屏适配): 桌面窗在 X 坐标系的活几何。
+ * 游戏 ChangeDisplaySettings 后 wine 把桌面窗缩到游戏分辨率 (上游语义),
+ * 这是宿主侧该事实的唯一载体。返回 0 = 无有效桌面 (链未起/桌面退场),
+ * 调用方按恒等呈现/直通输入处理。 */
+int wl_ohos_output_desktop_rect(int *x, int *y, int *w, int *h)
+{
+    struct ohos_client_surface *c = g_desktop_client;
+    if (!c || !c->xs || !c->xs->surface)
+        return 0;
+    if (c->xs->width <= 0 || c->xs->height <= 0)
+        return 0;
+    if (x) *x = c->xs->x;
+    if (y) *y = c->xs->y;
+    if (w) *w = c->xs->width;
+    if (h) *h = c->xs->height;
+    return 1;
+}
+
 /* 定义在 display_compositor.cpp: 经会话状态通道补发 evt:desktop-ready
  * (WaylandServer 单例的 stateCb 与路线无关 —— napi_init 的引擎消息通道)。 */
 extern void WineHua_DisplayRoute_FireDesktopReady(void);
+/* 同上通道: 桌面内容矩形变化上报 (PC/2in1 承载窗跟随的触发源; Pad 由
+ * present/input 每拍现算 fit, 不依赖本事件)。 */
+extern void WineHua_DisplayRoute_FireDesktopContentResize(int w, int h);
 
 static void ClientMapRequest(struct wl_listener *listener, void *data)
 {
@@ -261,6 +294,7 @@ static void ClientMapRequest(struct wl_listener *listener, void *data)
           xs->width, xs->height, xs->x, xs->y);
     if (!g_desktop_shell_mapped) {
         g_desktop_shell_mapped = 1;
+        g_desktop_client = c;
         WineHua_DisplayRoute_FireDesktopReady();
     }
 }
@@ -842,6 +876,32 @@ static void FrameStep(bool via_vsync)
     /* M2-T5: guest Vulkan 帧先落点再摆位 (frame_set 建/置节点, 下面的循环
      * 统一按窗几何校正)。必须在 scene 提交之前 —— 本拍到的帧本拍就上屏。 */
     display_guest_frames_tick();
+    /* 游戏全屏适配 (2026-10-15): 桌面内容矩形变化检测 —— 日志 (缩错时的
+     * 第一现场) + PC/2in1 承载窗跟随的上报源。Pad 的呈现/输入 fit 各自
+     * 现算 (wl_ohos_output_desktop_rect), 不依赖本检测。 */
+    {
+        int dx, dy, dw, dh;
+        if (wl_ohos_output_desktop_rect(&dx, &dy, &dw, &dh)) {
+            if (!g_deskrect_have || dw != g_deskrect_w || dh != g_deskrect_h ||
+                dx != g_deskrect_x || dy != g_deskrect_y) {
+                g_deskrect_have = 1;
+                g_deskrect_x = dx; g_deskrect_y = dy;
+                g_deskrect_w = dw; g_deskrect_h = dh;
+                OHLOG("desktop-rect %{public}dx%{public}d@%{public}d,%{public}d"
+                      " title=\"%{public}s\" class=\"%{public}s\"",
+                      dw, dh, dx, dy,
+                      (g_desktop_client && g_desktop_client->xs &&
+                       g_desktop_client->xs->title)
+                          ? g_desktop_client->xs->title : "",
+                      (g_desktop_client && g_desktop_client->xs &&
+                       g_desktop_client->xs->class)
+                          ? g_desktop_client->xs->class : "");
+                WineHua_DisplayRoute_FireDesktopContentResize(dw, dh);
+            }
+        } else if (g_deskrect_have) {
+            g_deskrect_have = 0; /* 桌面退场: 复位, 重映射按新值走变化分支 */
+        }
+    }
     wl_list_for_each(c, &g_clients, link) {
         if (c->scene_surf && c->xs)
             wlr_scene_node_set_position(&c->scene_surf->buffer->node,
@@ -1169,6 +1229,9 @@ static void ClientDestroy(struct wl_listener *listener, void *data)
     struct ohos_client_surface *c =
         wl_container_of(listener, c, destroy);
     (void)data;
+    /* 桌面窗退场: fit 源置空 (c 随即 free, 悬垂即 UAF) */
+    if (c == g_desktop_client)
+        g_desktop_client = NULL;
     /* dissociate 通常先到, 但 destroy 可能单独送达 (未 associate 就销毁, 或
      * 事件顺序变化): 帧节点的销毁不能只挂在 dissociate 上。 */
     DestroyFrameNode(c, "destroy");
@@ -1973,6 +2036,8 @@ int wl_ohos_output_chain_start(struct wlr_backend *backend,
     wl_list_init(&g_child_faces);
     g_out.xwayland = xwayland; /* D23: 子窗几何查询句柄 */
     g_desktop_shell_mapped = 0; /* 每轮链路独立判定 (x11 桌面就绪, 见定义处) */
+    g_desktop_client = NULL;    /* 桌面窗引用与变化检测逐链复位 (见定义处) */
+    g_deskrect_have = 0;
 
     struct wlr_allocator *alloc = wl_ohos_allocator_create();
     if (!alloc) {

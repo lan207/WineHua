@@ -97,6 +97,19 @@ extern "C" void WineHua_DisplayRoute_FireDesktopReady()
     WaylandServer::GetInstance()->FireState("evt:desktop-ready");
 }
 
+// 桌面内容矩形变化上报 (游戏全屏适配, 2026-10-15): 游戏 CDS 后 wine 把虚拟
+// 桌面窗缩到游戏分辨率 / 显示模式恢复时缩回 —— PC/2in1 的承载窗跟随以此
+// 为触发源 (ArkTS WineWindowManager)。触发点在 ohos_output 的 FrameStep
+// 变化检测 (每拍比对 g_deskrect_*, 变化才发)。Pad 侧呈现/输入的 letterbox
+// fit 每拍现算, 不消费本事件。格式 "evt:desktop-content-resize:{w}x{h}",
+// w/h = 桌面逻辑尺寸 (X 坐标系, 与输入注入同一坐标系)。
+extern "C" void WineHua_DisplayRoute_FireDesktopContentResize(int w, int h)
+{
+    char buf[64];
+    snprintf(buf, sizeof(buf), "evt:desktop-content-resize:%dx%d", w, h);
+    WaylandServer::GetInstance()->FireState(buf);
+}
+
 extern "C" {
 #include <native_buffer/native_buffer.h>
 #include <native_window/external_window.h>

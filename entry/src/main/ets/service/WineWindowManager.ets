@@ -1464,6 +1464,42 @@ export class WineWindowManager {
     }
   }
 
+  // 游戏全屏适配 (2026-10-15): 桌面内容矩形变化 → PC/2in1 承载窗跟随
+  // (ProcessService 转发 native evt:desktop-content-resize)。w/h = wine 桌面
+  // 逻辑尺寸 (游戏 CDS 后 = 游戏分辨率; 退出恢复后再发一次原尺寸)。
+  // 语义对齐 Linux "虚拟桌面窗按全屏分辨率 resize": 承载窗客户区 =
+  // 桌面逻辑尺寸 × effectiveScale (与 MW resize 先例同口径)。
+  // Pad: desktopSeparateWindow=false (tablet 全屏承载) → 空操作 —— 缩放由
+  // native letterbox 承担, 窗口尺寸不动。
+  // 防回环: 目标尺寸与当前窗尺寸相等即跳过 (窗口 resize 会经 DesktopWindow
+  // 的 surface 回调反推 output 尺寸, 那是既有单向收敛; 本方法只由 native
+  // 桌面矩形事件驱动, 不消费窗口尺寸, 两者不构成环)。
+  applyDesktopContentSize(w: number, h: number): void {
+    if (!this.desktopSeparateWindow) {
+      return;
+    }
+    const ctx = this.desktopAbilityCtx;
+    if (!ctx) {
+      return;
+    }
+    const s = this.displayScale * this.scaleBoost;
+    const winW = Math.round(w * s);
+    const winH = Math.round(h * s);
+    window.getLastWindow(ctx).then((win: window.Window) => {
+      const cur = win.getWindowProperties().windowRect;
+      if (cur.width === winW && cur.height === winH) {
+        return;
+      }
+      hilog.info(DOMAIN, TAG, '[MW-DESKTOP] content %{public}dx%{public}d → window %{public}dx%{public}d',
+        w, h, winW, winH);
+      win.resize(winW, winH).catch((e: Error) => {
+        hilog.warn(DOMAIN, TAG, '[MW-DESKTOP] resize failed: %{public}s', JSON.stringify(e));
+      });
+    }).catch((e: Error) => {
+      hilog.warn(DOMAIN, TAG, '[MW-DESKTOP] getLastWindow failed: %{public}s', JSON.stringify(e));
+    });
+  }
+
   // 启动器可见性写回 (Index 调用; PC 虚拟桌面模式 Index 不挂 DesktopLayer,
   // 该值归独立窗口所有 — VirtualDesktop 页面保持默认 true 跳过 root resize)
   setDesktopLauncherVisible(visible: boolean): void {
