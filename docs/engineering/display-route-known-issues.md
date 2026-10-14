@@ -746,6 +746,10 @@ PC/2in1 承载窗跟随内容尺寸（Linux 式）。
 171 / 内容 2455 / scale 1.5344（设计值 173/2453/1.5333）；letterbox 内 uitest
 点击 = press+release 成对 `SWALLOWED (letterbox)` 且游戏无响应；退出游戏后
 桌面全屏恢复。用户手测「基本 OK」（含菜单点选进对局）。
+**回归（2026-10-15 本构建）**：core 4/4、wine-vulkan 4/4、dxvk 3/3；x11 路线门
+gl-baseline / vulkan-present / displayroute-dxvk 各 1/1，全 PASS
+（r20261015-020853 … 023329；displayroute-dxvk 首轮撞 D48 残留与「job 型 run
+不收尾 force-stop」两次落空，force-stop 后重跑即绿）。
 
 **边界/待办**：PC/2in1 承载窗跟随 = pending-hardware 实测（与 #133/#154 同批）；
 多 output 未涉及；本适配无套件守门（人工 + 日志实证），如需门禁可加
