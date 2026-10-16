@@ -25,8 +25,15 @@
 
 #define XIM_CHAN_MAGIC 0x57485349u
 
+static void StartActivationReader(void); /* 前向: channel_init 与注册处共用 */
+
 static int g_chan_fd = -1;      /* 主端; 子端所有权随 spawn 转移 */
 static pthread_mutex_t g_chan_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* 上行激活 (x11 IME 上行链): server → 主进程 → ArkTS attach/detach */
+static xim_bridge_activation_cb g_act_cb = 0;
+static void *g_act_user = 0;
+static int g_reader_started = 0;
 
 int xim_bridge_channel_init(void)
 {
@@ -38,6 +45,8 @@ int xim_bridge_channel_init(void)
     }
     g_chan_fd = sv[0];
     OHLOG("channel paired main_fd=%{public}d child_fd=%{public}d", sv[0], sv[1]);
+    if (g_act_cb)
+        StartActivationReader();
     return sv[1]; /* 调用方 (spawn) 持有并转移所有权 */
 }
 
@@ -83,4 +92,96 @@ int xim_bridge_send_text(const char *utf8)
         return -1;
     }
     return 0;
+}
+
+/* ---- 上行激活通知 (x11 IME 上行链, 2026-10-17) ----
+ * server 帧: {magic u32, len u32 = 20, subtype u32 (1=激活 2=失活),
+ * rect[4] i32 (v1 传零)}。与下行共用 socketpair (全双工), 读线程独占读端。
+ * server 死亡 (EOF/EPIPE) 视为失活通知一次, 随后读线程退出。 */
+
+static int read_full(int fd, void *buf, size_t len)
+{
+    uint8_t *p = (uint8_t *)buf;
+    while (len > 0)
+    {
+        ssize_t n = recv(fd, p, len, MSG_NOSIGNAL);
+        if (n < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            return -1;
+        }
+        if (n == 0)
+            return -1; /* EOF: server 已退出 */
+        p += n;
+        len -= (size_t)n;
+    }
+    return 0;
+}
+
+static void *ActivationReaderMain(void *arg)
+{
+    (void)arg;
+    int fd;
+    xim_bridge_activation_cb cb;
+    void *user;
+    pthread_mutex_lock(&g_chan_mutex);
+    fd = g_chan_fd;
+    cb = g_act_cb;
+    user = g_act_user;
+    pthread_mutex_unlock(&g_chan_mutex);
+
+    for (;;)
+    {
+        uint32_t hdr[2];
+        uint32_t payload[5]; /* subtype + rect[4] */
+        if (read_full(fd, hdr, sizeof(hdr)) != 0)
+            break;
+        if (hdr[0] != XIM_CHAN_MAGIC || hdr[1] != sizeof(payload))
+        {
+            OHERR("upstream bad frame magic=0x%{public}x len=%{public}u, drop",
+                  hdr[0], hdr[1]);
+            break;
+        }
+        if (read_full(fd, payload, sizeof(payload)) != 0)
+            break;
+        if (cb)
+            cb(payload[0] == 1 ? 1 : 0,
+               (int)payload[1], (int)payload[2],
+               (int)payload[3], (int)payload[4], user);
+    }
+
+    OHERR("upstream reader exit (server gone?) — notify deactivate");
+    if (cb)
+        cb(0, 0, 0, 0, 0, user);
+    return NULL;
+}
+
+static void StartActivationReader(void)
+{
+    int ready;
+    pthread_mutex_lock(&g_chan_mutex);
+    ready = g_chan_fd >= 0 && g_act_cb && !g_reader_started;
+    if (ready)
+        g_reader_started = 1;
+    pthread_mutex_unlock(&g_chan_mutex);
+    if (!ready)
+        return;
+    pthread_t t;
+    if (pthread_create(&t, NULL, ActivationReaderMain, NULL) != 0)
+    {
+        pthread_mutex_lock(&g_chan_mutex);
+        g_reader_started = 0;
+        pthread_mutex_unlock(&g_chan_mutex);
+        OHERR("activation reader thread create failed");
+    }
+}
+
+void xim_bridge_set_activation_callback(xim_bridge_activation_cb cb, void *user)
+{
+    pthread_mutex_lock(&g_chan_mutex);
+    g_act_cb = cb;
+    g_act_user = user;
+    pthread_mutex_unlock(&g_chan_mutex);
+    StartActivationReader();
 }

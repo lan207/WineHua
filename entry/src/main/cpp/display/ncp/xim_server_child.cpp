@@ -43,6 +43,7 @@
 #include <locale.h> /* setlocale: Xlib CT 转换按 locale (Task 4) */
 #include <cstring>
 #include <fcntl.h>
+#include <sys/socket.h>
 #include <pthread.h>
 #include <string>
 #include <unistd.h>
@@ -143,6 +144,32 @@ struct XimClient
  * 卡死, 窗口不映射 (2026-10-07 实测: graphics_smoke 借道卡死, 画布无窗)。 */
 static std::vector<XimClient> g_xims;
 static Window g_focus_srv = None; /* ChanThread COMMIT 的目标 (Task 4 接线) */
+
+/* 上行激活通知 (x11 IME 上行链, 2026-10-17): IC 焦点变化 → 主进程桥读
+ * 线程 → ArkTS attach/detach 软键盘 (wayland 路线 text-input 激活的
+ * 对位实现)。帧 = {magic, len=20, subtype u32 (1=激活 2=失活), rect[4]
+ * i32 (v1 传零)}。MSG_NOSIGNAL: 主进程对端死亡时不被 SIGPIPE 打死
+ * (对称 xim_bridge.c write_all 注)。 */
+static void SendUpstreamActive(bool active)
+{
+    uint32_t frame[7] = {0x57485349u, 20u, active ? 1u : 2u, 0, 0, 0, 0};
+    const uint8_t *p = reinterpret_cast<const uint8_t *>(frame);
+    size_t len = sizeof(frame);
+    while (len > 0)
+    {
+        ssize_t n = send(g_chan_fd, p, len, MSG_NOSIGNAL);
+        if (n < 0)
+        {
+            if (errno == EINTR)
+                continue;
+            fprintf(stderr, "[xim-server] upstream send failed errno=%d\n", errno);
+            return;
+        }
+        p += n;
+        len -= (size_t)n;
+    }
+    fprintf(stderr, "[xim-server] upstream active=%d\n", active ? 1 : 0);
+}
 
 static XimClient *ClientBySrvWin(Window w)
 {
@@ -558,7 +585,10 @@ static void HandlePacket(XimClient &c, const std::string &pkt)
         Put16(b, c, ic);
         SendPacket(c, XIM_DESTROY_IC_REPLY, 0, b);
         if (c.ic_focus && (ic == c.ic_id || c.ic_id == 0))
+        {
             c.ic_focus = false;
+            SendUpstreamActive(false);
+        }
         fprintf(stderr, "[xim-server] DESTROY_IC ic=%u\n", ic);
         break;
     }
@@ -569,6 +599,7 @@ static void HandlePacket(XimClient &c, const std::string &pkt)
         for (XimClient &o : g_xims)
             o.ic_focus = false;
         c.ic_focus = true;
+        SendUpstreamActive(true);
         fprintf(stderr, "[xim-server] SET_IC_FOCUS im=%u ic=%u win=0x%lx\n",
                 c.im_id, c.ic_id, (unsigned long)c.ic_client_win);
         break;
@@ -611,6 +642,11 @@ static void HandlePacket(XimClient &c, const std::string &pkt)
     case XIM_DISCONNECT:
         SendPacket(c, XIM_DISCONNECT_REPLY, 0, std::string());
         c.active = false;
+        if (c.ic_focus)
+        {
+            c.ic_focus = false;
+            SendUpstreamActive(false);
+        }
         fprintf(stderr, "[xim-server] DISCONNECT\n");
         break;
     default:

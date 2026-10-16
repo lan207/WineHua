@@ -18,6 +18,7 @@
 #include "input/game_controller_bridge.h"
 #include "input/controller/controller_napi.h"
 #include "display/x11_toplevel.h" /* M4a-T5: 多窗输入路由分叉 */
+#include "display/xim_bridge.h" /* x11 IME 上行激活 (2026-10-17) */
 
 #include <unistd.h>
 #include <signal.h>
@@ -585,6 +586,20 @@ static napi_value SetImeCallback(napi_env env, napi_callback_info info) {
             OH_LOG_WARN(LOG_APP, "[WL_NAPI] ime cb dropped (tsfn not ready) active=%{public}d", active);
         }
     });
+
+    /* x11 IME 上行链 (2026-10-17): server 侧 IC 焦点 → 桥读线程 → 本回调 →
+     * tsfn → ArkTS attach/detach (wayland TextInput::SetActivateCallback 的
+     * x11 对位)。 */
+    xim_bridge_set_activation_callback([](int active, int x, int y, int w, int h, void*) {
+        if (!gImeTsfn) {
+            OH_LOG_WARN(LOG_APP, "[IME-X11-UP] cb dropped (tsfn not ready) active=%{public}d", active);
+            return;
+        }
+        OH_LOG_INFO(LOG_APP, "[IME-X11-UP] enqueue active=%{public}d rect=[%{public}d,%{public}d %{public}dx%{public}d]",
+                    active, x, y, w, h);
+        auto* ev = new ImeEvent{active, x, y, w, h};
+        napi_call_threadsafe_function(gImeTsfn, ev, napi_tsfn_blocking);
+    }, nullptr);
 
     return nullptr;
 }

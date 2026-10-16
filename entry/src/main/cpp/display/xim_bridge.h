@@ -17,6 +17,18 @@ int xim_bridge_channel_init(void);
 /* 转投 UTF-8 文本 (smoke ime / 产品 text-input), 子进程未就绪时 -1。 */
 int xim_bridge_send_text(const char *utf8);
 
+/* 上行激活通知 (x11 IME 上行链, 2026-10-17): server 侧 IC 焦点变化
+ * (XIM_SET_IC_FOCUS / DESTROY_IC / DISCONNECT) 时回调。active=1 应弹
+ * 软键盘 (attach), 0 应收起 (detach)。rect 为光标矩形 (v1 传零, 不影响
+ * attach)。回调在桥读线程上下文执行, 实现方须自行转投线程安全队列。 */
+typedef void (*xim_bridge_activation_cb)(int active, int x, int y,
+                                         int w, int h, void *user);
+
+/* 注册上行激活回调并确保读线程在跑 (幂等)。channel_init 前后均可调;
+ * server 侧无通知 (旧构建 / 未聚焦) 时不触发。 */
+void xim_bridge_set_activation_callback(xim_bridge_activation_cb cb,
+                                        void *user);
+
 #ifdef __cplusplus
 }
 #endif
