@@ -70,8 +70,14 @@ export class WineWindowManager {
   // (DesktopAbility/DesktopWindow 第 6 参) 与 openX11Canvas 门禁。
   // 实时查询而非读快照: 冷启早启链 (EntryAbility onCreate) 先于
   // applyModePolicy 跑, 快照字段当时未定值。
-  shouldUseMultiwindow(): boolean {
-    if (!DisplayRouteService.getInstance().isX11()) {
+  // 多窗模式判据。targetRoute 供「切换尚未应用」的调用方以**目标路线**求值
+  // (applyRoute 的 multiwindow 入参): 已应用值在切换时刻仍是旧路线, 用它算
+  // 会把 wayland→x11 的目标误判成 false —— 链落虚拟桌面模式, 程序窗走
+  // g_clients 画布路径而无宿主, 窗口不可见 (#172 实测指纹 = #145 同款)。
+  // 无参 = 按当前已应用路线求值 (既有调用方语义不变)。
+  shouldUseMultiwindow(targetRoute?: string): boolean {
+    const r = targetRoute ?? DisplayRouteService.getInstance().routeName();
+    if (r !== 'x11') {
       return false;
     }
     const explicitMode = DesktopModeService.getInstance().getOverrideMode();

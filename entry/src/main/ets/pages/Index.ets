@@ -278,19 +278,31 @@ struct Index {
     this.desktopModeRestartHint = true;
   }
 
-  // 显示路线切换 (实验对照): 落盘持久化, 冷启动 (完全退出重开) 后生效 —
-  // 运行中会话的路线裁决不变 (EntryAbility 冷启动解析一次)
+  // 显示路线切换 (实验对照): 即改即生效 (#172) —— 单点应用 (盖 env 章 +
+  // 拆/起 x11 链) 后重启引擎会话, 新 wine 进程 spawn 现读新章; 不再要求
+  // 完全退出应用。引擎忙时显式拒绝 (quickReset 的 F2 同款: 忙态是瞬态,
+  // 是否重来由用户决定) —— 先应用后拒绝会出现旧会话 display 已被拆而
+  // 重启未发生的破窗态
   private selectRoute(route: string): void {
     // 早退判据必须是持久化选择值 (preferredRoute) 而非已应用值 (routeName):
     // x11 会话里选 Wayland 后 routeName 仍是 x11, 用 routeName 判「已选中」
-    // 会把「选回 X11」的一击吞掉 (需两次冷启才切回, 复核 #136)
+    // 会把「选回 X11」的一击吞掉 (复核 #136)
     if (route == DisplayRouteService.getInstance().preferredRoute()) {
       return;
     }
+    if (this.env.isBusy()) {
+      promptAction.showToast({ message: '引擎操作进行中，请稍后再试' });
+      this.routeSel = [DisplayRouteService.getInstance().preferredRoute() === ROUTE_X11 ? 0 : 1];
+      return;
+    }
     DisplayRouteService.getInstance().setPreferred(route);
+    DisplayRouteService.getInstance().applyRoute(route, 'settings',
+      this.wm.shouldUseMultiwindow(route));
     this.routeSel = [route == ROUTE_X11 ? 0 : 1];
-    // 待生效提示只在 选择值 != 会话已应用值 时成立 (选回当前运行值 = 无事发生)
+    // 提示只在应用值落后于选择时成立 (重启被打断时可见, 正常路径重启完成
+    // 即随镜像刷新消失)
     this.routeRestartHint = (route != DisplayRouteService.getInstance().routeName());
+    this.env.restartEngine();
   }
 
   // 设置项可见性: Pad/PC 可切 (phone 恒虚拟桌面, 无多窗口模式可切)
@@ -535,8 +547,8 @@ struct Index {
 
         // -- 显示路线 (实验, Pad/PC): x11 = winex11 + Xwayland (当前主线,
         // 多窗/顶条/几何回写等能力只在 x11 生效); wayland = 原生路线 (对照)。
-        // 冷启动生效 (完全退出应用重开); 命令行 --ps winehua.displayRoute
-        // 优先级更高 (自动化钉档位)。
+        // 切换即改即生效 (#172: applyRoute 单点 + 引擎会话重启); 命令行
+        // --ps winehua.displayRoute 优先级更高 (自动化钉档位)。
         if (this.isPcDevice()) {
           Divider().color('#2a2a2a').width('100%')
           Text('显示路线（实验）')
@@ -557,7 +569,7 @@ struct Index {
             .fontSize(12).fontColor('#777')
             .width('100%').padding({ top: 4 })
           if (this.routeRestartHint) {
-            Text('显示路线已更改, 完全退出应用（冷启动）后生效')
+            Text('显示路线已更改, 重启 Wine 引擎后生效')
               .fontSize(12).fontColor('#f84')
               .width('100%').padding({ top: 4 })
           }

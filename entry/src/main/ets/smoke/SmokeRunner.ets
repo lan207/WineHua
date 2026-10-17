@@ -180,19 +180,14 @@ export class SmokeRunner {
           ]);
           return;
         }
-        // D5: 路线状态先于链启动。smoke 接入不经 want (裸 aa start 带参
-        // failInit), ArkTS 路线必须在此补齐 —— 否则画布页 (DesktopWindow)
-        // 按 wayland 分支处理 surface/输入, 合成器绑到 dev panel 800x600
-        // 小面, 全屏画布全程不绑定 (v9 实测三症状同此根因)。
-        DisplayRouteService.getInstance().setOverrideMode('x11');
-        // D8: native 镜像同步盖章 (与 EntryAbility want 路径同款双写)。
-        // BuildWineEnv 的印章读点在此镜像 —— 缺它 = 会话 env 不带路由键
-        // 和 DISPLAY=:0, wine_child 的撤 WAYLAND_DISPLAY 分支不触发, 桌面
-        // 链 (explorer/keep) 走 wayland 驱动把桌面建到 wine-wayland socket
-        // 上, X 上永远没有桌面窗 (v11/v12 tree-dump 实证: 树上只有
-        // notepad+菜单, 无 DESKTOP 类窗)。引擎重启代际在 stamp 之后 spawn,
-        // 新代际全部吃到盖章。
-        displayRouteNapi.setDisplayRoute('x11');
+        // D5/D8: 路线状态先于链启动 (v9 三症状 / v11-v12 桌面建到
+        // wine-wayland socket 的实证, 见 applyRoute 注释)。#172 起经单点
+        // 应用 (盖 env 章 + 状态记账); 冷启路径 EntryAbility 已应用 x11 时
+        // 此处幂等 no-op, 章已盖。x11 链本体不在此起 —— 下方画布就绪后
+        // StartWithSurface 携 sid/xclient 启链 (first-caller-wins refresh
+        // 兼容早启链, 与产品冷启同款时序)。
+        DisplayRouteService.getInstance().applyRoute('x11', 'smoke',
+          WineWindowManager.getInstance().shouldUseMultiwindow('x11'));
         // M1-T4: X 档位用例与出图链的就绪同步 —— 先删旧标记再触发, 等新
         // 标记 (display_compositor 链尾写入) 后才 spawn, 否则 X client
         // 抢在 X socket 就绪前连接 (winemine 首跑实测竞态)。

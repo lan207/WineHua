@@ -6,10 +6,10 @@ import { WineWindowManager } from '../service/WineWindowManager';
 import { WineEnvService } from '../service/WineEnvService';
 import { DesktopModeService } from '../service/DesktopModeService';
 import { DisplayRouteService } from '../service/DisplayRouteService';
+
 // [[SMOKE]] 合并到 main-ui: 删本行与 publishLaunchRequest 内的 applyWant 调用
 import { SmokeHook } from '../smoke/SmokeHook';
 import testNapi from 'libentry.so';
-import displayRouteNapi from 'libdisplay_route_napi.so';
 
 const DOMAIN = 0x0000;
 
@@ -110,35 +110,18 @@ export default class EntryAbility extends UIAbility {
       parameters['winehua.displayRoute'] !== null;
     const routeValue = explicitDisplayRoute ? value('winehua.displayRoute', '')
       : DisplayRouteService.getInstance().preferredRoute();
-    // 本函数 onCreate/onNewWant 双入口: 缺省 x11 只在首施时应用 —— 重复
-    // startDisplayRouteChain 幂等性无保, 且无参重拉不得把显式切到 wayland
-    // 的运行中会话拉回缺省。带显式参数时随时生效 (切换/测试通道)。
+    // 本函数 onCreate/onNewWant 双入口: 缺省 x11 只在首施时应用 (无参重拉
+    // 不得把显式切到 wayland 的运行中会话拉回缺省); 带显式参数时随时应用
+    // (切换/测试通道)。应用动作全部收口 DisplayRouteService.applyRoute
+    // (#172 单点: 盖 env 章 + 拆旧 x11 链 + 起 x11 链), 本处只做解析与首施门。
     if (explicitDisplayRoute || !this.displayRouteApplied) {
       this.displayRouteApplied = true;
-      DisplayRouteService.getInstance().setOverrideMode(routeValue);
-      // 不得吞异常: 这条调用是 guest env 印章的唯一写点 (wine_env.cpp 镜像),
-      // 静默失败 = spawn 出来的 wine 进程全部走错路线且零痕迹 (2026-10-04
-      // xwedge3 实测: 印章缺失但无任何日志, 排查多耗一轮构建)。
       try {
-        displayRouteNapi.setDisplayRoute(routeValue);
-        // x11 路线必须同时起合成基础设施 (surfaceId=0 = 仅合成器内核 +
-        // Xwayland, 不建 output 不开窗口): Launch-Async 在 engine-ready 才
-        // 开画布建 output, 而 explorer 在 wineboot 后立刻 spawn —— 基础设施
-        // 晚于 explorer 到达 (2026-10-05 实测: 晚 59s, explorer XOpenDisplay
-        // (:0) 落空, 桌面 root 永不出现, 60s 等待必然 degraded)。画布后到
-        // 时经 StartWithSurface refresh 挂 output (first-caller-wins, 与
-        // smoke 路径同款时序); 不开窗口故不涉 #68 窗管竞态。
-        if (routeValue === 'x11') {
-          // M4a 第 6 参: 多窗模式位 (route=x11 × mode=fusion 实时判定)
-          const mmEarly = WineWindowManager.getInstance().shouldUseMultiwindow();
-          displayRouteNapi.startDisplayRouteChain(0n, false, 0, 0, false, mmEarly);
-          // 留痕 (2026-10-11 事故: 本值错判为 false 且无线索, 排查需从
-          // explorer 走 g_clients 的行为间接反推——早启接线点必须打印)
-          hilog.info(DOMAIN, 'testTag', 'x11 chain early-boot multiwindow=%{public}s',
-            mmEarly ? 'true' : 'false');
-        }
-        hilog.info(DOMAIN, 'testTag', 'displayRoute applied: %{public}s', routeValue);
+        DisplayRouteService.getInstance().applyRoute(routeValue, 'entry',
+          WineWindowManager.getInstance().shouldUseMultiwindow(routeValue));
       } catch (e) {
+        // 不得吞异常: 印章/起链失败 = 后续 wine 进程全部走错路线且零痕迹
+        // (2026-10-04 xwedge3 实测: 排查多耗一轮构建)
         hilog.error(DOMAIN, 'testTag', 'displayRoute apply FAILED: %{public}s %{public}s',
           routeValue, JSON.stringify(e));
       }
