@@ -21,6 +21,16 @@ struct NativeWindow; /* 真身 SDK 侧 typedef OHNativeWindow; 文件作用域�
 void x11_toplevel_set_active(bool on);
 bool x11_toplevel_active(void);
 
+/* 模态阻断判定 (任务 #167): target 是活 modal 对话框的 owner/祖先 → true。
+ * 判据单点在 x11_toplevel.c owned_dialog_is_modal (对话框声明 ∧ owner
+ * 禁用; owner 禁用态 = wine EnableWindow 写进 WM_HINTS.input=0, X 侧可达
+ * 的 win32 语义镜像)。WM 职责 (EWMH §5.11): 模态由客户端声明, WM 在
+ * 授焦/改变堆叠时执行。查询时无状态扫描; 事件面由 set_parent/
+ * set_window_type/set_hints 三信号驱动 modal 事件上报 (ArkTS 承载)。
+ * 重入安全 (trylock fail-open)。消费方: display_input FocusClient (授焦
+ * 门) + 注入 dispatch (restack 门)。 */
+bool x11_toplevel_modal_blocks(const struct wlr_xwayland_surface *target);
+
 /* ohos_output HandleNewSurface 的 multiwindow 分支调用: 登记并挂 per-xs
  * 监听 (destroy/associate/set_title/request_configure)。 */
 void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs);

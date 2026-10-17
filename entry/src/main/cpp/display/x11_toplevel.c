@@ -122,6 +122,10 @@ struct x11_xs_entry {
     struct wl_listener request_fullscreen;
     struct wl_listener request_activate;
     struct wl_listener set_parent;
+    struct wl_listener set_window_type; /* #167: WINDOW_TYPE 属性变化
+                                          * (modal 判据的对话框声明半边) */
+    struct wl_listener set_hints; /* #167: WM_HINTS 变化 = owner 禁用态
+                                    * 翻转 (modal 判据的第二半边修正通道) */
     struct wl_listener map_request; /* M4b-T4: wine 还原窗口的唯一宿主信号 */
     /* M4c-T1: OR 窗几何变化 (wine XMoveResizeWindow → ConfigureNotify →
      * set_geometry)。request_configure 对 OR 窗结构性不发 (X server 直通
@@ -150,7 +154,8 @@ static struct wlr_renderer *g_renderer; /* render pass 用 */
  * 错窗回绑/形式数据竞态。一把非递归大锁; 纪律:
  *   - 公开入口全加锁; static 内部函数 (entry_of_xxx、entry_remove、
  *     detach_listeners、try_post_created、try_post_popup_show、
- *     post_popup_hide、render_entry) 约定调用方持锁, 不加锁
+ *     post_popup_hide、render_entry、owned_dialog_is_modal、
+ *     post_modal_relation) 约定调用方持锁, 不加锁
  *   - 同线程重入检查: listener 回调互相不嵌套、render_tick 不重入, 安全
  *   - render_entry 持锁执行 (GL draw + present 数 ms): napi attach 最多
  *     等一帧 (90Hz 约 11ms), 可接受 —— 换队列化的复杂度不值得 (首版
@@ -167,6 +172,69 @@ static struct x11_xs_entry *entry_of_xs(struct wlr_xwayland_surface *xs)
     return NULL;
 }
 
+/* #167: 「owned 对话框且模态」判据, 单一实现 (modal_blocks 扫描与
+ * post_modal_relation 上报共用; 评审 I1 修正后形态)。
+ * 两半缺一不可:
+ *  1. 对话框声明: xs->modal (_NET_WM_STATE_MODAL, EWMH §5.11 标准客户端)
+ *     ∨ WINDOW_TYPE_DIALOG ∨ EWMH §5.6 缺省 (owned 无 WINDOW_TYPE 视作
+ *     DIALOG; 仅 created 后应用 —— wlroots 属性批次在 associate 同步读,
+ *     xwm.c:1341-1356, 之前 window_type_len 恒 0 不冒认)。wine 对 owned
+ *     WS_POPUP ∨ WS_EX_DLGMODALFRAME 一律写 DIALOG (winex11.drv
+ *     window.c:1170) —— DIALOG 半边单用会把 modeless 对话框也圈进来。
+ *  2. owner 禁用: wine 的模态执行 = DialogBoxParam → EnableWindow(owner,
+ *     FALSE), 且禁用态写进 owner 的 WM_HINTS.input=0 (winex11.drv
+ *     window.c:1176, input = !(style & WS_DISABLED)) —— 这是 X 侧可达的
+ *     win32 禁用镜像, 与 wayland 路线判据 (winewayland.drv/modal.c:
+ *     WS_EX_DLGMODALFRAME + owner WS_DISABLED) 同源。modeless 对话框
+ *     (CreateDialog, owner 未禁用) 由此不再被误判模态。
+ *     hints 未读 (parent->hints == NULL) 按禁用对待 = 保守阻断;
+ *     禁用态翻转经 set_hints 信号 (handle_set_hints) 重报修正。 */
+static bool owned_dialog_is_modal(const struct x11_xs_entry *e)
+{
+    if (!e->createdPosted || e->is_popup || !e->xs->parent)
+        return false;
+    if (e->xs->parent->hints && e->xs->parent->hints->input)
+        return false; /* owner 未禁用 = modeless, 不阻断 */
+    return e->xs->modal ||
+        wlr_xwayland_surface_has_window_type(
+            e->xs, WLR_XWAYLAND_NET_WM_WINDOW_TYPE_DIALOG) ||
+        e->xs->window_type_len == 0;
+}
+
+bool x11_toplevel_modal_blocks(const struct wlr_xwayland_surface *target)
+{
+    /* 任务 #167: 模态阻断查询 —— target 的祖先链 (经在册 entry 逐跳) 上
+     * 有活的模态对话框 → 阻断。判据单点在 owned_dialog_is_modal 注释。
+     * 查询时无状态扫描 (禁用态翻转走 set_hints 信号重报, 不在此维护
+     * 缓存态); 重入安全: trylock fail-open (popup 持锁路径调 FocusClient
+     * 时放行, popup/OR 窗非 owned 管理窗, 放行即正确)。行走只经
+     * entry_of_xs (仅返回存活注册者)。 */
+    if (!target)
+        return false;
+    if (pthread_mutex_trylock(&g_lock) != 0)
+        return false; /* 重入或竞争: fail-open */
+    bool blocked = false;
+    for (size_t i = 0; i < g_entry_count && !blocked; ++i) {
+        const struct x11_xs_entry *e = &g_entries[i];
+        if (e->dead || !e->xs || !e->xs->parent || e->is_popup)
+            continue;
+        if (!owned_dialog_is_modal(e))
+            continue;
+        const struct wlr_xwayland_surface *p = e->xs->parent;
+        for (int depth = 0; p != NULL && depth < 8; ++depth) {
+            if (p == target) {
+                blocked = true;
+                break;
+            }
+            const struct x11_xs_entry *pe =
+                entry_of_xs((struct wlr_xwayland_surface *)(uintptr_t)p);
+            p = pe ? pe->xs->parent : NULL;
+        }
+    }
+    pthread_mutex_unlock(&g_lock);
+    return blocked;
+}
+
 static void detach_listeners(struct x11_xs_entry *e)
 {
     /* 前提: notify_new_surface 已对所有 listener wl_list_init —— 未 add 过
@@ -181,6 +249,8 @@ static void detach_listeners(struct x11_xs_entry *e)
     wl_list_remove(&e->request_fullscreen.link);
     wl_list_remove(&e->request_activate.link);
     wl_list_remove(&e->set_parent.link);
+    wl_list_remove(&e->set_window_type.link);
+    wl_list_remove(&e->set_hints.link);
     wl_list_remove(&e->map_request.link);
     wl_list_remove(&e->set_geometry.link);
     wl_list_init(&e->destroy.link);   /* 防 double-remove (session_reset 后
@@ -195,6 +265,8 @@ static void detach_listeners(struct x11_xs_entry *e)
     wl_list_init(&e->request_fullscreen.link);
     wl_list_init(&e->request_activate.link);
     wl_list_init(&e->set_parent.link);
+    wl_list_init(&e->set_window_type.link);
+    wl_list_init(&e->set_hints.link);
     wl_list_init(&e->map_request.link);
     wl_list_init(&e->set_geometry.link);
 }
@@ -240,6 +312,47 @@ static struct x11_xs_entry *entry_alloc(void)
     return &g_entries[g_entry_count++];
 }
 
+/* ── #167: modal 关系上报（单一实现, 四处触发）──
+ * 前提: 调用方持 g_lock。created 未发 / popup / 无 parent → 不发。
+ * modal 值判据单点 = owned_dialog_is_modal (对话框声明 ∧ owner 禁用,
+ * 评审 I1 后形态, 见其注释)。
+ * 触发时机缺一不可 (x11 协议时序实测推演):
+ *   1. try_post_created —— 常规对话框流的唯一有效时机: wine 在 map 前
+ *      同一 round trip 内先写 TRANSIENT_FOR (window.c:1162) 再写
+ *      WINDOW_TYPE (1167+), xwm 按请求序处理 → set_parent 信号到达时
+ *      DIALOG 类型尚不可读, set_window_type 到达时 created 尚未落地,
+ *      两个信号 handler 的 createdPosted 门都会拦下; created 落地时
+ *      parent+类型均已终态, 在这里补报。
+ *   2. set_parent —— owner 关系在 created 后才建立的路径。
+ *   3. set_window_type —— 样式后变 (SetWindowLong 改 DLGMODALFRAME 等)
+ *      或类型信号晚于 created 的路径。双向: 变回 NORMAL 时发 modal=0,
+ *      ArkTS 侧拆模态承载。
+ *   4. set_hints —— owner 禁用态翻转 (DialogBoxParam 的 EnableWindow /
+ *      关框前 re-enable) 晚于 created 的路径, handle_set_hints 对自身
+ *      与以自身为 owner 的对话框重报。
+ * (wayland 路线无此问题: wine 经 winehua_toplevel 协议随 WindowPosChanged
+ * 反复重发 modal, x11 的 X 属性只写一次, 时机必须自己补齐。) */
+static void post_modal_relation(struct x11_xs_entry *e)
+{
+    if (!e->createdPosted || e->is_popup || !e->xs->parent)
+        return;
+    struct x11_xs_entry *owner = entry_of_xs(e->xs->parent);
+    if (!owner) {
+        XTL_LOG("XTL modal owner-not-tracked id=%{public}u (degraded)",
+                e->toplevelId);
+        return;
+    }
+    bool modal_flag = owned_dialog_is_modal(e);
+    /* dx/dy = 相对 owner 的 guest 坐标差 (对齐 wayland JsonModal 的
+     * PC 定位语义); Review Focus #3: owner 在册才报, 不在册降级。 */
+    x11_toplevel_bridge_post_modal(e->toplevelId, owner->toplevelId,
+                                   modal_flag,
+                                   e->xs->x - owner->xs->x,
+                                   e->xs->y - owner->xs->y,
+                                   (int32_t)e->xs->width,
+                                   (int32_t)e->xs->height);
+}
+
 /* created 时机 (spec §3.1): associate + 首帧 buffer 存在 —— 对齐 wayland
  * PC 模式的延后语义 (wl_core.cpp:639 同款)。associate 时 surface 已 valid
  * (wlroots xwayland.h:126), buffer 未到则等后续 associate/commit 补发。 */
@@ -247,6 +360,17 @@ static void try_post_created(struct x11_xs_entry *e)
 {
     if (e->createdPosted || !e->xs->surface || !e->xs->surface->buffer) return;
     e->createdPosted = true;
+    /* #167: modal 关系补报, 且必须先于 created 事件 —— ArkTS 按事件 FIFO
+     * 消费, modal=1 先到才把 id 记入 modalToplevelIds, 随后的 created 被
+     * 事件入口拦截, 不建常规承载; 反序则 created 抢建常规承载窗 (幽灵),
+     * modal 到达时 ghost 守卫见 starting=true 拒删, 与 ModalWindowManager
+     * 的模态子窗并存成双窗, 渲染器只挂其一, 另一窗黑屏 (2026-10-17 真机
+     * 实测, 日志 #14: created.586 → modal.588 → FWM subWinId + MODAL shown
+     * 并存)。wayland 路线天然 modal 先于 created (wine 首帧前发 modal,
+     * created 等首帧), x11 的上报顺序自己摆平。created 此刻 parent+
+     * WINDOW_TYPE 均已终态, 是常规对话框流的唯一有效上报时机
+     * (post_modal_relation 注释的三时机推演)。 */
+    post_modal_relation(e);
     x11_toplevel_bridge_post_created(
         e->toplevelId, (int32_t)e->xs->width, (int32_t)e->xs->height,
         e->xs->x, e->xs->y);
@@ -587,29 +711,54 @@ static void handle_request_activate(struct wl_listener *listener, void *data)
 
 static void handle_set_parent(struct wl_listener *listener, void *data)
 {
+    /* #167: owner 关系变化的 modal 上报走单点 (post_modal_relation,
+     * created 门 / popup / 无 parent / owner 不在册都在其内收口)。
+     * 注意 set_parent 信号到达时 DIALOG 类型通常尚未可读 (wine 同一
+     * round trip 先写 TRANSIENT_FOR 后写 WINDOW_TYPE, xwm 按请求序发
+     * 信号) —— 本时机只覆盖「created 后才建立 owner」的路径, 常规流
+     * 由 try_post_created 处的补报兜住。且该路径下 modal 事件晚于
+     * created, ArkTS 幽灵守卫见 win 已回填会拒删 entry (防 destroyed
+     * 悬空的取舍), 常规承载与模态子窗会并存双窗 —— 已知残留 (评审
+     * M1, wayland incumbent 同款), wine 不走「map 后才认 owner」的
+     * 路径, 实际不触发。 */
     struct x11_xs_entry *e =
         wl_container_of(listener, e, set_parent);
     (void)data;
     pthread_mutex_lock(&g_lock);
-    if (!e->createdPosted) {
-        pthread_mutex_unlock(&g_lock);
-        return;
-    }
-    /* Review Focus #3: owner 可能已 destroyed —— owner 在册才报 modal
-     * 关系, 不在册降级 (不报, wine 侧行为不受影响)。dx/dy = modal 相对
-     * owner 的 guest 坐标差 (对齐 wayland JsonModal 的 PC 定位语义)。 */
-    struct x11_xs_entry *owner =
-        e->xs->parent ? entry_of_xs(e->xs->parent) : NULL;
-    if (owner) {
-        x11_toplevel_bridge_post_modal(e->toplevelId, owner->toplevelId,
-                                       e->xs->modal,
-                                       e->xs->x - owner->xs->x,
-                                       e->xs->y - owner->xs->y,
-                                       (int32_t)e->xs->width,
-                                       (int32_t)e->xs->height);
-    } else {
-        XTL_LOG("XTL set-parent owner-not-tracked id=%{public}u (degraded)",
-                e->toplevelId);
+    post_modal_relation(e);
+    pthread_mutex_unlock(&g_lock);
+}
+
+static void handle_set_window_type(struct wl_listener *listener, void *data)
+{
+    /* #167: WINDOW_TYPE 属性变化 → modal 关系重报 (类型后变/晚到路径;
+     * 变回 NORMAL 时 modal=0, ArkTS 拆模态承载 —— 双向)。data 恒 NULL
+     * (xwm.c xs_property 回调约定)。常规对话框流中此信号到达早于
+     * created, post_modal_relation 的 created 门拦下, 由 created 处的
+     * 补报兜住。 */
+    struct x11_xs_entry *e =
+        wl_container_of(listener, e, set_window_type);
+    (void)data;
+    pthread_mutex_lock(&g_lock);
+    post_modal_relation(e);
+    pthread_mutex_unlock(&g_lock);
+}
+
+static void handle_set_hints(struct wl_listener *listener, void *data)
+{
+    /* #167: WM_HINTS 变化 → owner 禁用态翻转 (DialogBoxParam 的
+     * EnableWindow(owner,FALSE) / 关框前 re-enable) → 重报自身与以自身
+     * 为 owner 的全部对话框的 modal 关系 (评审 I1: created 时 hints 未读
+     * 按禁用保守对待, 晚到的真实状态在此修正; data 恒 NULL)。 */
+    struct x11_xs_entry *e =
+        wl_container_of(listener, e, set_hints);
+    (void)data;
+    pthread_mutex_lock(&g_lock);
+    post_modal_relation(e);
+    for (size_t i = 0; i < g_entry_count; ++i) {
+        struct x11_xs_entry *c = &g_entries[i];
+        if (!c->dead && c->xs && c->xs->parent == e->xs)
+            post_modal_relation(c);
     }
     pthread_mutex_unlock(&g_lock);
 }
@@ -679,6 +828,8 @@ void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs)
     wl_list_init(&e->request_fullscreen.link);
     wl_list_init(&e->request_activate.link);
     wl_list_init(&e->set_parent.link);
+    wl_list_init(&e->set_window_type.link);
+    wl_list_init(&e->set_hints.link);
     wl_list_init(&e->map_request.link);
     wl_list_init(&e->set_geometry.link);
     e->destroy.notify = handle_xs_destroy;
@@ -713,6 +864,13 @@ void x11_toplevel_notify_new_surface(struct wlr_xwayland_surface *xs)
     wl_signal_add(&xs->events.request_activate, &e->request_activate);
     e->set_parent.notify = handle_set_parent;
     wl_signal_add(&xs->events.set_parent, &e->set_parent);
+    /* #167: WINDOW_TYPE 变化信号 (modal 判据的对话框声明半边, 双向) */
+    e->set_window_type.notify = handle_set_window_type;
+    wl_signal_add(&xs->events.set_window_type, &e->set_window_type);
+    /* #167: WM_HINTS 变化信号 (owner 禁用态半边; 对自身与以自身为 owner
+     * 的对话框重报 modal 关系) */
+    e->set_hints.notify = handle_set_hints;
+    wl_signal_add(&xs->events.set_hints, &e->set_hints);
     e->map_request.notify = handle_map_request;
     wl_signal_add(&xs->events.map_request, &e->map_request);
     /* 创建期 title 丢失兜底 (T6 byTitle 实锤): xwm 在 manage 时同步读
@@ -980,7 +1138,11 @@ void x11_toplevel_input_pointer_dispatch(uint32_t toplevelId, int px, int py,
     double lx, ly;
     if (!mm_resolve_local(toplevelId, px, py, &xs, &lx, &ly))
         return;
-    mm_restack_target(xs, toplevelId);
+    /* 模态阻断 (任务 #167): 被禁用 owner 的点击照发 (wine 自丢弃), 但不做
+     * X restack —— click-to-raise 是 WM 动作, 对模态禁用窗不生效 (Windows
+     * 语义: 点击禁用 owner 无任何效果)。 */
+    if (!x11_toplevel_modal_blocks(xs))
+        mm_restack_target(xs, toplevelId);
     wl_ohos_input_multimode_pointer(xs, lx, ly, action, button);
 }
 
@@ -992,8 +1154,9 @@ void x11_toplevel_input_axis_dispatch(uint32_t toplevelId, int px, int py,
     if (!mm_resolve_local(toplevelId, px, py, &xs, &lx, &ly))
         return;
     /* 轴投递按 X 光标位置命中 (Xwayland emulate → Button4/5), 同样需要
-     * 目标在 X 顶 (滚动是「指针下的窗」语义, 无点击前置)。 */
-    mm_restack_target(xs, toplevelId);
+     * 目标在 X 顶 (滚动是「指针下的窗」语义, 无点击前置)。模态阻断同上。 */
+    if (!x11_toplevel_modal_blocks(xs))
+        mm_restack_target(xs, toplevelId);
     wl_ohos_input_multimode_axis(xs, lx, ly, which, steps);
 }
 

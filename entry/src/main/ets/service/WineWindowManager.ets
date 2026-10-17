@@ -137,8 +137,10 @@ export class WineWindowManager {
   }
 
   // 任务 #129: 顶条标题读取口 (WineWindow 页在 notify 后经此刷新)。
+  // modal 承载不建 entry (#167 续), 兜底到 ModalWindowManager 的 titles 表。
   getWindowTitle(tl: number): string {
-    return this.entries.get(tl)?.title ?? '';
+    return this.entries.get(tl)?.title ??
+      ModalWindowManager.getInstance().titleOf(tl);
   }
 
   private notify(): void {
@@ -622,8 +624,20 @@ export class WineWindowManager {
         this.entries.delete(id);
         return;
       }
-      // title/limits/argb/surface/...: 模态子窗口不需要 (窗口标题由 Wine
-      // 像素自带, 无独立 entry)
+      if (event === 'title') {
+        // #167 续: modal 承载的自绘顶条标题 (stripPxOf 经 modalStripProvider
+        // 对 modal 放行, 页面经 getWindowTitle → titleOf 读)。存表后 notify
+        // 刷新已订阅的顶条。
+        ModalWindowManager.getInstance().onTitle(id, data);
+        this.notify();
+        return;
+      }
+      // limits/argb/surface/...: 模态子窗口不需要 (标题经 onTitle 走顶条,
+      // 其余由 Wine 像素自带, 无独立 entry)。
+      // 已知局限 (评审 I2 记档): 对话框自身的 OR popup 菜单事件
+      // (popup_show 等, parent = 对话框 toplevelId) 也落入本分支被丢弃
+      // —— 对话框内右键菜单不出现。与 wayland PC incumbent 同款局限,
+      // 待 ModalWindowManager 提供 popup 定位承载后一并修。
       return;
     }
 
@@ -1127,6 +1141,10 @@ export class WineWindowManager {
     hilog.info(DOMAIN, TAG, '[MW] startFusionSubWindow #%{public}d wine=%{public}dx%{public}d guest=(%{public}d,%{public}d)',
       id, initW, initH, initX, initY);
     FusionWindowManager.getInstance().initIfNeeded(this.mainWindowStage, () => this.getEffectiveScale());
+    // #167 续: stripPxOf 的 modal 判据注入 (本类同时认识 FWM 与
+    // ModalWindowManager, 在此接线避免两者直接互相 import 成环)
+    FusionWindowManager.getInstance().setModalStripProvider(
+      (tl: number) => ModalWindowManager.getInstance().isModalToplevel(tl));
     FusionWindowManager.getInstance().ensure(id, initW, initH,
       (winId: number, subWin: window.Window) => {
       e.starting = false;
@@ -1410,6 +1428,13 @@ export class WineWindowManager {
   // 故本调用当前保护对象 = 浮层。
   raiseWindowGroup(toplevelId: number): void {
     if (!this.fusionUsesSubWindow()) return;
+    // 模态阻断 (任务 #167): owner 被模态对话框禁用时点击不置前 —— Windows
+    // 语义是点击禁用 owner 无效果; 抬 owner 会把它压到 modal 子窗之下层序
+    // 反转, 焦点观感也归 owner。X 侧夺焦由 native FocusClient 门独立拦截。
+    if (ModalWindowManager.getInstance().isModalBlocked(toplevelId)) {
+      hilog.info(DOMAIN, TAG, '[MW] raise-blocked tl=%{public}d (owns modal)', toplevelId);
+      return;
+    }
     FusionWindowManager.getInstance().raise(toplevelId);
     PopupWindowManager.getInstance().raisePopups(toplevelId);
   }

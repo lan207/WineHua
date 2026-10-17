@@ -79,16 +79,30 @@ export class FusionWindowManager {
   // barH + PopupWindowManager.positionEntry) 共用。判据必须能区分「x11
   // fusion 子窗」与「wayland fusion 子窗」(fusionUsesSubWindow 是 route
   // 无关的, 不能用作装饰判据) —— wayland 恒 0 = incumbent 逐字节不变。
-  // 32 = Win11 caption 高度基线 (初版 20vp 观感/触控热区均不达标, 2026-10-17
-  // 观感升级为 Win11 caption 风格随改; 消费方全部经 stripPxOf 单点)。
-  private static readonly STRIP_LOGICAL_PX: number = 32;
+  // 28 = 用户裁定收窄 (2026-10-17 真机过 32 偏大; Win11 caption 基线 32,
+  // 初版 20vp 观感/触控热区均不达标, 观感升级为 Win11 caption 风格随改;
+  // 消费方全部经 stripPxOf 单点)。
+  private static readonly STRIP_LOGICAL_PX: number = 28;
+
+  // modal 承载顶条判据注入点 (#167 续: x11 路线 modal 对话框承载也吃自绘
+  // 顶条 —— modal 承载链不建 FWM entry, 判据经 provider 问
+  // ModalWindowManager)。经 provider 而非直接 import: ModalWindowManager
+  // 已 import 本文件, 反向依赖成环。WineWindowManager 在 initIfNeeded 旁
+  // 接线 (它同时认识两端)。
+  private modalStripProvider: ((tl: number) => boolean) | null = null;
+  setModalStripProvider(fn: ((tl: number) => boolean) | null): void {
+    this.modalStripProvider = fn;
+  }
 
   // 本 toplevel 的顶条物理高度; 0 = 无顶条 (不渲染、尺寸不补偿)。
-  // entries.has 门 = 仅 fusion 子窗 (WWA ability / modal / popup 不建 entry,
-  // 同名页面不得出现顶条)。
+  // 判据 = fusion 子窗 (entries.has) ∨ modal 承载 (provider); WWA ability /
+  // popup 不建 entry 也不经 modal 链, 恒 0。wayland 路线在 isX11 门恒 0 =
+  // incumbent 不变。
   stripPxOf(tl: number): number {
     if (!DisplayRouteService.getInstance().isX11()) return 0;
-    if (!this.entries.has(tl)) return 0;
+    if (!this.entries.has(tl) && !(this.modalStripProvider?.(tl) ?? false)) {
+      return 0;
+    }
     return Math.round(FusionWindowManager.STRIP_LOGICAL_PX * this.getScale());
   }
 

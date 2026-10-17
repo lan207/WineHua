@@ -64,9 +64,10 @@ struct WineWindow {
   @State toplevelId: number = 0;
   @State surfacePxW: number = 1;
   @State surfacePxH: number = 1;
-  // ── 顶条 (任务 #129 回退路线: 几何补偿式自绘顶条, 仅 x11 fusion 子窗) ──
+  // ── 顶条 (任务 #129 回退路线: 几何补偿式自绘顶条) ──
   // stripVp = px2vp(stripPxOf(tl)), 判据/换算单点在 FusionWindowManager;
-  // 0 = 不渲染 (wayland incumbent / WWA / modal / popup 形态零变化)。
+  // 0 = 不渲染。判据内含 modal 承载 (#167 续: x11 下 modal 对话框也有
+  // 顶条); wayland incumbent / WWA / popup 形态恒 0 零变化。
   @State stripVp: number = 0;
   @State title: string = '';
   private stripMoving: boolean = false;
@@ -135,15 +136,17 @@ struct WineWindow {
     this.toplevelId = testNapi.getCurrentToplevelId() as number;
     // 同步设置给 controller: 保证 onSurfaceCreated 拿到正确的 toplevelId
     this.controller.toplevelId = this.toplevelId;
-    // ── 顶条初始化 (任务 #129): stripPxOf > 0 仅 x11 fusion 子窗 ──
-    // wayland / WWA / modal / popup 形态 stripVp 恒 0: 不订阅不渲染, 渲染树
+    // ── 顶条初始化 (任务 #129): stripPxOf > 0 = x11 fusion 子窗或 x11 modal
+    // 承载 (#167 续) ──
+    // wayland / WWA / popup 形态 stripVp 恒 0: 不订阅不渲染, 渲染树
     // 与交互与改动前一致 (隔离红线; 判据单点在 FusionWindowManager)。
     const stripPx = FusionWindowManager.getInstance().stripPxOf(this.toplevelId);
     if (stripPx > 0) {
       this.stripVp = px2vp(stripPx);
       const wm = WineWindowManager.getInstance();
       this.title = wm.getWindowTitle(this.toplevelId);
-      // title 事件 → applyEvent 记 e.title → notify (仅顶条存在时发) → 本刷新
+      // title 事件 → applyEvent 记 e.title (modal 承载走 onTitle) →
+      // notify (仅顶条存在时发) → 本刷新
       this.stripMgrListener = () => {
         this.title = WineWindowManager.getInstance().getWindowTitle(this.toplevelId);
         this.stripVp = px2vp(FusionWindowManager.getInstance().stripPxOf(this.toplevelId));
@@ -267,7 +270,8 @@ struct WineWindow {
     this.stripBtnPress = -1;
   }
 
-  // 自绘顶条 (任务 #129 回退路线, 仅 x11 fusion 子窗 stripVp > 0): Win11
+  // 自绘顶条 (任务 #129 回退路线, stripVp > 0 = x11 fusion 子窗或 modal
+  // 承载): Win11
   // caption 观感 —— 46vp 方形按钮 + 10vp 矢量细线图标 (Path, 1vp 描边, 取代
   // 字符字形 ─□×), 悬停/按压灰底, close 悬停红底白叉; 固定亮色不跟系统深浅色
   // (Win 风格基线)。交互模型不变: 顶条区 = 拖动区 (onStripTouch 阈值→
@@ -276,9 +280,9 @@ struct WineWindow {
   // 在 FusionWindowManager 侧完成, plan RF#1)。
   @State stripBtnHover: number = -1;  // 鼠标悬停的按钮 idx (触摸无悬停态)
   @State stripBtnPress: number = -1;  // 按压中的按钮 idx
-  private static readonly STRIP_BTN_W: number = 40; // caption 按钮宽 (Win11 46, 用户裁定收窄至 40vp)
+  private static readonly STRIP_BTN_W: number = 35; // caption 按钮宽 (初版 46, 用户先后裁定 40、随顶条 32→28 等比收至 35 = 40×28/32, 保持 1.25 宽高比)
 
-  // 10vp 图标在 46×stripVp 按钮内居中 (Win11 caption 字形规格: 10×10, 1vp 描边)。
+  // 10vp 图标在 35×stripVp 按钮内居中 (Win11 caption 字形规格: 10×10, 1vp 描边)。
   // 坑: Path.commands 坐标单位是 px (物理像素), 与属性单位 (vp) 不同轨 ——
   // 几何按 vp 设计, 拼命令串时统一 ×vp2px, 否则高密度屏上字形缩小 density 倍
   // (实测 2.5x 屏上 10vp 字形只画出 ~10px, 2026-10-17)。
@@ -378,7 +382,7 @@ struct WineWindow {
       }
       .width('100%')
       .height('100%')
-      // 键盘挂点: 带顶条页面 (x11 fusion 子窗) 的根节点是焦点落点 (实测:
+      // 键盘挂点: 带顶条页面 (x11 fusion 子窗/modal 承载) 的根节点是焦点落点 (实测:
       // WinFocusMove → Column/onFocus; 仅 Stack 有 handler 时键盘全丢) ——
       // 根 Column 与 Stack 共用 handleWineKey (stopPropagation 防双发)。
       // wayland/其他形态无此 Column, Stack 即根, 行为与改动前一致。

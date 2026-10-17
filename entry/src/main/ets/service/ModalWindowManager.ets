@@ -60,12 +60,58 @@ export class ModalWindowManager {
   // owner 窗口 (Ability) 未就绪时暂存的 show 请求 (每个 modalId 一条,
   // owner stage/win 回填后由 WineWindowManager.flushPendingEvents 触发)
   private pendingShows: Map<number, PendingShow> = new Map();
+  // modal 窗口标题 (#167 续: x11 modal 承载的自绘顶条标题)。独立于
+  // ModalEntry 存表: title 事件可能在 creating 阶段 (modals.set 之前) 到达;
+  // WineWindowManager 的 modal 分支经 onTitle 喂入, WineWindow 页经
+  // WineWindowManager.getWindowTitle → titleOf 读取
+  private titles: Map<number, string> = new Map();
 
   static getInstance(): ModalWindowManager {
     if (!ModalWindowManager.instance) {
       ModalWindowManager.instance = new ModalWindowManager();
     }
     return ModalWindowManager.instance;
+  }
+
+  // 模态阻断查询 (任务 #167): ownerToplevelId 名下有活 modal (已建表 +
+  // pending 均算 —— wine 上报 modal=1 时 owner 即已禁用, 不等子窗建完)。
+  // 消费点 = WineWindowManager.raiseWindowGroup (阻断时不置前); 与 native
+  // FocusClient/restack 门同一事件源。creating 态未覆盖 (评审 M2): 异步
+  // 建窗飞行期毫秒级窗口由 native 门兜底, 此处漏判自愈。
+  isModalBlocked(ownerToplevelId: number): boolean {
+    for (const m of this.modals.values()) {
+      if (m.ownerId === ownerToplevelId) return true;
+    }
+    for (const p of this.pendingShows.values()) {
+      if (p.ownerId === ownerToplevelId) return true;
+    }
+    return false;
+  }
+
+  // modal 承载判据 (FusionWindowManager.stripPxOf 的 provider 端, #167 续):
+  // 已建表 / 创建中 / owner 未就绪暂存, 三态都算 —— WineWindow 页
+  // aboutToAppear 在 loadContent 内执行, 此时 entry 尚未入 modals 表,
+  // 只有 creating 覆盖得住。
+  isModalToplevel(tl: number): boolean {
+    return this.modals.has(tl) || this.creating.has(tl) ||
+      this.pendingShows.has(tl);
+  }
+
+  // 顶条标题读取口 (WineWindowManager.getWindowTitle 的 modal 兜底)。
+  titleOf(tl: number): string {
+    return this.titles.get(tl) ?? '';
+  }
+
+  // title 事件入口 (WineWindowManager modal 分支; native 在 modal 事件之后
+  // 补发 title)。刷新由调用方触发 WineWindowManager 的 listener 通知。
+  onTitle(id: number, data: string): void {
+    try {
+      const obj: Record<string, string> = JSON.parse(data) as Record<string, string>;
+      const t = String(obj.title ?? '');
+      if (t) {
+        this.titles.set(id, t);
+      }
+    } catch (_) { /* 坏数据忽略, 顶条标题留空 */ }
   }
 
   // -- modal=1: 创建模态子窗口 (owner 的 stage/win/scale 由调用方传入) --
@@ -164,11 +210,16 @@ export class ModalWindowManager {
       this.modals.set(modalId, entry);
 
       try {
-        // 尺寸: wine 逻辑 × scale; 位置见 computePosition
+        // 尺寸: wine 逻辑 × scale; 高度 +stripPxOf = 自绘顶条几何补偿位
+        // (与 FWM.ensure 同款: 页面顶条 Row 占补偿区, XComponent 保持
+        // guest 尺寸; x11 modal 承载 #167 续, wayland 恒 0 不补偿)。
+        // 位置见 computePosition
+        const stripPx = FusionWindowManager.getInstance().stripPxOf(modalId);
         await subWin.resize(Math.max(1, Math.round(entry.w * scale)),
-                            Math.max(1, Math.round(entry.h * scale)));
+                            Math.max(1, Math.round(entry.h * scale)) + stripPx);
         const pr = hostWin!.getWindowProperties().windowRect;
-        const pos = this.computePosition(entry.ownerId, pr, d, entry.w, entry.h, scale);
+        const pos = this.computePosition(entry.ownerId, pr, d, entry.w, entry.h, scale,
+                                         stripPx);
         await subWin.moveWindowToGlobal(pos[0], pos[1]);
         await subWin.showWindow();
         hilog.info(DOMAIN, TAG, '[MODAL] #%{public}d shown at screen(%{public}d,%{public}d)',
@@ -218,9 +269,10 @@ export class ModalWindowManager {
   // 最后统一钳制进屏幕, 兜住任何模式下的越界。
   private computePosition(ownerId: number, pr: window.Rect,
                           d: Record<string, string | number>,
-                          w: number, h: number, scale: number): number[] {
+                          w: number, h: number, scale: number,
+                          stripPx: number): number[] {
     const modalW = Math.max(1, Math.round(w * scale));
-    const modalH = Math.max(1, Math.round(h * scale));
+    const modalH = Math.max(1, Math.round(h * scale)) + stripPx;
     let x: number;
     let y: number;
     if (FusionWindowManager.getInstance().has(ownerId)) {
@@ -254,10 +306,11 @@ export class ModalWindowManager {
     entry.w = w;
     entry.h = h;
     const subWin = entry.subWin;
+    const stripPx = FusionWindowManager.getInstance().stripPxOf(entry.modalId);
     subWin.resize(Math.max(1, Math.round(w * scale)),
-                  Math.max(1, Math.round(h * scale))).then(() => {
+                  Math.max(1, Math.round(h * scale)) + stripPx).then(() => {
       const pr = parentWin.getWindowProperties().windowRect;
-      const pos = this.computePosition(entry.ownerId, pr, d, w, h, scale);
+      const pos = this.computePosition(entry.ownerId, pr, d, w, h, scale, stripPx);
       return subWin.moveWindowToGlobal(pos[0], pos[1]);
     }).then(() => subWin.showWindow()).catch(() => { /* ignore */ });
   }
@@ -275,7 +328,8 @@ export class ModalWindowManager {
         entry.h = h;
       }
       entry.subWin.resize(Math.max(1, Math.round(entry.w * scale)),
-                          Math.max(1, Math.round(entry.h * scale)))
+                          Math.max(1, Math.round(entry.h * scale)) +
+                            FusionWindowManager.getInstance().stripPxOf(modalId))
         .catch(() => { /* ignore */ });
     } catch (e) {
       hilog.error(DOMAIN, TAG, '[MODAL] #%{public}d onResize bad data: %{public}s',
@@ -286,6 +340,7 @@ export class ModalWindowManager {
   // -- modal=0 / 窗口销毁: 关闭子窗口 --
   hide(modalId: number): void {
     this.pendingShows.delete(modalId);  // 暂存的 show 一并取消 (hide 晚于 show)
+    this.titles.delete(modalId);
     if (this.creating.has(modalId)) {
       this.pendingDestroy.add(modalId);
       // destroy-while-creating: 页面可能未执行 aboutToAppear → 清 pending 残坑
@@ -326,6 +381,7 @@ export class ModalWindowManager {
     this.modals.delete(entry.modalId);
     this.creating.delete(entry.modalId);
     this.pendingDestroy.delete(entry.modalId);
+    this.titles.delete(entry.modalId);
     const subWin = entry.subWin;
     entry.subWin = null;
     if (subWin) {

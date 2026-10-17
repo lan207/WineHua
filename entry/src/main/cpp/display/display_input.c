@@ -232,6 +232,15 @@ static void FocusClient(struct wlr_xwayland_surface *xs)
 {
     if (!wl_ohos_surface_has_content(xs ? xs->surface : NULL))
         return;
+    if (x11_toplevel_modal_blocks(xs)) {
+        /* 任务 #167 (WM 职责, EWMH 同构): 目标被模态对话框阻断 (owner) ——
+         * 不激活不夺焦。点击照常投递, 由 wine 的禁用窗语义自行丢弃
+         * (WM_MOUSEACTIVATE → MA_NOACTIVATEANDEAT); 焦点/激活留在对话框。
+         * 重入安全: 判定内部 trylock, popup 持锁路径 fail-open。 */
+        OHLOG("focus-blocked xs=%{public}p owns-modal (skip activate+focus)",
+              (void *)xs);
+        return;
+    }
     SyncXInputFocus(xs);
     if (xs->surface == g_kbd_focus)
         return;
@@ -1001,10 +1010,11 @@ void wl_ohos_input_multimode_axis(struct wlr_xwayland_surface *xs,
 
 /* M4c-T2: seat 焦点让渡导出口 (x11_toplevel.c 的 popup show/hide 调)。
  * 语义与 multimode 口的 FocusClient 完全一致 —— 这里只做导出包装, 不复制
- * 逻辑。调用方 (popup show/hide) 在合成器 loop 线程持映射层 g_lock 时调:
- * FocusClient 内部只碰 seat/xcb, 无回入映射层查表的重入路径 (与
- * multimode_pointer 「seat 操作在锁外」纪律的差异见其注释 —— 那里是
- * 「没必要」, 这里是锁内必要: popup_visible 状态与焦点还原须同拍)。 */
+ * 逻辑。调用方 (popup show/hide) 在合成器 loop 线程持映射层 g_lock 时调
+ * (popup_visible 状态与焦点还原须同拍)。历史纪律是「FocusClient 内禁止
+ * 回查映射层」; #167 起 FocusClient 内含模态自查 (x11_toplevel_modal_
+ * blocks), 回入面用 trylock 消解 —— 持锁重入时 fail-open 放行, 结构上
+ * 不可能死锁; popup 焦点让渡本就无需模态门, 放行即正确。 */
 void wl_ohos_input_focus_xs(struct wlr_xwayland_surface *xs)
 {
     FocusClient(xs);
