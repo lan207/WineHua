@@ -79,7 +79,9 @@ export class FusionWindowManager {
   // barH + PopupWindowManager.positionEntry) 共用。判据必须能区分「x11
   // fusion 子窗」与「wayland fusion 子窗」(fusionUsesSubWindow 是 route
   // 无关的, 不能用作装饰判据) —— wayland 恒 0 = incumbent 逐字节不变。
-  private static readonly STRIP_LOGICAL_PX: number = 20;
+  // 32 = Win11 caption 高度基线 (初版 20vp 观感/触控热区均不达标, 2026-10-17
+  // 观感升级为 Win11 caption 风格随改; 消费方全部经 stripPxOf 单点)。
+  private static readonly STRIP_LOGICAL_PX: number = 32;
 
   // 本 toplevel 的顶条物理高度; 0 = 无顶条 (不渲染、尺寸不补偿)。
   // entries.has 门 = 仅 fusion 子窗 (WWA ability / modal / popup 不建 entry,

@@ -263,41 +263,98 @@ struct WineWindow {
     }
     // Up / Cancel
     this.stripMoving = false;
+    // 按钮上起手的拖动被系统拖拽接管时, 按钮子节点收不到 Up —— 按压态在此兜底清理
+    this.stripBtnPress = -1;
   }
 
-  // 自绘顶条 (任务 #129 回退路线, 仅 x11 fusion 子窗 stripVp > 0): 标题 +
-  // min/max/close 三键; 顶条区 = 拖动区 (startMoving)。顶条是独立节点:
-  // 其上的点击不落 guest, 输入零坐标换算 (承载窗增高 + XComponent 下移的
-  // 几何补偿在 FusionWindowManager 侧完成, plan RF#1)。
+  // 自绘顶条 (任务 #129 回退路线, 仅 x11 fusion 子窗 stripVp > 0): Win11
+  // caption 观感 —— 46vp 方形按钮 + 10vp 矢量细线图标 (Path, 1vp 描边, 取代
+  // 字符字形 ─□×), 悬停/按压灰底, close 悬停红底白叉; 固定亮色不跟系统深浅色
+  // (Win 风格基线)。交互模型不变: 顶条区 = 拖动区 (onStripTouch 阈值→
+  // startMoving), 三键沿用既有 min/max/close 动作链; 顶条是独立节点, 其上的
+  // 点击不落 guest, 输入零坐标换算 (承载窗增高 + XComponent 下移的几何补偿
+  // 在 FusionWindowManager 侧完成, plan RF#1)。
+  @State stripBtnHover: number = -1;  // 鼠标悬停的按钮 idx (触摸无悬停态)
+  @State stripBtnPress: number = -1;  // 按压中的按钮 idx
+  private static readonly STRIP_BTN_W: number = 46; // Win11 caption 按钮宽
+
+  // 10vp 图标在 46×stripVp 按钮内居中 (Win11 caption 字形规格: 10×10, 1px 描边)
+  private stripIconCmd(idx: number): string {
+    const cy = this.stripVp / 2;
+    const x0 = WineWindow.STRIP_BTN_W / 2 - 5;
+    const x1 = WineWindow.STRIP_BTN_W / 2 + 5;
+    if (idx === 0) { // 最小化: 中线横杠
+      return `M${x0} ${cy} L${x1} ${cy}`;
+    }
+    if (idx === 1) { // 最大化: 10x10 方框
+      return `M${x0} ${cy - 5} L${x1} ${cy - 5} L${x1} ${cy + 5} L${x0} ${cy + 5} Z`;
+    }
+    const k = 0.5;   // 关闭: 9x9 叉 (叉角内缩 0.5, 48% 缩进即 Win 观感)
+    return `M${x0 + k} ${cy - 5 + k} L${x1 - k} ${cy + 5 - k} ` +
+      `M${x1 - k} ${cy - 5 + k} L${x0 + k} ${cy + 5 - k}`;
+  }
+
+  // 按钮底色: 悬停 #E5E5E5 / 按压 #CCCCCC; close 悬停 #C42B1C / 按压 #B3271A
+  private stripBtnBg(idx: number): ResourceColor {
+    if (idx === 2) {
+      if (this.stripBtnPress === idx) return '#B3271A';
+      if (this.stripBtnHover === idx) return '#C42B1C';
+      return Color.Transparent;
+    }
+    if (this.stripBtnPress === idx) return '#CCCCCC';
+    if (this.stripBtnHover === idx) return '#E5E5E5';
+    return Color.Transparent;
+  }
+
+  // close 悬停/按压时字形翻白 (Win11 标志性), 其余恒近黑
+  private stripBtnStroke(idx: number): ResourceColor {
+    return (idx === 2 && (this.stripBtnHover === idx || this.stripBtnPress === idx))
+      ? '#FFFFFF' : '#1B1B1B';
+  }
+
+  @Builder
+  stripCaptionBtn(idx: number) {
+    Path()
+      .commands(this.stripIconCmd(idx))
+      .fillOpacity(0)
+      .stroke(this.stripBtnStroke(idx))
+      .strokeWidth(1)
+      .width(WineWindow.STRIP_BTN_W)
+      .height('100%')
+      .backgroundColor(this.stripBtnBg(idx))
+      .onHover((h: boolean) => {
+        this.stripBtnHover = h ? idx : (this.stripBtnHover === idx ? -1 : this.stripBtnHover);
+      })
+      .onTouch((ev: TouchEvent) => {
+        // 按压视觉态; 触摸继续冒泡到父 Row 的 onStripTouch (拖动阈值判定不变)
+        if (ev.type === TouchType.Down) {
+          this.stripBtnPress = idx;
+        } else if (ev.type !== TouchType.Move && this.stripBtnPress === idx) {
+          this.stripBtnPress = -1;
+        }
+      })
+      .onClick(idx === 0 ? () => { this.onStripMin(); }
+        : idx === 1 ? () => { this.onStripMax(); }
+        : () => { this.onStripClose(); })
+  }
+
   @Builder
   stripBar() {
     Row() {
       Text(this.title.length > 0 ? this.title : 'Wine')
         .fontSize(12)
-        .fontColor('#E8E8E8')
+        .fontColor('#1B1B1B')
         .maxLines(1)
         .textOverflow({ overflow: TextOverflow.Ellipsis })
         .layoutWeight(1)
-        .padding({ left: 10 })
-      Text('─')
-        .fontSize(14)
-        .fontColor('#E8E8E8')
-        .padding({ left: 14, right: 14 })
-        .onClick(() => { this.onStripMin(); })
-      Text('□')
-        .fontSize(14)
-        .fontColor('#E8E8E8')
-        .padding({ left: 14, right: 14 })
-        .onClick(() => { this.onStripMax(); })
-      Text('×')
-        .fontSize(16)
-        .fontColor('#E8E8E8')
-        .padding({ left: 14, right: 14 })
-        .onClick(() => { this.onStripClose(); })
+        .padding({ left: 12 })
+      this.stripCaptionBtn(0)
+      this.stripCaptionBtn(1)
+      this.stripCaptionBtn(2)
     }
     .width('100%')
     .height(this.stripVp)
-    .backgroundColor('#2E2E2E')
+    .backgroundColor('#F3F3F3')
     .onTouch((ev: TouchEvent) => { this.onStripTouch(ev); })
   }
 
