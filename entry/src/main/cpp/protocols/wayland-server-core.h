@@ -29,8 +29,8 @@
 #include <sys/types.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include "wayland-util.h"
-#include "wayland-version.h"
+#include "protocols/wayland-util.h"
+#include "protocols/wayland-version.h"
 
 #ifdef  __cplusplus
 extern "C" {

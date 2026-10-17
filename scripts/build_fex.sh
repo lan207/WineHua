@@ -49,6 +49,13 @@ test -x "$LLVM_MINGW/bin/aarch64-w64-mingw32-clang" || err "llvm-mingw 缺失 aa
 
 export PATH="$LLVM_MINGW/bin:$PATH"
 
+# Strict PC24 multiplication is an isolated, compile-time WOW64 experiment.
+# Disabled in production until no-diagnostics game acceptance demonstrates a gain.
+case "${FEX_STRICT_MUL24:-0}" in
+    0|1) ;;
+    *) err "FEX_STRICT_MUL24 must be 0 or 1" ;;
+esac
+
 # 随构建走的 FEX 补丁 (子模块锁定 86ff33bbe 且指向 FEX-Emu/FEX 上游,
 # 非 fork 不能推分支, 按 glib-format-security 先例 patch 化):
 #   fex-missing-includes.patch   — 上游 08031a2767 "Add missing includes",
@@ -65,6 +72,8 @@ export PATH="$LLVM_MINGW/bin:$PATH"
 #     ARM64EC SIGBUS 的 opcode、JIT 归属和模拟结果。
 #   fex-windows-unaligned-stderr.patch — 同样覆盖 Steam 32 位 CEF 实际使用的
 #     WoW64 reset 路径，并直接写入 Wine stderr。
+#   fex-wow64-exact-store.patch — 仅在 fex-pe 定义
+#     FEX_WOW64_EXACT_STORE 时编译的 x87 exact-normal store 实验。
 patched_source=0
 # The ARM64EC lookup-cache patch deliberately changes the context of the
 # earlier WOW64 patches. Recognize the complete result when rebuilding the
@@ -97,6 +106,122 @@ for PATCH in \
     patch -d "$FEX_SRC" -p1 -s < "$PATCH"
     log "已应用 patch: $(basename "$PATCH")"
 done
+
+PATCH="$SCRIPT_DIR/patches/fex-wow64-exact-store.patch"
+if grep -Fq 'bool WindowsExactFloatStoreEnabled {}' "$FEX_SRC/FEXCore/Source/Interface/Context/Context.h" &&
+   grep -Fq 'std::getenv("FEX_EXACTSTORE")' "$FEX_SRC/FEXCore/Source/Interface/Core/Core.cpp" &&
+   grep -Fq 'FEX_WOW64_EXACT_STORE' "$FEX_SRC/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp"; then
+    log "已验证 patch: $(basename "$PATCH")"
+elif ! patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$PATCH" >/dev/null 2>&1; then
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$PATCH" >/dev/null || \
+        err "FEX WOW64 exact-store patch 无法应用: $PATCH"
+    patch -d "$FEX_SRC" -p1 -s < "$PATCH"
+    log "已应用 patch: $(basename "$PATCH")"
+fi
+
+# Counter instrumentation is deliberately a second overlay and build identity.
+# It is never part of clean OFF/ON timing DLLs.
+if [ "${FEX_EXACTSTORE_DIAGNOSTICS:-0}" = "1" ]; then
+    PATCH="$SCRIPT_DIR/patches/fex-wow64-exact-store-diagnostics.patch"
+    if grep -Fq 'bool WindowsExactFloatStoreStatsEnabled {}' "$FEX_SRC/FEXCore/Source/Interface/Context/Context.h" &&
+       grep -Fq 'FEXExactStoreCounters[6]' "$FEX_SRC/FEXCore/Source/Interface/Core/Core.cpp" &&
+       grep -Fq 'CountExactStore' "$FEX_SRC/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp" &&
+       [ "$(grep -Fc 'ReportExactStoreStats(false);' "$FEX_SRC/Source/Windows/WOW64/Module.cpp")" -eq 3 ] &&
+       grep -Fq 'Reports.load(std::memory_order_relaxed) >= 600' "$FEX_SRC/Source/Windows/WOW64/Module.cpp" &&
+       grep -Fq 'if (!Handle && !After) ReportExactStoreStats(true)' "$FEX_SRC/Source/Windows/WOW64/Module.cpp"; then
+        log "已验证 patch: $(basename "$PATCH")"
+    elif ! patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$PATCH" >/dev/null 2>&1; then
+        patch -d "$FEX_SRC" -p1 --dry-run -s < "$PATCH" >/dev/null || \
+            err "FEX exact-store diagnostics patch 无法应用: $PATCH"
+        patch -d "$FEX_SRC" -p1 -s < "$PATCH"
+        log "已应用 patch: $(basename "$PATCH")"
+    fi
+fi
+
+# Keep these separate from patched_source: an already staged older patch set
+# must still acquire the synthetic-return and native ABI fault fixes.
+callret_patch="$SCRIPT_DIR/patches/fex-wow64-synthetic-return.patch"
+native_callret_patch="$SCRIPT_DIR/patches/fex-windows-native-callret-fault.patch"
+# The native overlay changes a context line of the earlier synthetic-return
+# patch. Verify both in reverse order on copies; never rewrite staged sources
+# merely to determine whether this combined patch set is already applied.
+callret_already_applied=0
+if patch -d "$FEX_SRC" -p1 --batch --force -R --dry-run -s < "$native_callret_patch" >/dev/null 2>&1; then
+    callret_probe="$(mktemp -d "${TMPDIR:-/tmp}/fex-callret-probe.XXXXXX")"
+    for callret_file in Common/CallRetStack.h WOW64/Module.cpp ARM64EC/Module.cpp; do
+        mkdir -p "$callret_probe/Source/Windows/$(dirname "$callret_file")"
+        cp "$FEX_SRC/Source/Windows/$callret_file" "$callret_probe/Source/Windows/$callret_file"
+    done
+    if patch -d "$callret_probe" -p1 --batch --force -R -s < "$native_callret_patch" >/dev/null 2>&1 &&
+       patch -d "$callret_probe" -p1 --batch --force -R --dry-run -s < "$callret_patch" >/dev/null 2>&1; then
+        callret_already_applied=1
+    fi
+    rm -rf -- "$callret_probe"
+    [ "$callret_already_applied" = 1 ] || err "FEX native call-ret overlay 缺少完整 synthetic-return 基线"
+fi
+if [ "$callret_already_applied" = 0 ] &&
+   ! patch -d "$FEX_SRC" -p1 --batch --force -R --dry-run -s < "$callret_patch" >/dev/null 2>&1; then
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$callret_patch" >/dev/null || \
+        err "FEX WOW64 synthetic return patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$callret_patch"
+    log "已应用 patch: $(basename "$callret_patch")"
+fi
+
+# Native helpers do not use the JIT's shadow-stack register convention.
+if ! patch -d "$FEX_SRC" -p1 --batch --force -R --dry-run -s < "$native_callret_patch" >/dev/null 2>&1; then
+    patch -d "$FEX_SRC" -p1 --batch --dry-run -s < "$native_callret_patch" >/dev/null || \
+        err "FEX Windows native call-ret fault patch 无法应用"
+    patch -d "$FEX_SRC" -p1 --batch -s < "$native_callret_patch"
+    log "已应用 patch: $(basename "$native_callret_patch")"
+fi
+
+# POSIX read-only is zero. Preserve the explicit share and create modes
+# when the Windows CRT forwards an ANSI path to its Unicode implementation.
+crt_open_patch="$SCRIPT_DIR/patches/fex-windows-crt-file-open.patch"
+if ! patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$crt_open_patch" >/dev/null 2>&1; then
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$crt_open_patch" >/dev/null || \
+        err "FEX Windows CRT file open patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$crt_open_patch"
+    log "已应用 patch: $(basename "$crt_open_patch")"
+fi
+
+# Diagnose Windows JIT output without depending on the game's DOS drive.
+# Apply separately so an older, already staged patch set receives this fix.
+jit_symbols_patch="$SCRIPT_DIR/patches/fex-windows-jit-symbols.patch"
+if ! patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$jit_symbols_patch" >/dev/null 2>&1; then
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$jit_symbols_patch" >/dev/null || \
+        err "FEX Windows JIT symbols patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$jit_symbols_patch"
+    log "已应用 patch: $(basename "$jit_symbols_patch")"
+fi
+
+# Opt-in JIT cost accounting and dispatcher/helper symbol ranges.
+jit_cost_patch="$SCRIPT_DIR/patches/fex-windows-jit-cost.patch"
+if ! patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$jit_cost_patch" >/dev/null 2>&1; then
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$jit_cost_patch" >/dev/null || \
+        err "FEX Windows JIT cost patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$jit_cost_patch"
+    log "已应用 patch: $(basename "$jit_cost_patch")"
+fi
+
+# Checked Windows config/cache reads and native exceptions before FEX init.
+file_loading_patch="$SCRIPT_DIR/patches/fex-windows-file-loading.patch"
+if ! patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$file_loading_patch" >/dev/null 2>&1; then
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$file_loading_patch" >/dev/null || \
+        err "FEX Windows file loading patch 无法应用"
+    patch -d "$FEX_SRC" -p1 -s < "$file_loading_patch"
+    log "已应用 patch: $(basename "$file_loading_patch")"
+fi
+
+# VM is a pure delta after the Windows diagnostic/call-return/file-loading
+# prerequisites. Never infer its presence from the legacy complete-set shortcut.
+PATCH="$SCRIPT_DIR/patches/fex-windows-vm-contract.patch"
+if ! patch -d "$FEX_SRC" -p1 -R --dry-run -s --fuzz=0 < "$PATCH" >/dev/null 2>&1; then
+    patch -d "$FEX_SRC" -p1 --dry-run -s --fuzz=0 < "$PATCH" >/dev/null || \
+        err "FEX VM contract patch 无法应用: $PATCH"
+    patch -d "$FEX_SRC" -p1 -s --fuzz=0 < "$PATCH"
+    log "已应用 patch: $(basename "$PATCH")"
+fi
 
 if grep -Fq 'const bool deep = (depth >= 0x7000 && depth < 0x90000) ||' \
      "$FEX_SRC/Source/Windows/ARM64EC/Module.cpp"; then
@@ -241,6 +366,42 @@ else
 fi
 fi
 
+# Source overlay is harmless in clean builds: code is compiled only in fex-pe
+# when explicitly selected, and never in ARM64EC. Keep source replay idempotent.
+mul24_patch="$SCRIPT_DIR/patches/fex-wow64-strict-mul24.patch"
+if ! patch -d "$FEX_SRC" -p1 -R --dry-run -s < "$mul24_patch" >/dev/null 2>&1; then
+    patch -d "$FEX_SRC" -p1 --dry-run -s < "$mul24_patch" >/dev/null || \
+        err "FEX strict mul24 patch cannot be applied"
+    patch -d "$FEX_SRC" -p1 -s < "$mul24_patch"
+    log "Applied patch: $(basename "$mul24_patch")"
+fi
+
+# Precise memory faults are shared by WOW64 and ARM64EC. A protected executable
+# destination can restart a POP, or a moffs MOV, without corrupting guest SP.
+# Keep these narrow fixes enabled rather than forcing global single-step SMC.
+for fault_patch_name in fex-pop-memory-precise-stack.patch fex-memory-offset-fault-boundary.patch; do
+    fault_patch="$SCRIPT_DIR/patches/$fault_patch_name"
+    if ! patch -d "$FEX_SRC" -p1 -R --dry-run -s --fuzz=0 < "$fault_patch" >/dev/null 2>&1; then
+        patch -d "$FEX_SRC" -p1 --dry-run -s --fuzz=0 < "$fault_patch" >/dev/null || \
+            err "FEX precise fault patch cannot be applied: $fault_patch_name"
+        patch -d "$FEX_SRC" -p1 -s --fuzz=0 < "$fault_patch"
+        log "Applied patch: $fault_patch_name"
+    fi
+done
+
+prepare_mul24_cache() {
+    local build="$1" expected="$2" flags cached=0
+    [ -f "$build/CMakeCache.txt" ] || return 0
+    flags="$(sed -n 's/^CMAKE_CXX_FLAGS:STRING=//p' "$build/CMakeCache.txt" | head -1)"
+    [[ " $flags " == *' -DFEX_WOW64_STRICT_MUL24=1 '* ]] && cached=1
+    if [ "$expected" != "$cached" ] || \
+       { [ "$expected" = 0 ] && [[ "$flags" == *FEX_WOW64_STRICT_MUL24* ]]; }; then
+        log "FEX strict mul24 selection changed; refreshing CMake cache"
+        rm -rf "$build/CMakeFiles"
+        rm -f "$build/CMakeCache.txt" "$build/Makefile" "$build/cmake_install.cmake"
+    fi
+}
+
 prepare_build_dir() {
     local build="$1" cached_source
     [ -f "$build/CMakeCache.txt" ] || return 0
@@ -250,15 +411,52 @@ prepare_build_dir() {
         rm -rf "$build/CMakeFiles"
         rm -f "$build/CMakeCache.txt" "$build/Makefile" "$build/cmake_install.cmake"
     fi
+    if [ -f "$build/CMakeCache.txt" ] && [ "${#fex_version_args[@]}" -gt 0 ]; then
+        # Reconfigure explicit version metadata even when reusing object files.
+        cmake -S "$FEX_SRC" -B "$build" "${fex_version_args[@]}"
+    fi
+}
+
+prepare_exact_store_cache() {
+    local build="$1" expected="$2" flags diagnostics_expected=0 diagnostics_cached=0
+    [ -f "$build/CMakeCache.txt" ] || return 0
+    flags="$(sed -n 's/^CMAKE_CXX_FLAGS:STRING=//p' "$build/CMakeCache.txt" | head -1)"
+    [ "${FEX_EXACTSTORE_DIAGNOSTICS:-0}" = "1" ] && diagnostics_expected=1
+    [[ "$flags" == *FEX_WOW64_EXACT_STORE_DIAGNOSTICS* ]] && diagnostics_cached=1
+    if [ "$expected" = enabled ] && [[ " $flags " != *' -DFEX_WOW64_EXACT_STORE=1 '* ]]; then
+        log "fex-pe exact-store 编译标识变化，刷新 CMake 缓存"
+        rm -rf "$build/CMakeFiles"
+        rm -f "$build/CMakeCache.txt" "$build/Makefile" "$build/cmake_install.cmake"
+    elif [ "$expected" = disabled ] && [[ "$flags" == *FEX_WOW64_EXACT_STORE* ]]; then
+        log "fex-ec 检测到 WOW64 exact-store 污染，刷新 CMake 缓存"
+        rm -rf "$build/CMakeFiles"
+        rm -f "$build/CMakeCache.txt" "$build/Makefile" "$build/cmake_install.cmake"
+    elif [ "$expected" = enabled ] && [ "$diagnostics_expected" != "$diagnostics_cached" ]; then
+        log "fex-pe exact-store diagnostics 编译标识变化，刷新 CMake 缓存"
+        rm -rf "$build/CMakeFiles"
+        rm -f "$build/CMakeCache.txt" "$build/Makefile" "$build/cmake_install.cmake"
+    fi
 }
 
 # ---- libarm64ecfex.dll (x86_64 模拟, arm64ec ABI) ----
+fex_version_args=()
+# Isolated staged sources have no .git; avoid detecting the enclosing product
+# repository as FEX's own version. Callers can supply their verified source pin.
+if [ -n "${FEX_SOURCE_HASH:-}" ]; then
+    [[ "$FEX_SOURCE_HASH" =~ ^[0-9a-f]{8,40}$ ]] || err "FEX_SOURCE_HASH 必须为已验证的源码 hash"
+    fex_source_version="${FEX_SOURCE_VERSION:-ohos-${FEX_SOURCE_HASH:0:10}}"
+    [ "${#fex_source_version}" -lt 31 ] || err "FEX_SOURCE_VERSION 太长，无法放入 CPUID 版本字段"
+    fex_version_args+=("-DOVERRIDE_HASH=$FEX_SOURCE_HASH" "-DOVERRIDE_VERSION=$fex_source_version")
+fi
 build_fex_ec() {
     local build="$BUILD_DIR/fex-ec"
     mkdir -p "$build"
     prepare_build_dir "$build"
+    prepare_exact_store_cache "$build" disabled
+    prepare_mul24_cache "$build" 0
     cd "$build"
-    if [ ! -f CMakeCache.txt ]; then
+    # A failed configure leaves CMakeCache.txt without generated build rules.
+    if [ ! -f CMakeCache.txt ] || [ ! -f cmake_install.cmake ]; then
         # BUILD_TESTING=False: FEX 用 CTest 的 BUILD_TESTING (非 BUILD_TESTS)
         # 控制 unittests/, 开着会在 configure 阶段 enable_language(ASM_NASM)
         # 硬依赖 nasm — 我们只编 dll 目标, 显式关掉
@@ -267,6 +465,7 @@ build_fex_ec() {
             -DENABLE_LTO=False \
             -DMINGW_TRIPLE=arm64ec-w64-mingw32 \
             -DBUILD_TESTING=False \
+            "${fex_version_args[@]}" \
             "$FEX_SRC"
     fi
     require_cmake_not_debug CMakeCache.txt "fex-ec"
@@ -291,22 +490,39 @@ build_fex_ec() {
 # 与 arm64ecfex 使用不同 MINGW_TRIPLE (aarch64-w64-mingw32), 必须用独立 build
 # 目录 (fex-pe), 避免 CMake 缓存与 arm64ec 配置互相覆盖。
 build_fex_pe() {
-    local build="$BUILD_DIR/fex-pe"
+    local build="$BUILD_DIR/fex-pe" exact_store_flags="-DFEX_WOW64_EXACT_STORE=1"
+    if [ "${FEX_EXACTSTORE_DIAGNOSTICS:-0}" = "1" ]; then
+        exact_store_flags="$exact_store_flags -DFEX_WOW64_EXACT_STORE_DIAGNOSTICS=1"
+    fi
+    if [ "${FEX_STRICT_MUL24:-0}" = 1 ]; then
+        exact_store_flags="$exact_store_flags -DFEX_WOW64_STRICT_MUL24=1"
+    fi
     mkdir -p "$build"
     prepare_build_dir "$build"
+    prepare_exact_store_cache "$build" enabled
+    prepare_mul24_cache "$build" "${FEX_STRICT_MUL24:-0}"
     cd "$build"
-    if [ ! -f CMakeCache.txt ]; then
+    # A failed configure leaves CMakeCache.txt without generated build rules.
+    if [ ! -f CMakeCache.txt ] || [ ! -f cmake_install.cmake ]; then
         cmake -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DCMAKE_TOOLCHAIN_FILE="$FEX_SRC/Data/CMake/toolchain_mingw.cmake" \
+            -DCMAKE_CXX_FLAGS="$exact_store_flags" \
             -DENABLE_LTO=False \
             -DMINGW_TRIPLE=aarch64-w64-mingw32 \
             -DBUILD_TESTING=False \
+            "${fex_version_args[@]}" \
             "$FEX_SRC"
     fi
     require_cmake_not_debug CMakeCache.txt "fex-pe"
     require_cmake_flag_var CMakeCache.txt CMAKE_CXX_FLAGS_RELWITHDEBINFO "fex-pe CMAKE_CXX_FLAGS_RELWITHDEBINFO"
     require_ndebug "fex-pe CMAKE_CXX_FLAGS_RELWITHDEBINFO" \
         "$(sed -n 's/^CMAKE_CXX_FLAGS_RELWITHDEBINFO:STRING=//p' CMakeCache.txt | head -1)"
+    grep -q '^CMAKE_CXX_FLAGS:STRING=.*FEX_WOW64_EXACT_STORE' CMakeCache.txt || \
+        err "fex-pe 缓存缺少 FEX_WOW64_EXACT_STORE"
+    if [ -f "$BUILD_DIR/fex-ec/CMakeCache.txt" ] && \
+       grep -q '^CMAKE_CXX_FLAGS:STRING=.*FEX_WOW64_EXACT_STORE' "$BUILD_DIR/fex-ec/CMakeCache.txt"; then
+        err "fex-ec 缓存被 FEX_WOW64_EXACT_STORE 污染"
+    fi
     make -j"$JOBS" wow64fex
 
     local dll="$build/Bin/libwow64fex.dll"

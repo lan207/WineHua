@@ -1,0 +1,40 @@
+From 56616e2a5d5e85fd27ae6fd90cbdfc5aab15f1d5 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 17 Oct 2026 01:58:20 -0400
+Subject: [PATCH] vkd3d: isolate x86 intrinsic headers from WIDL static
+ workaround
+
+---
+ include/vkd3d_win32.h | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/include/vkd3d_win32.h b/include/vkd3d_win32.h
+index 9b58fa1..f15509d 100644
+--- a/include/vkd3d_win32.h
++++ b/include/vkd3d_win32.h
+@@ -20,6 +20,22 @@
+ #ifndef __VKD3D_WIN32_H
+ #define __VKD3D_WIN32_H
+ 
++/* MinGW winnt.h includes x86intrin.h. Parse that header tree before the
++ * WIDL workaround below temporarily removes static storage classes; newer
++ * compiler intrinsics contain non-inline static definitions as well.
++ * Match winnt.h's architecture and C++ linkage boundary, excluding ARM64EC.
++ */
++#if defined(__MINGW32__) && !defined(RC_INVOKED) && \
++        (defined(__i386__) || (defined(__x86_64__) && !defined(__arm64ec__)))
++# ifdef __cplusplus
++extern "C" {
++# endif
++# include <x86intrin.h>
++# ifdef __cplusplus
++}
++# endif
++#endif
++
+ /* Hack for MinGW-w64 headers.
+  *
+  * We want to use WIDL C inline wrappers because some methods
+-- 
+2.52.0
+

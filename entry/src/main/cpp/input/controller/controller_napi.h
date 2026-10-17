@@ -15,3 +15,5 @@ napi_value ControllerStopBridge(napi_env env, napi_callback_info info);
 napi_value ControllerGetSocketPath(napi_env env, napi_callback_info info);
 napi_value ControllerSetOutputMode(napi_env env, napi_callback_info info);
 napi_value ControllerGetOutputMode(napi_env env, napi_callback_info info);
+napi_value ControllerSetStick(napi_env env, napi_callback_info info);
+napi_value ControllerSetTrigger(napi_env env, napi_callback_info info);

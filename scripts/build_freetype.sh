@@ -36,8 +36,8 @@ cmake "$FT_SRC" \
     -DBUILD_SHARED_LIBS=ON \
     -DCMAKE_INSTALL_PREFIX="$FT_BUILD/install"
 
-ninja
-ninja install
+ninja -j"$JOBS"
+ninja -j"$JOBS" install
 
 # 安装到 sysroot-ext (文件名 = SONAME)
 cp "$FT_BUILD"/install/lib/libfreetype.so.6.20.2 "$SYSROOT_EXT_LIB/libfreetype.so.6"

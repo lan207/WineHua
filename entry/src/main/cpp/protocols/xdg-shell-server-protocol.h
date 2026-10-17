@@ -170,7 +170,8 @@ extern const struct wl_interface xdg_positioner_interface;
  * manipulate a buffer prior to the first xdg_surface.configure call must
  * also be treated as errors.
  *
- * After creating a role-specific object and setting it up, the client must
+ * After creating a role-specific object and setting it up (e.g. by sending
+ * the title, app ID, size constraints, parent, etc), the client must
  * perform an initial commit without any buffer attached. The compositor
  * will reply with initial wl_surface state such as
  * wl_surface.preferred_buffer_scale followed by an xdg_surface.configure
@@ -223,7 +224,8 @@ extern const struct wl_interface xdg_positioner_interface;
  * manipulate a buffer prior to the first xdg_surface.configure call must
  * also be treated as errors.
  *
- * After creating a role-specific object and setting it up, the client must
+ * After creating a role-specific object and setting it up (e.g. by sending
+ * the title, app ID, size constraints, parent, etc), the client must
  * perform an initial commit without any buffer attached. The compositor
  * will reply with initial wl_surface state such as
  * wl_surface.preferred_buffer_scale followed by an xdg_surface.configure
@@ -260,13 +262,17 @@ extern const struct wl_interface xdg_surface_interface;
  * id, and well as trigger user interactive operations such as interactive
  * resize and move.
  *
+ * A xdg_toplevel by default is responsible for providing the full intended
+ * visual representation of the toplevel, which depending on the window
+ * state, may mean things like a title bar, window controls and drop shadow.
+ *
  * Unmapping an xdg_toplevel means that the surface cannot be shown
  * by the compositor until it is explicitly mapped again.
  * All active operations (e.g., move, resize) are canceled and all
  * attributes (e.g. title, state, stacking, ...) are discarded for
  * an xdg_toplevel surface when it is unmapped. The xdg_toplevel returns to
  * the state it had right after xdg_surface.get_toplevel. The client
- * can re-map the toplevel by perfoming a commit without any buffer
+ * can re-map the toplevel by performing a commit without any buffer
  * attached, waiting for a configure event and handling it as usual (see
  * xdg_surface description).
  *
@@ -283,13 +289,17 @@ extern const struct wl_interface xdg_surface_interface;
  * id, and well as trigger user interactive operations such as interactive
  * resize and move.
  *
+ * A xdg_toplevel by default is responsible for providing the full intended
+ * visual representation of the toplevel, which depending on the window
+ * state, may mean things like a title bar, window controls and drop shadow.
+ *
  * Unmapping an xdg_toplevel means that the surface cannot be shown
  * by the compositor until it is explicitly mapped again.
  * All active operations (e.g., move, resize) are canceled and all
  * attributes (e.g. title, state, stacking, ...) are discarded for
  * an xdg_toplevel surface when it is unmapped. The xdg_toplevel returns to
  * the state it had right after xdg_surface.get_toplevel. The client
- * can re-map the toplevel by perfoming a commit without any buffer
+ * can re-map the toplevel by performing a commit without any buffer
  * attached, waiting for a configure event and handling it as usual (see
  * xdg_surface description).
  *
@@ -943,9 +953,8 @@ struct xdg_surface_interface {
 	 * invisible portions like drop-shadows which should be ignored for
 	 * the purposes of aligning, placing and constraining windows.
 	 *
-	 * The window geometry is double buffered, and will be applied at
-	 * the time wl_surface.commit of the corresponding wl_surface is
-	 * called.
+	 * The window geometry is double-buffered state, see
+	 * wl_surface.commit.
 	 *
 	 * When maintaining a position, the compositor should treat the (x,
 	 * y) coordinate of the window geometry as the top left corner of
@@ -1121,8 +1130,7 @@ enum xdg_toplevel_resize_edge {
  * configure event to ensure that both the client and the compositor
  * setting the state can be synchronized.
  *
- * States set in this way are double-buffered. They will get applied on
- * the next commit.
+ * States set in this way are double-buffered, see wl_surface.commit.
  */
 enum xdg_toplevel_state {
 	/**
@@ -1172,6 +1180,9 @@ enum xdg_toplevel_state {
 	 *
 	 * The window is currently in a tiled layout and the left edge is
 	 * considered to be adjacent to another part of the tiling grid.
+	 *
+	 * The client should draw without shadow or other decoration
+	 * outside of the window geometry on the left edge.
 	 * @since 2
 	 */
 	XDG_TOPLEVEL_STATE_TILED_LEFT = 5,
@@ -1180,6 +1191,9 @@ enum xdg_toplevel_state {
 	 *
 	 * The window is currently in a tiled layout and the right edge
 	 * is considered to be adjacent to another part of the tiling grid.
+	 *
+	 * The client should draw without shadow or other decoration
+	 * outside of the window geometry on the right edge.
 	 * @since 2
 	 */
 	XDG_TOPLEVEL_STATE_TILED_RIGHT = 6,
@@ -1188,6 +1202,9 @@ enum xdg_toplevel_state {
 	 *
 	 * The window is currently in a tiled layout and the top edge is
 	 * considered to be adjacent to another part of the tiling grid.
+	 *
+	 * The client should draw without shadow or other decoration
+	 * outside of the window geometry on the top edge.
 	 * @since 2
 	 */
 	XDG_TOPLEVEL_STATE_TILED_TOP = 7,
@@ -1196,6 +1213,9 @@ enum xdg_toplevel_state {
 	 *
 	 * The window is currently in a tiled layout and the bottom edge
 	 * is considered to be adjacent to another part of the tiling grid.
+	 *
+	 * The client should draw without shadow or other decoration
+	 * outside of the window geometry on the bottom edge.
 	 * @since 2
 	 */
 	XDG_TOPLEVEL_STATE_TILED_BOTTOM = 8,
@@ -1450,8 +1470,8 @@ struct xdg_toplevel_interface {
 	 * The width and height arguments are in window geometry
 	 * coordinates. See xdg_surface.set_window_geometry.
 	 *
-	 * Values set in this way are double-buffered. They will get
-	 * applied on the next commit.
+	 * Values set in this way are double-buffered, see
+	 * wl_surface.commit.
 	 *
 	 * The compositor can use this information to allow or disallow
 	 * different states like maximize or fullscreen and draw accurate
@@ -1492,8 +1512,8 @@ struct xdg_toplevel_interface {
 	 * The width and height arguments are in window geometry
 	 * coordinates. See xdg_surface.set_window_geometry.
 	 *
-	 * Values set in this way are double-buffered. They will get
-	 * applied on the next commit.
+	 * Values set in this way are double-buffered, see
+	 * wl_surface.commit.
 	 *
 	 * The compositor can use this information to allow or disallow
 	 * different states like maximize or fullscreen and draw accurate

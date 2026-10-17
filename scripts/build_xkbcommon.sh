@@ -84,7 +84,7 @@ build_libxml2() {
         -DLIBXML2_WITH_FTP=OFF -DLIBXML2_WITH_MODULES=OFF \
         -DLIBXML2_WITH_LZMA=OFF -DLIBXML2_WITH_ZLIB=OFF -DLIBXML2_WITH_ICONV=OFF \
         -DCMAKE_INSTALL_PREFIX="$build/install"
-    cmake --build "$build"
+    cmake --build "$build" --parallel "$JOBS"
     cmake --install "$build"
     cp "$build/libxml2.so.2.12.0" "$SYSROOT_EXT_LIB/libxml2.so.2"
     ln -sf libxml2.so.2 "$SYSROOT_EXT_LIB/libxml2.so"
@@ -113,7 +113,7 @@ build_xkbcommon() {
     meson_build "$build" "$src" \
         -Denable-x11=false -Denable-wayland=true \
         -Denable-xkbregistry=true -Denable-docs=false
-    ninja -C "$build"
+    ninja -j"$JOBS" -C "$build"
 
     # 安装 (DESTDIR, 然后拷贝到 sysroot-ext)
     DESTDIR=$TMPDIR/xkc ninja -C "$build" install

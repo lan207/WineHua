@@ -107,7 +107,7 @@ meson setup "$XKBC_BUILD" "$XKBC_SRC" \
 
 # ninja compile: 生成 rules 文件 (rules-base, rules-evdev 等), 无实际二进制编译
 log "编译 (生成 rules)..."
-ninja -C "$XKBC_BUILD"
+ninja -j"$JOBS" -C "$XKBC_BUILD"
 
 # 安装到 BUILD_DIR 下的临时目录 (不用 /tmp)
 log "安装 xkeyboard-config..."

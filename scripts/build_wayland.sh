@@ -11,7 +11,7 @@ WL_BUILD="$BUILD_DIR/wayland_build"
 # 确保 native wayland-scanner 可用
 SCANNER="$WAYLAND_SCANNER"
 build_scanner() {
-    if [ -x "$SCANNER" ]; then return 0; fi
+    if [ -x "$SCANNER" ] && [ -f "$BUILD_DIR/host-tools/lib/pkgconfig/wayland-scanner.pc" ]; then return 0; fi
     log "--- 编译 wayland-scanner (native) ---"
     # 装到项目内 build/host-tools，与 env.sh 的 WAYLAND_SCANNER 默认值一致；不写 /usr/local，无需 root
     local host_build="$BUILD_DIR/wayland_native"
@@ -22,15 +22,21 @@ build_scanner() {
         --libdir lib \
         -Dlibraries=false -Dscanner=true -Ddtd_validation=false \
         -Ddocumentation=false -Dtests=false --buildtype=release
-    ninja -C "$host_build"
-    ninja -C "$host_build" install
+    ninja -j"$JOBS" -C "$host_build"
+    ninja -j"$JOBS" -C "$host_build" install
 
     # 安装时的 strip 操作破坏了 OHOS SDK clang 的自动签名，所以在 HarmonyOS 上需要重新签名才能运行
     if [ "$HOST_OS" = "HarmonyOS" ]; then
         "$SCRIPT_DIR/ohos-sign-elf.py" "$host_prefix"
     fi
+    test -x "$SCANNER" || err "Configured WAYLAND_SCANNER is missing: $SCANNER"
     log "wayland-scanner: $SCANNER"
 }
+
+if [ "${1:-}" = "--scanner-only" ]; then
+    build_scanner
+    exit 0
+fi
 
 log "=== 构建 Wayland ($WINE_ARCH) ==="
 
@@ -54,7 +60,7 @@ mkdir -p "$WL_BUILD"
 # 1. 交叉编译 wayland (client + egl)
 meson_build "$WL_BUILD/$WINE_ARCH" "$WL_SRC" \
     -Ddocumentation=false -Dtests=false -Dscanner=false
-ninja -C "$WL_BUILD/$WINE_ARCH"
+ninja -j"$JOBS" -C "$WL_BUILD/$WINE_ARCH"
 
 # 安装 .so (文件名 = SONAME)
 cp "$WL_BUILD/$WINE_ARCH/src/libwayland-client.so.0.22.0" "$SYSROOT_EXT_LIB/libwayland-client.so.0"
@@ -77,7 +83,7 @@ cp "$WL_SRC/egl/wayland-egl-core.h" "$SYSROOT_EXT_INC/" 2>/dev/null || true
 # 2. wayland-protocols
 meson_build "$WL_BUILD/protocols" "$WP_SRC" \
     -Dtests=false
-ninja -C "$WL_BUILD/protocols"
+ninja -j"$JOBS" -C "$WL_BUILD/protocols"
 
 # 安装协议 XML 到 sysroot-ext
 mkdir -p "$SYSROOT_EXT_SHARE/wayland-protocols/stable/xdg-shell" \

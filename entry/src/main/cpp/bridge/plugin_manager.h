@@ -35,6 +35,10 @@ public:
     // 拖拽缩放中: 目标渲染器整帧拉伸填满 (EglRenderer::SetStretchFill)
     void SetRendererStretchFill(uint32_t toplevelId, bool on);
     void DestroyToplevel(uint32_t toplevelId);
+    // ---- VPP additions ----
+    void RefreshRenderer(uint32_t toplevelId);
+    void SetRendererPaused(uint32_t toplevelId, bool paused);
+
 
     // pending toplevelId 队列: Ability 在 loadContent 前入队
     // WineWindow.aboutToAppear 同步出队 (FIFO); 出队方窗口被销毁时

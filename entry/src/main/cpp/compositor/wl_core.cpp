@@ -19,6 +19,7 @@
 #include "direct/direct_wine_surface_controller.h"
 #include "protocols/viewporter-server-protocol.h"
 #include "common/perf_utils.h"
+#include "common/frame_loop_diagnostics.h"
 #include <algorithm>
 #include <cstring>
 #include <ctime>
@@ -109,6 +110,7 @@ void WaylandServer::compositor_create_surface(wl_client* client, wl_resource* co
     wl_resource_set_implementation(surfRes, &kSurfaceImpl, sd, [](wl_resource* r) {
         auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(r));
         auto* self = GetInstance();
+        if (sd) DirectWineDrawableDestroyed(sd->clientPid, sd->protocolId);
         if (sd && sd->hasToplevel) DirectWineSurfaceDestroyed(sd->toplevelId);
         uint32_t removedPopup = 0, popupParent = 0;
         {
@@ -121,9 +123,9 @@ void WaylandServer::compositor_create_surface(wl_client* client, wl_resource* co
             if (self->desktopCompositor_.RemoveSubsurfaceLayer(r, removedParent, removedRoute)) {
                 self->MarkLayerHostDirtyLocked(removedParent, removedRoute);
             }
-            // P0-1: 窗口销毁 → 联动失效所有指向它的 PresentBinding (方案 §11)
+            // Invalidate both the window and private producer sides of a binding.
             if (sd)
-                self->desktopCompositor_.zc().InvalidateBindingsForWindow(
+                self->desktopCompositor_.zc().InvalidateBindingsForSurface(
                     sd->clientPid, sd->protocolId);
             // PC popup 记录一并清除 (client 断开时 libwayland 走此路径)
             // (popup 表已迁至 PopupManager — 重构第 5B2 步, 锁域/清理顺序不变)
@@ -371,6 +373,10 @@ void WaylandServer::viewport_set_source(wl_client*, wl_resource* vpRes,
         wl_resource_post_error(vpRes, WP_VIEWPORT_ERROR_BAD_VALUE, "invalid viewport source");
         return;
     }
+    const bool changed = sd->directViewportPending.x != wl_fixed_to_double(fx) ||
+                         sd->directViewportPending.y != wl_fixed_to_double(fy) ||
+                         sd->directViewportPending.width != wl_fixed_to_double(fw) ||
+                         sd->directViewportPending.height != wl_fixed_to_double(fh);
     sd->directViewportPending.x = wl_fixed_to_double(fx);
     sd->directViewportPending.y = wl_fixed_to_double(fy);
     sd->directViewportPending.width = wl_fixed_to_double(fw);
@@ -379,8 +385,10 @@ void WaylandServer::viewport_set_source(wl_client*, wl_resource* vpRes,
     sd->vpSrcY = wl_fixed_to_int(fy);
     sd->vpSrcW = wl_fixed_to_int(fw);
     sd->vpSrcH = wl_fixed_to_int(fh);
-    OH_LOG_INFO(LOG_APP, "[MW-VP] set_source surf=%{public}p tl=%{public}u src=(%{public}d,%{public}d %{public}dx%{public}d)",
-                surf, sd->toplevelId, sd->vpSrcX, sd->vpSrcY, sd->vpSrcW, sd->vpSrcH);
+    if (changed) {
+        OH_LOG_INFO(LOG_APP, "[MW-VP] set_source surf=%{public}p tl=%{public}u src=(%{public}d,%{public}d %{public}dx%{public}d)",
+                    surf, sd->toplevelId, sd->vpSrcX, sd->vpSrcY, sd->vpSrcW, sd->vpSrcH);
+    }
 }
 
 void WaylandServer::viewport_set_destination(wl_client*, wl_resource* vpRes, int32_t w, int32_t h) {
@@ -606,7 +614,7 @@ bool WaylandServer::BeginShmAccess(SurfaceData* sd, ShmCommitInfo& fi) {
 // 模式另有含义 (虚拟桌面屏幕位置), subsurface 则是相对父 surface 的偏移。
 // 几何计算段已收口到 ShmFrameSource::ComputeContentAreaGeometry (重构第
 // 5A1 步, SurfaceData 字段值语义参数化, 逻辑逐字搬移, 行为平价); 本函数
-// 保留 hilog 日志 (MW-GEO/MW-STRIDE), 条件/文本/顺序与旧实现逐字一致。
+// MW-GEO 逐帧日志只在 frame trace 开启时输出; MW-STRIDE 告警保留。
 // 三义分流显式化 (重构第 5A2 步): 旧代码把 sd->geoX/geoY (三义字段, PLAN
 // §2.4) 原样喂给纯函数, 由函数内 hasToplevel 猜义; 现按命名字段取义 —
 // 角色 = committed.role (显式枚举), 几何值 = contentRect.x/y (写点直写的
@@ -617,7 +625,7 @@ void WaylandServer::ComputeContentArea(SurfaceData* sd, ShmCommitInfo& fi) {
     ComputeContentAreaGeometry(fi, c.hasWindowGeometry, c.contentRect.w, c.contentRect.h,
                                c.role == CommittedSurface::Role::Toplevel,
                                c.contentRect.x, c.contentRect.y);
-    if (c.hasWindowGeometry && c.contentRect.w > 0 && c.contentRect.h > 0) {
+    if (winehua::FrameTraceEnabled() && c.hasWindowGeometry && c.contentRect.w > 0 && c.contentRect.h > 0) {
         OH_LOG_INFO(LOG_APP, "[MW-GEO] using window_geometry: src=%{public}dx%{public}d geo=(%{public}d,%{public}d %{public}dx%{public}d) screen=(%{public}d,%{public}d) vpSrc=(%{public}d,%{public}d %{public}dx%{public}d) vpDst=%{public}dx%{public}d",
                     fi.bufW, fi.bufH, fi.contentOffX, fi.contentOffY, fi.contentW, fi.contentH,
                     fi.screenX, fi.screenY,
@@ -718,7 +726,7 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
      */
     if (outFirstCommit && Policy().OhosWindowPerToplevel()) {
         PostToplevelEvent(sd->toplevelId, ToplevelEventType::Created,
-                          ToplevelEventBus::JsonCreated(fi.contentW, fi.contentH));
+                          ToplevelEventBus::JsonCreated(fi.contentW, fi.contentH, sd->clientPid));
     }
     // ARGB 窗口位置同步 (argb_move) 随 "ARGB 也走普通窗口" 决定停用: ARGB
     // 窗口位置与 XRGB 窗口同规则 — OHOS 窗口管理器为权威, Wine 后续 commit
@@ -762,8 +770,10 @@ void WaylandServer::UpdateToplevelFrameOnCommit(SurfaceData* sd, wl_resource* su
             toplevelMgr_.EnsureInZOrder(sd->toplevelId);
         }
     }
-    OH_LOG_INFO(LOG_APP, "[MW-COMMIT] toplevel #%{public}u frame %{public}dx%{public}d stride=%{public}d stored=%{public}zu",
-                sd->toplevelId, fi.contentW, fi.contentH, fi.stride, st.Pixels().size());
+    if (winehua::FrameTraceEnabled()) {
+        OH_LOG_INFO(LOG_APP, "[MW-COMMIT] toplevel #%{public}u frame %{public}dx%{public}d stride=%{public}d stored=%{public}zu",
+                    sd->toplevelId, fi.contentW, fi.contentH, fi.stride, st.Pixels().size());
+    }
 
     // 检测尺寸变化 -> 通知 ArkTS 调整子窗口: 尺寸变化判定 + 全屏尺寸漂移
     // 补丁 (war3 D3D 模式切换画面缩左上, PLAN §2.5; 补丁注释完整平移, 见
@@ -949,6 +959,7 @@ void WaylandServer::UpdateSubsurfaceLayerOnCommit(SurfaceData* sd, wl_resource* 
     layer.shmFormat = fi.shmFormat;
     layer.opaque = opaque;
     layer.vpDstW = sd->vpDstW; layer.vpDstH = sd->vpDstH;
+    layer.viewport = sd->directViewport;
     layer.dmgX = sd->damageX; layer.dmgY = sd->damageY;
     layer.dmgW = sd->damageW; layer.dmgH = sd->damageH;
     layer.route = DisplayPolicy::SubsurfaceRoute::DesktopLayer;
@@ -1000,6 +1011,7 @@ void WaylandServer::UpdateInlineSubsurfaceOnCommit(SurfaceData* sd, wl_resource*
     layer.shmFormat = fi.shmFormat;
     layer.opaque = opaque;
     layer.vpDstW = sd->vpDstW; layer.vpDstH = sd->vpDstH;
+    layer.viewport = sd->directViewport;
     layer.dmgX = sd->damageX; layer.dmgY = sd->damageY;
     layer.dmgW = sd->damageW; layer.dmgH = sd->damageH;
     layer.route = DisplayPolicy::SubsurfaceRoute::InlineClient;
@@ -1041,6 +1053,8 @@ void WaylandServer::FinishCommit(SurfaceData* sd, wl_resource* surfRes) {
 void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
     auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surfRes));
     auto* self = GetInstance();  // static 回调无 this, 分段均为实例方法
+    const bool loopDiagnostics = (winehua::FrameLoopDiagnosticState() & 1) != 0;
+    const uint64_t diagnosticStartedUs = loopDiagnostics ? winehua::PerfNowUs() : 0;
     {
         auto lock = self->toplevelMgr_.Lock();
         sd->directViewport = sd->directViewportPending;
@@ -1053,10 +1067,15 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
     const auto wt0 = frameTrace ? std::chrono::steady_clock::now()
                                 : std::chrono::steady_clock::time_point();
     // NULL buffer → surface 无内容 (unmap)
-    if (self->HandleNullBufferCommit(sd, surfRes)) return;
+    if (self->HandleNullBufferCommit(sd, surfRes)) {
+        if (loopDiagnostics) winehua::NoteProducerCommit(false, sd->isSubsurface, true, 0,
+            winehua::PerfNowUs()-diagnosticStartedUs, 0);
+        return;
+    }
 
     ShmCommitInfo fi;
-    if (self->BeginShmAccess(sd, fi)) {
+    const bool shmCommit = self->BeginShmAccess(sd, fi);
+    if (shmCommit) {
         self->ComputeContentArea(sd, fi);
         // sd->pixels 的消费方全部是 subsurface 路径 (desktop layer 合成 / PC popup /
         // ARGB 检测); toplevel 的帧走 UpdateToplevelFrameOnCommit 的内容裁剪拷贝,
@@ -1067,9 +1086,11 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
         sd->w = fi.contentW;
         sd->h = fi.contentH;
         fi.shmCommitSerial = sd->shmCommitSerial.fetch_add(1, std::memory_order_release) + 1;
-        OH_LOG_INFO(LOG_APP, "[MW-COMMIT] surface w=%{public}d h=%{public}d stride=%{public}d stored=%{public}zu content=%{public}dx%{public}d geo=%{public}s",
-                    fi.bufW, fi.bufH, fi.stride, sd->pixels.size(), fi.contentW, fi.contentH,
-                    sd->committed.hasWindowGeometry ? "yes" : "no");
+        if (frameTrace) {
+            OH_LOG_INFO(LOG_APP, "[MW-COMMIT] surface w=%{public}d h=%{public}d stride=%{public}d stored=%{public}zu content=%{public}dx%{public}d geo=%{public}s",
+                        fi.bufW, fi.bufH, fi.stride, sd->pixels.size(), fi.contentW, fi.contentH,
+                        sd->committed.hasWindowGeometry ? "yes" : "no");
+        }
 
         // CommittedSurface 快照产出 (重构第 5A2 步): 填入 commit 时点可观察值
         // (screenPos/parentOffset/frame; role 与几何已随协议设置点直写)。
@@ -1083,7 +1104,11 @@ void WaylandServer::surface_commit(wl_client*, wl_resource* surfRes) {
         wl_shm_buffer_end_access(fi.shm);
     }
 
+    const size_t diagnosticCallbacks = loopDiagnostics ? sd->frameCallbacks.size() : 0;
     self->FinishCommit(sd, surfRes);
+    if (loopDiagnostics) winehua::NoteProducerCommit(shmCommit, sd->isSubsurface, false,
+        shmCommit && fi.stride > 0 && fi.bufH > 0 ? static_cast<uint64_t>(fi.stride)*fi.bufH : 0,
+        winehua::PerfNowUs()-diagnosticStartedUs, diagnosticCallbacks);
 
     // WL-T 临时诊断 (接函数头): commit 占用统计; frameTrace 关闭时整体跳过
     if (frameTrace) {
@@ -1123,6 +1148,9 @@ extern "C" void RegisterWlCoreGlobals(wl_display* display) {
         [](wl_resource* surface, double x, double y) {
             InputManager::GetInstance()->OnPointerWarp(surface, x, y);
         });
+    PointerExtras::GetInstance()->SetRelativeBaselineSink([](const char* reason) {
+        InputManager::GetInstance()->InvalidateRelativePointerBaseline(reason);
+    });
     // 会话引用装配 (重构第 6A 步): surface→toplevel 反查 (FindToplevelBySurface)
     // 与 isShell 判定直呼 ToplevelManager / root id / 桌面模式标志的共享引用 —
     // 替代 WaylandServer::FindToplevelIdBySurface/GetDesktopRootToplevelId 转发
@@ -1130,7 +1158,7 @@ extern "C" void RegisterWlCoreGlobals(wl_display* display) {
     // (与 warpSink 同模式; 装配出口见 wayland_server.h)。
     PointerExtras::GetInstance()->BindWaylandRefs(
         &WaylandServer::GetInstance()->GetToplevelManager(),
-        &self->DesktopRootToplevelIdRef(),
+        &self->DesktopRootToplevelIdRef(), &self->GetInputResolver(),
         &self->DesktopModeRef());
     // IME 文本输入 (Wine wayland_text_input.c 绑定, 软键盘文字经此注入)
     TextInput::GetInstance()->Register(display);

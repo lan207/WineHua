@@ -41,6 +41,13 @@ endif()
 set(WAYLAND_LIBS_DIR ${NATIVERENDER_ROOT_PATH}/../../../libs/${OHOS_ARCH})
 
 add_library(entry SHARED
+    # ---- Runtime compatibility and diagnostics ----
+    common/app_log.cpp
+    audio/audio_pcm_capture.cpp
+    audio/audio_pcm_metrics.cpp
+    graphics/graphics_profile.cpp
+    graphics/host_vulkan_probe.cpp
+    # ---- WineHua proton 方案③ 基线 ----
     direct/vulkan_probe_launcher.cpp
     direct/direct_wine_ipc_probe.cpp
     direct/direct_wine_surface_ipc_probe.cpp
@@ -72,11 +79,13 @@ add_library(entry SHARED
     wine/wine_env.cpp
     wine/env_spec.cpp
     wine/env_profiles.cpp
+    wine/dll_overrides.cpp
     wine/container_session.cpp
     proc/spawner.cpp
     wine/wine_launch.cpp
     wine/wine_exe.cpp
     proc/broker.cpp
+    proc/wine_spawn_compatibility.cpp
     proc/wine_child_ipc_launcher.cpp
     proc/ncp_dispatch.cpp
     proc/cef_utility_probe.cpp
@@ -124,6 +133,20 @@ add_library(entry SHARED
     protocols/relative-pointer-unstable-v1-protocol.c
     protocols/text-input-unstable-v3-protocol.c
 )
+
+# 应用日志文件 sink：force-include app_log.h，让所有 OH_LOG_* 调用在保持
+# hilog 行为不变的同时追加写入 Download/.../logs/native-YYYYMMDD.log。
+target_compile_options(entry PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/common/app_log.h)
+execute_process(
+    COMMAND git -C ${CMAKE_CURRENT_SOURCE_DIR}/../../../.. rev-parse --short=12 HEAD
+    OUTPUT_VARIABLE WINEHUA_AUDIO_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT WINEHUA_AUDIO_GIT_COMMIT)
+    set(WINEHUA_AUDIO_GIT_COMMIT "unknown")
+endif()
+target_compile_definitions(entry PRIVATE WINEHUA_AUDIO_GIT_COMMIT="${WINEHUA_AUDIO_GIT_COMMIT}")
 
 # BlitScaled (双线性缩放 blit) 是桌面合成热路径: 全屏游戏 800x600→1400x920
 # fit 放大在 -O0 调试构建实测 ~70ms/帧 (440 万输出像素 × 4 采样插值)。
@@ -196,12 +219,8 @@ add_library(direct_gpu_surface_probe SHARED
     direct/direct_gpu_surface_probe_child.cpp
 )
 target_link_libraries(direct_gpu_surface_probe PUBLIC
-    libhilog_ndk.z.so
-    libchild_process.so
-    libipc_capi.so
-    libnative_window.so
-    libnative_buffer.so
-    libvulkan.so
+    libhilog_ndk.z.so libchild_process.so libipc_capi.so
+    libnative_window.so libnative_buffer.so libvulkan.so
 )
 
 # smoke 测试设施的原生侧 (与 ets/smoke/ 物理隔离对应): 测试专用查询/注入
@@ -220,10 +239,12 @@ add_library(virgl_child SHARED
     graphics/virgl_host_config.cpp
     graphics/virgl_surface_presenter.cpp
     graphics/venus_surface_presenter.cpp
+    graphics/native_window_vk_target.cpp
     graphics/shader_utils.cpp
     phone_adapter/phone_virgl_dispatch.cpp
 )
 target_link_libraries(virgl_child PUBLIC
+    libnative_buffer.so
     libEGL.so
     libGLESv3.so
     libvulkan.so

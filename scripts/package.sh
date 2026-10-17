@@ -47,7 +47,6 @@ def rewrite(m):
     parts = [p for p in re.split(r'[\\/]+', value) if p]
     fname = parts[-1] if parts else value
     new_path = f"{sig_dir}/{fname}"
-    print(f"  rewrite: {value}  ->  {new_path}", file=sys.stderr)
     return f'{prefix}"{new_path}"'
 
 content = pattern.sub(rewrite, content)
@@ -57,6 +56,94 @@ with open(profile_path, "w", encoding="utf-8") as f:
 PY
 
     log "build-profile.json5 导入完成"
+}
+
+# Fail before Hvigor's expensive native/ArkTS/package phases when the mounted
+# signing profile is empty, incomplete, or belongs to another bundle.
+validate_signing_profile() {
+    local profile="$WINEHUA/build-profile.json5"
+    local app_json="$WINEHUA/AppScope/app.json5"
+    local signing_config="${WINEHUA_SIGNING_CONFIG:-}"
+    local selected_profile expected_bundle
+
+    IFS=$'\t' read -r selected_profile expected_bundle < <(
+        python3 - "$profile" "$app_json" "$signing_config" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+profile_path = Path(sys.argv[1]).resolve()
+app_path = Path(sys.argv[2]).resolve()
+selected_name = sys.argv[3]
+
+def load_json5(path):
+    content = path.read_text(encoding="utf-8")
+    content = re.sub(r'//.*$', '', content, flags=re.MULTILINE)
+    content = re.sub(r',\s*([}\]])', r'\1', content)
+    return json.loads(content)
+
+profile = load_json5(profile_path)
+configs = profile.get("app", {}).get("signingConfigs", [])
+if not configs:
+    raise SystemExit("signing preflight: app.signingConfigs is empty")
+
+selected = configs[0]
+if selected_name:
+    selected = next((item for item in configs
+                     if item.get("name") == selected_name), None)
+    if selected is None:
+        raise SystemExit(
+            f"signing preflight: config not found: {selected_name}")
+
+material = selected.get("material", {})
+required = ("certpath", "profile", "storeFile", "keyAlias", "keyPassword",
+            "storePassword", "signAlg")
+missing = [key for key in required if not material.get(key)]
+if missing:
+    raise SystemExit(
+        "signing preflight: missing material keys: " + ", ".join(missing))
+
+def material_path(value):
+    path = Path(value)
+    return path if path.is_absolute() else (profile_path.parent / path).resolve()
+
+paths = {key: material_path(material[key])
+         for key in ("certpath", "profile", "storeFile")}
+missing_files = [key for key, path in paths.items() if not path.is_file()]
+if missing_files:
+    raise SystemExit(
+        "signing preflight: mounted material files are missing: " +
+        ", ".join(missing_files))
+
+expected_bundle = load_json5(app_path).get("app", {}).get("bundleName", "")
+if not expected_bundle:
+    raise SystemExit("signing preflight: AppScope bundleName is missing")
+print(f"{paths['profile']}\t{expected_bundle}")
+PY
+    ) || err "签名配置预检失败"
+
+    local result_file actual_bundle
+    result_file="$(mktemp "${TMPDIR:-/tmp}/winehua-profile-verify.XXXXXX.json")"
+    if ! java -jar "$TOOL_HOME/sdk/default/openharmony/toolchains/lib/hap-sign-tool.jar" \
+            verify-profile -inFile "$selected_profile" \
+            -outFile "$result_file" >/dev/null; then
+        rm -f -- "$result_file"
+        err "签名 profile 验证失败"
+    fi
+    actual_bundle="$(python3 - "$result_file" <<'PY'
+import json
+import sys
+
+result = json.load(open(sys.argv[1], encoding="utf-8"))
+print(result.get("content", {}).get("bundle-info", {}).get("bundle-name", ""))
+PY
+    )"
+    rm -f -- "$result_file"
+    [ -n "$actual_bundle" ] || err "签名 profile 未包含 bundleName"
+    [ "$actual_bundle" = "$expected_bundle" ] || \
+        err "签名 profile bundle 与 AppScope bundle 不匹配"
+    log "签名配置预检通过 (bundle=$expected_bundle)"
 }
 
 # ============================================================
@@ -125,11 +212,26 @@ with open('$profile', 'w') as f:
 
 # ============================================================
 package_hap() {
+    local mode="${1:-signed}"
     log "=== 打包 HAP ($NATIVE_ARCH) ==="
     local unsigned_hap="$WINEHUA/entry/build/default/outputs/default/entry-default-unsigned.hap"
     local signed_hap="$WINEHUA/entry/build/default/outputs/default/entry-default-signed.hap"
 
-    import_user_profile     # <-- 优先使用用户挂载的 profile + 签名
+    if [ "$mode" = unsigned ]; then
+        # CI must opt in explicitly and must never import private signing data.
+        python3 - "$WINEHUA/build-profile.json5" <<'PY'
+import json, re, sys
+text = open(sys.argv[1], encoding="utf-8").read()
+text = re.sub(r'//.*$', '', text, flags=re.MULTILINE)
+profile = json.loads(re.sub(r',\s*([}\]])', r'\1', text))
+app = profile.get("app", {})
+if app.get("signingConfigs") or any(p.get("signingConfig") for p in app.get("products", [])):
+    raise SystemExit("unsigned build requires an unsigned profile; private signing configuration is not allowed")
+PY
+    else
+        import_user_profile
+        validate_signing_profile
+    fi
     set_sdk_versions
     set_abi_filters
 
@@ -182,8 +284,21 @@ with open('$module_json', 'w') as f:
         warn "未找到 $data_arch_marker (旧版 assemble 产物?), 无法校验 wine-data 架构一致性"
     fi
 
+    # A direct hap build may reuse old assemble outputs. Never silently ship a
+    # stale SDK stub; leave unknown/generated inputs intact and require reassembly.
+    python3 "$SCRIPT_DIR/runtime_library_guard.py" \
+        "$WINEHUA/entry/libs" "$WINEHUA/entry/src/main/resources/rawfile"
     cd "$WINEHUA"
     hvigorw assembleHap || { err "hvigorw assembleHap 失败"; return 1; }
+
+    [ -s "$unsigned_hap" ] || err "unsigned HAP missing after assembleHap"
+    python3 "$SCRIPT_DIR/runtime_library_guard.py" "$unsigned_hap"
+    if [ "$mode" = unsigned ]; then
+        python3 "$SCRIPT_DIR/check_runtime_components.py" --hap "$unsigned_hap"
+        ls -lh "$unsigned_hap"
+        log "HAP 构建完成 (unsigned, $NATIVE_ARCH); 安装前必须自行签名"
+        return 0
+    fi
 
     cd "$WINEHUA"
     python3 sign.py "$unsigned_hap" "$signed_hap"
@@ -229,9 +344,15 @@ deploy() {
 # ---- main ----
 case "${1:-}" in
     hap)  package_hap ;;
+    hap-unsigned) package_hap unsigned ;;
+    signing-preflight)
+        import_user_profile
+        set_sdk_versions
+        validate_signing_profile
+        ;;
     deploy) deploy "${2:-}" ;;
     all)
         package_hap && deploy "${2:-}"
         ;;
-    *)    echo "用法: $0 {hap|deploy|all} [device_ip]" >&2; exit 1 ;;
+    *)    echo "用法: $0 {hap|hap-unsigned|signing-preflight|deploy|all} [device_ip]" >&2; exit 1 ;;
 esac

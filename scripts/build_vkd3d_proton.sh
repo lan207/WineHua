@@ -62,9 +62,12 @@ if [ ! -f "$SOURCE_STAMP" ] || [ "$(cat "$SOURCE_STAMP")" != "$source_id" ]; the
     if find "$SOURCE_ROOT" -name .git -print -quit | grep -q .; then
         err "Isolated VKD3D-Proton source unexpectedly contains Git metadata"
     fi
+    # pinned tree ships CRLF in parts of the tree; normalize all CRLF text
+    # files before patching (submodule itself stays untouched/clean)
+    grep -rlI $'\r' "$SOURCE_ROOT" --exclude-dir=.git | xargs -r sed -i 's/\r$//'
     for patch_file in "${patches[@]}"; do
         log "Applying $(basename "$patch_file")"
-        patch -d "$SOURCE_ROOT" -p1 --forward --batch < "$patch_file"
+        patch -d "$SOURCE_ROOT" -p1 --forward --batch --ignore-whitespace < "$patch_file"
     done
     printf '%s\n' "$source_id" > "$SOURCE_STAMP"
 
@@ -110,7 +113,7 @@ elif ! grep -q 'demos/triangle' "$MESON_ROOT/build.ninja"; then
 fi
 
 log "Building VKD3D-Proton x64 limited-500K"
-ninja -C "$MESON_ROOT"
+ninja -j"$JOBS" -C "$MESON_ROOT"
 
 dll="$MESON_ROOT/libs/d3d12/d3d12.dll"
 smoke="$MESON_ROOT/tests/vkd3d-graphics-smoketest.exe"

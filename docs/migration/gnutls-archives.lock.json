@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "verification": "Compared with independently published upstream/distribution checksum metadata; no fresh local PGP signature verification.",
+  "archives": {
+    "gmp-6.2.1.tar.xz": {
+      "sha256": "fd4829912cddd12f84181c3451cc752be224643e87fac497b69edddadc49b4f2",
+      "checksumSource": "https://raw.githubusercontent.com/buildroot/buildroot/2023.02/package/gmp/gmp.hash"
+    },
+    "nettle-3.10.2.tar.gz": {
+      "sha256": "fe9ff51cb1f2abb5e65a6b8c10a92da0ab5ab6eaf26e7fc2b675c45f1fb519b5",
+      "checksumSource": "https://lists.freebsd.org/archives/dev-commits-ports-all/2025-June/165942.html"
+    },
+    "libtasn1-4.20.0.tar.gz": {
+      "sha256": "92e0e3bd4c02d4aeee76036b2ddd83f0c732ba4cda5cb71d583272b23587a76c",
+      "checksumSource": "https://lists.buildroot.org/pipermail/buildroot/2026-February/796681.html"
+    },
+    "libunistring-1.3.tar.xz": {
+      "sha256": "f245786c831d25150f3dfb4317cda1acc5e3f79a5da4ad073ddca58886569527",
+      "checksumSource": "https://lists.nongnu.org/archive/html/info-gnu/2024-10/msg00000.html"
+    },
+    "gnutls-3.8.3.tar.xz": {
+      "sha256": "f74fc5954b27d4ec6dfbb11dea987888b5b124289a3703afcada0ee520f4173e",
+      "checksumSource": "https://raw.githubusercontent.com/buildroot/buildroot/2024.02.1/package/gnutls/gnutls.hash"
+    }
+  }
+}

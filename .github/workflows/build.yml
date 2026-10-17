@@ -6,6 +6,7 @@ on:
     branches:
       - master
       - main-ui
+      - feature/proton-wine-ohos
     tags:
       - 'dev-*'                 # 开发版 (直接发布, 不占 Latest 徽章)
       - 'rc-*'                  # RC 版 (占 Latest 徽章)
@@ -32,7 +33,7 @@ permissions:
 
 jobs:
   build:
-    name: make NATIVE_ARCH=arm64-v8a hap
+    name: make NATIVE_ARCH=arm64-v8a hap-unsigned
     runs-on: ubuntu-26.04
     timeout-minutes: 180
 
@@ -69,6 +70,9 @@ jobs:
           fetch-depth: 1
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Verify runtime migration and protected WineHua UI
+        run: python3 scripts/verify_runtime_migration.py
+
       # actions/checkout recursive + fetch-depth:1 有时不会把 vkd3d-proton
       # 的嵌套 Khronos/dxil-spirv 子模块落到工作树, 构建脚本会在 1 秒内退出.
       - name: Ensure nested graphics submodules
@@ -88,22 +92,6 @@ jobs:
       # 这一步保留只为兼容"老 clone 里 wine-valve 还没物化"的场景：脚本检测到目录已存在会直接返回。
       - name: Materialize Proton/Valve wine tree (compat fallback)
         run: bash scripts/prepare-wine-valve.sh
-
-      # ---- 绕过签名: 用 stub 替换 sign.py ----
-      # scripts/package.sh 最后会调 `python3 sign.py <unsigned> <signed>`,
-      # 无签名场景下这里直接把 unsigned 拷成 "signed" 文件, 让 make hap 完整跑完
-      - name: Stub sign.py (unsigned build)
-        run: |
-          cat > sign.py <<'PY'
-          #!/usr/bin/env python3
-          # CI-only stub: 无签名构建, 直接把 unsigned HAP 拷贝为 "signed" 输出
-          import shutil, sys, os
-          src, dst = sys.argv[1], sys.argv[2]
-          os.makedirs(os.path.dirname(dst), exist_ok=True)
-          shutil.copy(src, dst)
-          print(f"[sign-stub] copied {src} -> {dst} (UNSIGNED)")
-          PY
-          chmod +x sign.py
 
       # ---- CI-only: 无签名的 build-profile.json5 ----
       # 从 example 派生会踩坑: example 里的 signingConfigs 指向占位符路径,
@@ -170,6 +158,10 @@ jobs:
           fi
           if ! command -v glslangValidator >/dev/null 2>&1; then
             packages+=(glslang-tools)
+          fi
+          if ! command -v spirv-as >/dev/null 2>&1 || ! command -v spirv-val >/dev/null 2>&1 || \
+             ! command -v spirv-opt >/dev/null 2>&1 || ! command -v spirv-dis >/dev/null 2>&1; then
+            packages+=(spirv-tools)
           fi
           if ! command -v msgfmt >/dev/null 2>&1; then
             packages+=(gettext)
@@ -260,39 +252,39 @@ jobs:
 
       # 先单独构建两个 DXVK runtime 再打 HAP。这样 Modern 的交叉编译失败
       # 不会被误报为通用 HAP 打包失败；assemble 仍以它们为硬依赖。
-      - name: Build DXVK Legacy runtime (x64 + x86)
+      - name: Build DXVK Legacy runtime (ARM64X + x86)
         run: |
           set -euxo pipefail
           make NATIVE_ARCH=arm64-v8a dxvk
           for dll in \
-            build/dxvk/legacy/x64/bin/d3d11.dll \
-            build/dxvk/legacy/x64/bin/dxgi.dll \
+            build/dxvk/legacy/arm64x/bin/d3d11.dll \
+            build/dxvk/legacy/arm64x/bin/dxgi.dll \
             build/dxvk/legacy/x86/bin/d3d11.dll \
             build/dxvk/legacy/x86/bin/dxgi.dll; do
             test -s "$dll"
           done
-          file build/dxvk/legacy/x64/bin/d3d11.dll \
-               build/dxvk/legacy/x64/bin/dxgi.dll \
+          file build/dxvk/legacy/arm64x/bin/d3d11.dll \
+               build/dxvk/legacy/arm64x/bin/dxgi.dll \
                build/dxvk/legacy/x86/bin/d3d11.dll \
                build/dxvk/legacy/x86/bin/dxgi.dll
-          sha256sum build/dxvk/legacy/{x64,x86}/bin/{d3d11,dxgi}.dll
+          sha256sum build/dxvk/legacy/{arm64x,x86}/bin/{d3d11,dxgi}.dll
 
-      - name: Build DXVK Modern runtime (x64 + x86)
+      - name: Build DXVK Modern runtime (ARM64X + x86)
         run: |
           set -euxo pipefail
           make NATIVE_ARCH=arm64-v8a dxvk-modern
           for dll in \
-            build/dxvk/modern-2.6/x64/bin/d3d11.dll \
-            build/dxvk/modern-2.6/x64/bin/dxgi.dll \
+            build/dxvk/modern-2.6/arm64x/bin/d3d11.dll \
+            build/dxvk/modern-2.6/arm64x/bin/dxgi.dll \
             build/dxvk/modern-2.6/x86/bin/d3d11.dll \
             build/dxvk/modern-2.6/x86/bin/dxgi.dll; do
             test -s "$dll"
           done
-          file build/dxvk/modern-2.6/x64/bin/d3d11.dll \
-               build/dxvk/modern-2.6/x64/bin/dxgi.dll \
+          file build/dxvk/modern-2.6/arm64x/bin/d3d11.dll \
+               build/dxvk/modern-2.6/arm64x/bin/dxgi.dll \
                build/dxvk/modern-2.6/x86/bin/d3d11.dll \
                build/dxvk/modern-2.6/x86/bin/dxgi.dll
-          sha256sum build/dxvk/modern-2.6/{x64,x86}/bin/{d3d11,dxgi}.dll
+          sha256sum build/dxvk/modern-2.6/{arm64x,x86}/bin/{d3d11,dxgi}.dll
 
       - name: Build VKD3D-Proton runtime (x64 limited-500K)
         run: |
@@ -330,7 +322,10 @@ jobs:
           BUILD_WINE_MONO: '1'
         run: |
           set -euxo pipefail
-          make NATIVE_ARCH=arm64-v8a hap
+          make NATIVE_ARCH=arm64-v8a hap-unsigned
+
+      - name: Run host regression suite with IPC and sanitizers
+        run: make NATIVE_ARCH=arm64-v8a test
 
       - name: Locate artifacts
         id: art
@@ -338,11 +333,8 @@ jobs:
           set -eux
           out_dir=entry/build/default/outputs/default
           ls -lh "$out_dir"
-          if [ -f "$out_dir/entry-default-unsigned.hap" ]; then
-            echo "hap=$out_dir/entry-default-unsigned.hap" >> "$GITHUB_OUTPUT"
-          else
-            echo "hap=$out_dir/entry-default-signed.hap" >> "$GITHUB_OUTPUT"
-          fi
+          test -s "$out_dir/entry-default-unsigned.hap"
+          echo "hap=$out_dir/entry-default-unsigned.hap" >> "$GITHUB_OUTPUT"
 
       # PE 构建成功不代表产物完整: 校验 HAP 内嵌 wine-data.zip 中的运行时
       # DLL 与 submodule 实际 commit 一致, 防止陈旧 staging 或错误架构的
@@ -378,6 +370,9 @@ jobs:
           }
 
           with zipfile.ZipFile(hap_path) as hap:
+              winevulkan = hap.read("libs/arm64-v8a/winevulkan.so")
+              assert winevulkan[:4] == b"\x7fELF", "Wine Vulkan Unix module"
+              assert struct.unpack_from("<H", winevulkan, 18)[0] == 183, "Wine Vulkan AArch64"
               payload = hap.read("resources/rawfile/wine-data.zip")
               runtime_manifest = json.loads(
                   hap.read("resources/rawfile/wine-runtime-manifest.json")
@@ -404,7 +399,7 @@ jobs:
                   )
                   assert runtime["state"], (profile, runtime)
                   assert isinstance(runtime["requiredCapabilities"], dict), runtime
-                  for arch, expected_machine in (("x64", 0x8664), ("x86", 0x014C)):
+                  for arch, expected_machine in (("x64", 0xAA64), ("arm64x", 0xAA64), ("x86", 0x014C)):
                       for dll in ("d3d11.dll", "dxgi.dll"):
                           name = f"dxvk/{profile}/{arch}/{dll}"
                           image = wine_data.read(name)
@@ -425,12 +420,11 @@ jobs:
               # 仅 PE DLL 在 ARM64 HarmonyOS 上不可运行, 需同 payload 内的
               # Vulkan 依赖链文件齐全才能工作, 一并校验.
               vulkan_runtime = (
-                  "bin/x86_64-windows/vulkan-1.dll",
+                  "bin/aarch64-windows/vulkan-1.dll",
                   "bin/i386-windows/vulkan-1.dll",
-                  "bin/x86_64-unix/winevulkan.so",
                   "bin/guest_vulkan/lib/libvulkan.so.1",
                   "bin/guest_vulkan/lib/libvulkan_virtio.so",
-                  "bin/guest_vulkan/share/vulkan/icd.d/venus_icd.x86_64.json",
+                  "bin/guest_vulkan/share/vulkan/icd.d/venus_icd.aarch64.json",
               )
               for name in vulkan_runtime:
                   image = wine_data.read(name)

@@ -1,0 +1,62 @@
+{
+  "sourceCommit": "4071c079804af5052dc01473b5d593f3e9595b35",
+  "targetBase": "3f55395cc4e5ec0dd5e4c71498135b7f80820ce5",
+  "nativeEntry": {
+    "status": "passed",
+    "log": "native-entry-final-2.log",
+    "sha256File": "native-entry-final-sha256.txt"
+  },
+  "hostSuite": {
+    "status": "incomplete-environment-blocked",
+    "log": "host-suite-final-1.log",
+    "failedTargets": [
+      "test-broker-startup",
+      "test-gamepad-bridge"
+    ],
+    "reason": "Unix-domain socket creation denied by local sandbox; no alternate path bypass",
+    "asanOptions": "detect_leaks=0:halt_on_error=1",
+    "leakSanitizer": "not-validated",
+    "otherAggregateTargets": "passed"
+  },
+  "deviceRuntime": "not-run",
+  "unsignedHap": {
+    "status": "passed",
+    "log": "hap-build-4.log",
+    "artifacts": "hap-final-artifacts.json",
+    "sha256": "2045dd8450c03a708ff507c849666336efcf5b6e0b8beed90af870c662784362",
+    "bytes": 348624963,
+    "nativeLibraryCount": 70,
+    "nativeElfMachine": 183,
+    "targetSdkVersion": "26.0.0",
+    "compatibleSdkVersion": "6.1.0(23)"
+  },
+  "publishedCommit": "none",
+  "ci": "not-started",
+  "nativeSubprojects": {
+    "status": "passed",
+    "scope": "production ARM64 host; FEX dual DLL; Wine ARM64EC/AArch64/i386; DXVK Legacy/Modern x86+ARM64X; VKD3D x64; Mesa guest VirGL/Venus and host graphics; wowbox64",
+    "logs": [
+      "dxvk-build-7.log",
+      "dxvk-modern-build-1.log",
+      "vkd3d-build-4.log",
+      "native-build-6.log",
+      "host-vulkan-build-1.log",
+      "box64-wow64-build-1.log"
+    ]
+  },
+  "toolchain": {
+    "HarmonyCLI": "26.0.0.851",
+    "HarmonySDK": "26.0.0.105",
+    "llvmMinGW": "20260826 / Clang 23.1.0",
+    "meson": "1.7.0"
+  },
+  "sourceLatestReviewed": "0a140d7e8b5764d0e59dcbccd35040e9207aca1e",
+  "protectedTargetFiles": 59,
+  "managedPatches": 142,
+  "checkedAt": "2026-10-17T06:10:00Z",
+  "notes": [
+    "Local logs are retained with this build; log basenames identify the actual runs.",
+    "Source hashes and generated artifact hashes are separate identities.",
+    "CI result will be recorded against the published commit; no CI pass is implied here."
+  ]
+}

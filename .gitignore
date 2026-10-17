@@ -90,3 +90,7 @@ __pycache__/
 
 # 第三方源码的本地检出（由 scripts/ 拉取，不是本仓内容）
 /thirdparty/wine-proton/
+
+# Generated runtime identity and unsigned packages
+entry/src/main/resources/rawfile/wine_runtime.version
+*.hap

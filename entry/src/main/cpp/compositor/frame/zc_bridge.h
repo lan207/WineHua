@@ -1,6 +1,9 @@
 #pragma once
 #include <cstdint>
 #include <mutex>
+#include <string>
+#include <vector>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -29,9 +32,12 @@ struct ZeroCopyLayerInfo {
     int width = 0;
     int height = 0;
     uint64_t shmCommitSerial = 0;
+    uint64_t bindingGeneration = 0; // role-less producer lifetime token
     bool desktopCoordinates = false;
     ZeroCopySource source = ZeroCopySource::ShmLayer;  // 原 protocolOnly 布尔
     bool fullscreen = false;  // 所属 toplevel 全屏: GL 层保比例缩放铺满视口 (ZC 游戏)
+    bool subsurface = false;
+    bool external = false;
 };
 
 struct ZeroCopyOccluderRect {
@@ -108,8 +114,8 @@ struct ZcPublishState {
 // 唯一可靠的输入是 (自身 hostPid, present surface id, frame extent, serial)。
 // 因此窗口身份由 Wayland 侧注册表提供，并按方案 §9 分级解析：
 //   L0 已有绑定        → 直接使用 (绝不重新做几何搜索)
-//   L1 同进程显式路径  → presenterHostPid == ownerHostPid
-//   L3 首次几何 bootstrap → 唯一候选 (toplevel + 可见 + 非桌面根 + 尺寸精确相等)
+//   L1 同进程几何路径  → 唯一同 PID 且尺寸匹配 (弱身份)
+//   L3 legacy 跨进程几何 → 无同 PID 匹配且唯一候选 (toplevel + 可见 + 非桌面根 + 尺寸精确相等)
 //   其它               → 拒绝 (不选第二候选 / 不用 Z-order / 焦点 / 标题猜)
 // 绑定建立后 resize/move 不再重新解析 owner；窗口销毁或代际变化才失效。
 // ============================================================================
@@ -129,7 +135,7 @@ struct WineHuaProducerKey {
 struct WineHuaPresentBinding {
     WineHuaProducerKey producer;
     WineHuaWindowKey window;
-    uint32_t bindGeneration = 0;
+    uint64_t bindGeneration = 0;
     uint64_t lastSerial = 0;
     const char* reason = "unset";  // "same-process" | "unique-geometry" | ...
     // P0-1 Task A (黑窗归因): producer 侧最新 extent 与"最近被消费"的时刻
@@ -140,7 +146,7 @@ struct WineHuaPresentBinding {
     // 渲染循环的查询路径里刷新, 于是失效 producer 永远显示活跃、新 producer
     // 无法接管其窗口 (参见 ROUND3 文档 §7)。
     uint64_t lastProducerUs = 0;
-    uint64_t lastDrawUs = 0;       // 最近一次绑定路径真的用于取几何(合成消费)
+    uint64_t lastDrawUs = 0;       // 最近一次 NativeImage 成功消费的时刻
     // P0-1 Task E/F (2026-09-17): producer 生命周期
     bool pending = false;          // 新 producer 已绑定但还没出第一帧 (旧 producer 仍显示)
     bool retired = false;          // 已被接替 → 旧 producer 的 layer 应释放
@@ -214,9 +220,14 @@ public:
     // 而渲染线程此刻可能正持 tmgr 锁) — 锁序单向: tmgr → presentLivenessMutex_。
     void NoteProducerPresent(uint64_t surfaceKey, uint64_t nowUs);
     // 合成侧真正消费一帧 (渲染线程在 UpdateSurfaceImage 成功后调用)
-    void NoteLayerConsumed(uint64_t surfaceKey, uint64_t nowUs);
-    // 窗口销毁/代际变化时失效所有指向该窗口的绑定
-    void InvalidateBindingsForWindow(uint32_t ownerHostPid, uint32_t wlSurfaceId);
+    bool NoteLayerConsumed(uint64_t surfaceKey, uint64_t nowUs, uint64_t bindingGeneration,
+                           int sourceW = 0, int sourceH = 0);
+    // Metadata only; caller holds tmgr. Revalidates live producer/owner roles.
+    bool ActiveOwner(uint64_t producerKey, uint64_t& ownerKey, uint32_t& topId,
+                     int& width, int& height) const;
+    bool HasActiveContent(uint32_t topId) const;
+    // 窗口或 producer surface 销毁时清理绑定；调用方须持有 tmgr 锁。
+    void InvalidateBindingsForSurface(uint32_t hostPid, uint32_t wlSurfaceId);
     size_t PresentBindingCount() const { return presentBindings_.size(); }
     // P0-1 Task A: per-window 黑窗归因快照 (调用方须已持有 tmgr 锁)
     void DumpWindowBindingDiag();
@@ -227,6 +238,20 @@ public:
 
 private:
     DesktopCompositor& comp_;
+    struct ConsumedContent {
+        int width = 0, height = 0;
+        uint64_t bindingGeneration = 0;
+        int protocolWidthAtConsume = 0, protocolHeightAtConsume = 0;
+        // A GPU producer need not commit another SHM frame after resizing.
+        // A later protocol resize still wins until its next GPU frame arrives.
+        int ResolveWidth(int protocolWidth) const {
+            return protocolWidth == protocolWidthAtConsume ? width : protocolWidth;
+        }
+        int ResolveHeight(int protocolHeight) const {
+            return protocolHeight == protocolHeightAtConsume ? height : protocolHeight;
+        }
+    };
+    std::unordered_map<uint64_t, ConsumedContent> consumedSizes_;
     std::unordered_set<uint64_t> activeKeys_;  // ZC key 权威
     std::unordered_map<uint64_t, ZcPublishState> publishStates_;  // key → ZC 发布状态
     // 真实 present 活性表 (producer key → 最近一次 present 的 steady 时钟 µs)。
@@ -239,6 +264,7 @@ private:
     void PruneStaleWindowBindings();
     // P0-1: producer key ((presenterHostPid<<32)|presentSurfaceId) → 持久绑定
     std::unordered_map<uint64_t, WineHuaPresentBinding> presentBindings_;
+    uint64_t nextBindingGeneration_ = 0;
     // 已被其它 producer 占用的窗口 (防止两个 producer 绑到同一窗口)
     std::unordered_map<uint64_t, uint64_t> windowBindings_;
     std::unordered_set<uint64_t> bindingRejectedLogged_;

@@ -39,6 +39,20 @@ uint32_t InputResolver::FindToplevelAt(int x, int y)
 bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTarget& out)
 {
     auto lk = tmgr_.Lock();
+    int rootW, rootH;
+    ResolveRootSize(rootW, rootH);
+    const auto layers = compositor_.BuildLayerListLocked(rootW, rootH);
+    const uint32_t fullscreenId = compositor_.PickFullscreenLayerLocked(layers);
+    return FindInputTargetInLayersLocked(logicalX, logicalY, out, layers,
+                                         rootW, rootH, fullscreenId, true);
+}
+
+bool InputResolver::FindInputTargetInLayersLocked(double logicalX, double logicalY, InputTarget& out,
+                                                 const std::vector<CompositorLayer>& layers,
+                                                 int rootW, int rootH, uint32_t fullscreenId,
+                                                 bool logSelection)
+{
+    out = {};
     uint32_t rootId = desktopRootToplevelId_;
 
     // 命中判定用取整桌面坐标 (与旧调用方 lround 后传 int 逐点一致);
@@ -55,6 +69,8 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
     // input_resolver.h 头部注释)
     int contentW = 0, contentH = 0;
     auto finalize = [&]() {
+        out.contentW = contentW;
+        out.contentH = contentH;
         ComputeLocalPoint(logicalX, logicalY, out.originX, out.originY, out.scale,
                           contentW, contentH, out.localX, out.localY);
     };
@@ -64,17 +80,6 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
     // 全屏窗口作为普通层参与 Z 序, 命中几何用 fit (与渲染 blitToplevel/
     // blitSubsurface 同一变换); "盖在游戏之上的层优先命中"由逆序天然
     // 保证, 不再有独立的前置命中循环。
-    int rootW, rootH;
-    ResolveRootSize(rootW, rootH);
-    const auto layers = compositor_.BuildLayerListLocked(rootW, rootH);
-
-    // 全屏目标选取 + fit 几何 — 与渲染侧 (TakeToplevelFrame) 共用单一实现:
-    // PickFullscreenLayerLocked: 可见全屏窗口中取 fsPriority 最大者 (多窗口
-    // 可同时 fullscreen, 显示模式切换时 Wine 会连带标记旧窗口 — 2026-07 实测
-    // notepad 被连带标记并压在游戏上), 规则原因/局限见 ToplevelState::fsPriority
-    // 注释; ComputeFullscreenFitLocked: ZC 游戏用全屏前尺寸 (游戏分辨率),
-    // SHM 游戏用 buffer 尺寸 (见该函数注释)
-    const uint32_t fullscreenId = compositor_.PickFullscreenLayerLocked(layers);
     const ToplevelManager::ToplevelState* zst =
         fullscreenId ? tmgr_.FindToplevelLocked(fullscreenId) : nullptr;
     FitRect transform;
@@ -84,7 +89,7 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
         // 诊断: 全屏输入目标选取 (仅目标变化时输出 — 多窗口同时全屏时
         // 选错窗口的点击路由问题靠它定位, 例如旧窗口被连带标记压在游戏上)
         static uint32_t sLastPicked = 0;
-        if (fullscreenId != sLastPicked) {
+        if (logSelection && fullscreenId != sLastPicked) {
             sLastPicked = fullscreenId;
             int layerW = 0, layerH = 0;
             const bool hasZC = compositor_.GetZeroCopyContentSizeLocked(fullscreenId, layerW, layerH);
@@ -133,6 +138,12 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
         if (DesktopCompositor::ShouldSkipFullscreenCascade(layer, fullscreenId, fsOk, tmgr_)) continue;
 
         if (layer.type == CompositorLayer::Type::Subsurface) {
+            // Wine's GPU client surfaces explicitly delegate pointer events to
+            // their parent. Direct queue registration must not turn these
+            // input-transparent drawables into independent input targets.
+            auto* data = layer.sub->surface
+                ? static_cast<SurfaceData*>(wl_resource_get_user_data(layer.sub->surface)) : nullptr;
+            if (data && data->inputRegionEmpty) continue;
             // 内部菜单: enter 层自己的 wl_surface, 坐标以层原点为基。层可伸出
             // 父窗口边界 — 若改走父窗口 surface, 伸出部分产生越界的窗口相对
             // 坐标, 会被 winewayland 的 motion clamp (wayland_pointer.c
@@ -157,7 +168,7 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
                     out.originX = layerScrX;
                     out.originY = layerScrY;
                     out.scale = transform.scale;
-                    out.blockedModalId = tmgr_.FirstVisibleModalLocked(layer.toplevelId, desktopRootToplevelId_);
+                    out.blockedModalId = compositor_.FirstVisibleContentModalLocked(layer.toplevelId);
                     finalize();
                     return out.surface != nullptr;
                 }
@@ -174,7 +185,7 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
                     out.originX = layer.x;
                     out.originY = layer.y;
                     // WineHua: 命中 owner 暴露区 (菜单层归属 owner) → 拦
-                    out.blockedModalId = tmgr_.FirstVisibleModalLocked(layer.toplevelId, desktopRootToplevelId_);
+                    out.blockedModalId = compositor_.FirstVisibleContentModalLocked(layer.toplevelId);
                 }
                 // scale 保持默认 1 (恒等变换), content 保持默认 0 (不钳制)
                 finalize();
@@ -192,7 +203,7 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
                     out.scale = transform.scale;
                     contentW = transform.srcW;
                     contentH = transform.srcH;
-                    out.blockedModalId = tmgr_.FirstVisibleModalLocked(fullscreenId, desktopRootToplevelId_);
+                    out.blockedModalId = compositor_.FirstVisibleContentModalLocked(fullscreenId);
                     finalize();
                     return out.surface != nullptr;
                 }
@@ -222,7 +233,7 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
                 out.scale = 1.0;
                 // WineHua: 命中被模态禁用的 owner → 拦截 (吞点击+焦点切 modal)
                 out.blockedModalId = layer.toplevelId != rootId
-                    ? tmgr_.FirstVisibleModalLocked(layer.toplevelId, desktopRootToplevelId_)
+                    ? compositor_.FirstVisibleContentModalLocked(layer.toplevelId)
                     : 0;
                 finalize();
                 return out.surface != nullptr;
@@ -237,6 +248,25 @@ bool InputResolver::FindInputTargetAt(double logicalX, double logicalY, InputTar
     // scale 保持默认 1 (恒等), content 保持默认 0 (不钳制) — local = 桌面坐标
     finalize();
     return out.surface != nullptr;
+}
+
+wl_resource* InputResolver::ResolveKeyboardFocusSurface(uint32_t toplevelId,
+                                                       wl_resource* hitSurface)
+{
+    auto* owner = tmgr_.GetSurfaceForToplevel(toplevelId);
+    if (!owner || !IsSurfaceAlive(owner) || !IsSurfaceAlive(hitSurface)) return nullptr;
+    // Never infer ownership from a process ID or a recycled protocol ID.
+    // Each edge must still refer to its registered resource.
+    auto* current = hitSurface;
+    for (unsigned depth = 0; current && depth < 32; ++depth) {
+        if (!IsSurfaceAlive(current)) return nullptr;
+        auto* data = static_cast<SurfaceData*>(wl_resource_get_user_data(current));
+        if (!data || tmgr_.FindSurfaceResource(data->surfaceKey) != current) return nullptr;
+        if (current == owner) return owner;
+        if (!data->isSubsurface || !data->parentSurface) return nullptr;
+        current = data->parentSurface;
+    }
+    return nullptr;
 }
 
 bool InputResolver::IsSurfaceAlive(wl_resource* surface)
@@ -254,16 +284,14 @@ bool InputResolver::SurfaceLocalToDesktop(wl_resource* surface, double lx, doubl
     auto lk = tmgr_.Lock();
     const auto* st = tmgr_.FindToplevelLocked(tl);
     if (!st) return false;
-    // NOTE: 此处按 IsFullscreen() 判定, 与 FindInputTargetAt 的 fs-pick
-    // (fsPriority 最大者) 是两套全屏定义 — 显示模式切换时被连带标记的旧
-    // 窗口 IsFullscreen()=true 但非 fs-pick 选中。warp 请求 (SetCursorPos
-    // 回中等) 一般只针对当前前台窗口, 实际不冲突; 若未来观察到连带窗口
-    // warp 错位, 统一为 fs-pick 语义 (PickFullscreenLayerLocked 选中者)。
+    // Do not warp through a cascaded fullscreen window that is not displayed.
     if (st->IsFullscreen()) {
         // 与 FindInputTargetAt 全屏分支同一几何 (ComputeFullscreenFitLocked),
         // 保证 warp 锚点与输入逆映射互为正反变换
         int rootW, rootH;
         ResolveRootSize(rootW, rootH);
+        const auto layers = compositor_.BuildLayerListLocked(rootW, rootH);
+        if (compositor_.PickFullscreenLayerLocked(layers) != tl) return false;
         FitRect transform;
         if (!compositor_.ComputeFullscreenFitLocked(tl, rootW, rootH, transform)) return false;
         dx = transform.offX + lx * transform.scale;

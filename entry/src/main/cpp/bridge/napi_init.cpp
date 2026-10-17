@@ -40,6 +40,7 @@
 #include <fcntl.h>
 #include <cstdlib>
 #include <cstdio>
+#include <mutex>
 #include <cerrno>
 #include <cstring>
 #include <string>
@@ -54,6 +55,16 @@
 #define LOG_DOMAIN 0x0000
 #define LOG_TAG "WL_NAPI"
 #include <hilog/log.h>
+
+// ---- Runtime diagnostics and graphics policy ----
+#include "common/fps_counter.h"
+#include "common/perf_utils.h"
+#include "common/frame_loop_diagnostics.h"
+#include "common/displayed_fps.h"
+#include "common/app_log.h"
+#include "graphics/host_vulkan_probe.h"
+#include "graphics/graphics_profile.h"
+
 
 // -- 全局状态 (NAPI 层, 被 wine_process / wine_launch 引用) --
 napi_threadsafe_function gStateTsfn = nullptr;
@@ -397,7 +408,8 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
         // 设置页 "Wine 语言": 仅接受白名单值, 非法/缺省保持 zh_CN
         char wineLang[16] = {};
         napi_get_value_string_utf8(env, args[7], wineLang, sizeof(wineLang), nullptr);
-        if (!strcmp(wineLang, "zh_CN") || !strcmp(wineLang, "en_US"))
+        if (!strcmp(wineLang, "zh_CN") || !strcmp(wineLang, "zh_TW") ||
+            !strcmp(wineLang, "ja_JP") || !strcmp(wineLang, "en_US"))
             p->wineLang = wineLang;
     }
     if (argc >= 10) {
@@ -423,6 +435,8 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
         napi_create_int32(env, -1, &failed);
         return failed;
     }
+    // WineHua's NCP route and desktop consumer are independent explicit
+    // controls. Preserve both caller values; neither selects the guest driver.
     // 向后兼容: 旧调用未传 homeDir 时使用默认路径
     if (p->homeDir.empty()) {
         p->homeDir = "/storage/Users/currentUser/Download";
@@ -446,8 +460,6 @@ static napi_value LaunchClient(napi_env env, napi_callback_info info) {
     p->sockName = (pos == std::string::npos) ? p->sockPath : p->sockPath.substr(pos + 1);
     pos = p->exePath.find_last_of('/');
     p->winehuaBin = (pos != std::string::npos) ? p->exePath.substr(0, pos) : p->exePath;
-
-    signal(SIGCHLD, sigchld_handler);
 
     // 启动后台线程: wineserver -> wineboot --init
     std::thread(LaunchThreadFunc, p).detach();
@@ -1237,6 +1249,319 @@ static napi_value KillProcess(napi_env env, napi_callback_info info) {
 }
 
 // -- 模块注册 --
+
+// ================= VPP product surface (ported from VintagePomeloPro main) =================
+static napi_value BooleanResult(napi_env env, bool value) {
+    napi_value result;
+    napi_get_boolean(env, value, &result);
+    return result;
+}
+
+static bool SetHostGraphicsEnv(const char* key, std::string_view value) {
+    // std::string_view does not guarantee a trailing NUL. Profiles currently
+    // come from literals, but copying here keeps this boundary correct if a
+    // generated or sliced profile is introduced later.
+    const std::string stableValue(value);
+    if (setenv(key, stableValue.c_str(), 1) == 0) return true;
+    OH_LOG_ERROR(LOG_APP,
+                 "[NAPI] graphics environment apply failed key=%{public}s errno=%{public}d",
+                 key, errno);
+    return false;
+}
+
+
+// VPP: legacy shadow-profile store (setHostShadowProfile interplay)
+static std::string gLegacyHostShadowProfile;
+std::string GetStringArgument(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) return "";
+    size_t length = 0;
+    napi_get_value_string_utf8(env, args[0], nullptr, 0, &length);
+    std::string value(length + 1, '\0');
+    napi_get_value_string_utf8(env, args[0], value.data(), value.size(), &length);
+    value.resize(length);
+    return value;
+}
+
+static bool ApplyHostGraphicsProfile(const winehua::HostGraphicsProfile& profile) {
+    bool applied = true;
+    applied &= SetHostGraphicsEnv("WINEHUA_GRAPHICS_PROFILE", profile.name);
+    applied &= SetHostGraphicsEnv("WINEHUA_VENUS_PRESENT_MODE", profile.presentMode);
+    applied &= SetHostGraphicsEnv("WINEHUA_VIRGL_HOST_PRESENT_MODE", profile.presentMode);
+    applied &= SetHostGraphicsEnv("VKR_WINEHUA_SHADOW_FROM_HOST", profile.shadowMode);
+    applied &= SetHostGraphicsEnv("VKR_WINEHUA_SHADOW_TRACE", profile.shadowSelector);
+    applied &= SetHostGraphicsEnv("VKR_WINEHUA_SHADOW_MERGE_RANGES",
+                                  profile.mergeShadowRanges ? "1" : "0");
+    applied &= SetHostGraphicsEnv("VKR_WINEHUA_GPU_UPLOAD_WAIT",
+                                  profile.waitGpuUpload ? "1" : "0");
+    applied &= SetHostGraphicsEnv("VKR_WINEHUA_DESCRIPTOR_UPDATE_SERIALIZE",
+                                  profile.serializeDescriptorUpdates ? "1" : "0");
+    applied &= SetHostGraphicsEnv("VN_WINEHUA_DEFER_SHMEM_UNREF",
+                                  profile.deferSharedMemoryUnref ? "1" : "0");
+    /* Keep the App-side control plane separate from renderer environment.
+     * Phone hosts run in this process, so virgl_child's derived renderer
+     * settings must not change the profile observed by a later EnsureStarted. */
+    applied &= SetHostGraphicsEnv("WINEHUA_VIRGL_HOST_SHADOW_MODE",
+                                  profile.shadowMode);
+    applied &= SetHostGraphicsEnv("WINEHUA_VIRGL_HOST_SHADOW_SELECTOR",
+                                  profile.shadowSelector);
+    applied &= SetHostGraphicsEnv("WINEHUA_VIRGL_HOST_SHADOW_MERGE_RANGES",
+                                  profile.mergeShadowRanges ? "1" : "0");
+    applied &= SetHostGraphicsEnv("WINEHUA_VIRGL_HOST_GPU_UPLOAD_WAIT",
+                                  profile.waitGpuUpload ? "1" : "0");
+    applied &= SetHostGraphicsEnv("WINEHUA_VIRGL_HOST_DESCRIPTOR_UPDATE_SERIALIZE",
+                                  profile.serializeDescriptorUpdates ? "1" : "0");
+    applied &= SetHostGraphicsEnv("WINEHUA_VIRGL_HOST_PERF_SUMMARY",
+                                  profile.perfSummary ? "1" : "0");
+
+    if (!applied) return false;
+
+    const char* gpuUpload = profile.gpuUpload == winehua::GpuUploadPolicy::Disabled
+        ? "0" : (profile.gpuUpload == winehua::GpuUploadPolicy::Cpu ? "cpu" : "auto");
+    OH_LOG_INFO(LOG_APP,
+                "[NAPI] graphics profile=%{public}s mode=%{public}s "
+                "selector=%{public}s perf_summary=%{public}s "
+                "gpu_upload=%{public}s upload_wait=%{public}s "
+                "descriptor_serialize=%{public}s defer_shmem_unref=%{public}s",
+                profile.name.data(), profile.shadowMode.data(),
+                profile.shadowSelector.data(), profile.perfSummary ? "1" : "0",
+                gpuUpload, profile.waitGpuUpload ? "1" : "0",
+                profile.serializeDescriptorUpdates ? "1" : "0",
+                profile.deferSharedMemoryUnref ? "1" : "0");
+    return true;
+}
+
+static napi_value SetHostGraphicsExperimentForLab(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = {};
+    if (napi_get_cb_info(env, info, &argc, args, nullptr, nullptr) != napi_ok ||
+        argc < 2) {
+        return BooleanResult(env, false);
+    }
+    char experimentId[96] = {};
+    char backendName[64] = {};
+    if (napi_get_value_string_utf8(env, args[0], experimentId,
+                                   sizeof(experimentId), nullptr) != napi_ok ||
+        napi_get_value_string_utf8(env, args[1], backendName,
+                                   sizeof(backendName), nullptr) != napi_ok) {
+        return BooleanResult(env, false);
+    }
+
+    winehua::ProductGraphicsPolicy experiment;
+    const winehua::D3dBackendKind backend =
+        winehua::ParseD3dBackend(backendName);
+    if (!winehua::ResolveLabGraphicsExperiment(
+            experimentId, backend, &experiment)) {
+        OH_LOG_ERROR(LOG_APP,
+                     "[NAPI] invalid graphics LAB experiment=%{public}s "
+                     "backend=%{public}s",
+                     experimentId, backendName);
+        return BooleanResult(env, false);
+    }
+    if (experiment.guest.directVulkan && PhoneAdapter_IsPhoneMode()) {
+        OH_LOG_ERROR(LOG_APP, "[NAPI] Direct LAB route requires tablet NCP support");
+        return BooleanResult(env, false);
+    }
+#if !defined(__aarch64__) || defined(WINEHUA_WINE_ARCH_IS_X86_64)
+    if (experiment.guest.directVulkan) return BooleanResult(env, false);
+#endif
+    const bool applied = ApplyHostGraphicsProfile(experiment.host);
+    if (applied) gLegacyHostShadowProfile.clear();
+    return BooleanResult(env, applied);
+}
+
+static napi_value SetHostGraphicsBackend(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    char backendName[64] = {};
+    if (argc >= 1)
+        napi_get_value_string_utf8(env, args[0], backendName, sizeof(backendName), nullptr);
+
+    const winehua::D3dBackendKind backend = winehua::ParseD3dBackend(backendName);
+    winehua::ProductGraphicsPolicy policy;
+    if (!winehua::ResolveProductGraphicsPolicy(backend, &policy)) {
+        OH_LOG_ERROR(LOG_APP, "[NAPI] unknown graphics backend=%{public}s", backendName);
+        return BooleanResult(env, false);
+    }
+    OH_LOG_INFO(LOG_APP,
+                "[NAPI] graphics backend=%{public}s route=%{public}s transport=%{public}s verified=%{public}d preciseMaps=%{public}d",
+                backendName, policy.route.data(), policy.guest.directVulkan ? "direct" : "venus",
+                winehua::IsProductDirectVulkanVerified() ? 1 : 0,
+                policy.guest.directPreciseMaps ? 1 : 0);
+    const bool applied = ApplyHostGraphicsProfile(policy.host);
+    if (applied) gLegacyHostShadowProfile.clear();
+    return BooleanResult(env, applied);
+}
+
+static napi_value RunHostVulkanProbe(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2] = {};
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint64_t surfaceId = 0;
+    bool lossless = false;
+    char runId[128] = {};
+    if (argc < 2 ||
+        napi_get_value_bigint_uint64(env, args[0], &surfaceId, &lossless) != napi_ok || !lossless ||
+        napi_get_value_string_utf8(env, args[1], runId, sizeof(runId), nullptr) != napi_ok) {
+        napi_value result;
+        napi_get_boolean(env, false, &result);
+        return result;
+    }
+    bool started = StartHostVulkanProbe(surfaceId, runId);
+    OH_LOG_INFO(LOG_APP, "[HostVulkan] start surface=%{public}llu run=%{public}s result=%{public}s",
+                static_cast<unsigned long long>(surfaceId), runId, started ? "true" : "false");
+    napi_value result;
+    napi_get_boolean(env, started, &result);
+    return result;
+}
+
+static napi_value StopHostVulkanProbeNapi(napi_env env, napi_callback_info) {
+    StopHostVulkanProbe();
+    napi_value result;
+    napi_get_boolean(env, true, &result);
+    return result;
+}
+
+static napi_value GetHostGpuNameNapi(napi_env env, napi_callback_info) {
+    const std::string name = ProbeGpuDeviceName();
+    napi_value result;
+    napi_create_string_utf8(env, name.c_str(), NAPI_AUTO_LENGTH, &result);
+    OH_LOG_INFO(LOG_APP, "[HostVulkan] gpuName=%{public}s", name.c_str());
+    return result;
+}
+
+static napi_value RefreshRenderer(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 1) {
+        OH_LOG_ERROR(LOG_APP, "[MW-NAPI] refreshRenderer: need toplevelId");
+        return nullptr;
+    }
+    uint32_t tid = 0;
+    napi_get_value_uint32(env, args[0], &tid);
+    PluginManager::GetInstance()->RefreshRenderer(tid);
+    return nullptr;
+}
+
+static napi_value SetRendererPaused(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value args[2];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 2) return nullptr;
+    uint32_t tl; bool paused;
+    napi_get_value_uint32(env, args[0], &tl);
+    napi_get_value_bool(env, args[1], &paused);
+    PluginManager::GetInstance()->SetRendererPaused(tl, paused);
+    return nullptr;
+}
+
+static napi_value WineTextInputPreedit(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = { nullptr };
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    char text[4096] = {};
+    if (argc >= 1 && args[0] != nullptr) {
+        size_t len = 0;
+        napi_get_value_string_utf8(env, args[0], text, sizeof(text), &len);
+    }
+    // 预上屏光标放在 UTF-8 末尾 (字节偏移), 避免把 JS UTF-16 下标误当字节数。
+    int32_t end = static_cast<int32_t>(strlen(text));
+    TextInput::GetInstance()->SendPreeditString(text, 0, end);
+    const bool delivered = true; // theirs API returns void
+    napi_value result;
+    napi_get_boolean(env, delivered, &result);
+    return result;
+}
+
+static napi_value WineTextInputCommit(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = { nullptr };
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    char text[4096] = {};
+    if (argc >= 1 && args[0] != nullptr) {
+        size_t len = 0;
+        napi_get_value_string_utf8(env, args[0], text, sizeof(text), &len);
+    }
+    TextInput::GetInstance()->SendCommitString(text);
+    const bool delivered = true; // theirs API returns void
+    napi_value result;
+    napi_get_boolean(env, delivered, &result);
+    return result;
+}
+
+static napi_value WineTextInputEnabled(napi_env env, napi_callback_info) {
+    napi_value result;
+    napi_get_boolean(env, true, &result); // theirs API has no IsEnabled
+    return result;
+}
+
+static napi_value WineTextInputSetArmed(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = { nullptr };
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    bool armed = false;
+    if (argc >= 1 && args[0] != nullptr) napi_get_value_bool(env, args[0], &armed);
+    (void)armed; // theirs API has no SetArmed
+    return nullptr;
+}
+
+static napi_value InitAppLog(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1] = { nullptr };
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    char path[1024] = {};
+    if (argc >= 1 && args[0] != nullptr) {
+        size_t len = 0;
+        napi_get_value_string_utf8(env, args[0], path, sizeof(path), &len);
+    }
+    WineHuaLogInit(path);
+    return nullptr;
+}
+
+static napi_value ClearNativeLog(napi_env env, napi_callback_info info) {
+    WineHuaLogClear();
+    return nullptr;
+}
+
+static napi_value SetFrameLoopDiagnosticsNapi(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    bool enabled = false;
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc != 1 || napi_get_value_bool(env, args[0], &enabled) != napi_ok) {
+        napi_throw_type_error(env, nullptr, "setFrameLoopDiagnostics requires a boolean");
+        return nullptr;
+    }
+    winehua::SetFrameLoopDiagnostics(enabled);
+    OH_LOG_INFO(LOG_APP, "[FRAME-LOOP] diagnostics=%{public}s", enabled ? "on" : "off");
+    napi_value result;
+    napi_get_undefined(env, &result);
+    return result;
+}
+
+static napi_value GetDisplayFps(napi_env env, napi_callback_info info) {
+    size_t argc = 1;
+    napi_value args[1];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    uint32_t id = 0;
+    if (argc >= 1) napi_get_value_uint32(env, args[0], &id);
+    double fps = static_cast<double>(DisplayFpsRegistry::Instance().Get(id));
+    // Renderers run in a separate process. Read only this window's recent
+    // sample; a Steam/background window must not overwrite the game's HUD.
+    if (!id) id = WaylandServer::GetInstance()->GetDesktopRootToplevelId();
+    winehua::ReadDisplayedFpsSample(winehua::kDisplayedFpsBasePath, id,
+                                   winehua::PerfNowUs(), fps);
+
+    napi_value result;
+    napi_create_double(env, fps, &result);
+    return result;
+}
+
+
 EXTERN_C_START
 static napi_value CaptureNativePerformance(napi_env env, napi_callback_info) {
     napi_value result;
@@ -1279,13 +1604,17 @@ static napi_value Init(napi_env env, napi_value exports) {
     // spawn 之后的判活/杀/等待操作里 (此时 IsForkBackend 已由 setPhoneMode
     // 正确置位)
     RegisterNcpExitCallback();
+    if (!EnsureChildReaper())
+        OH_LOG_ERROR(LOG_APP, "[ProcReg] child reaper initialization failed");
 
     napi_property_descriptor desc[] = {
         {"captureNativePerformance", nullptr, CaptureNativePerformance, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runDirectVulkanProbe", nullptr, winehua::direct::RunVulkanProbe,
              nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runPhoneSharedBufferProbe", nullptr, winehua::direct::RunPhoneSharedBufferProbe,
-             nullptr, nullptr, nullptr, napi_default, nullptr},
+            nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"probeProductDirectSupport", nullptr, winehua::direct::ProbeProductDirectSupport,
+            nullptr, nullptr, nullptr, napi_default, nullptr},
         {"preparePhoneDirectForkServer", nullptr, winehua::direct::PreparePhoneDirectForkServer,
              nullptr, nullptr, nullptr, napi_default, nullptr},
         {"runDirectVulkanForkServerProbe", nullptr, winehua::direct::RunVulkanForkServerProbe,
@@ -1405,6 +1734,24 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"controllerGetSocketPath", nullptr, ControllerGetSocketPath, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"controllerSetOutputMode", nullptr, ControllerSetOutputMode, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"controllerGetOutputMode", nullptr, ControllerGetOutputMode, nullptr, nullptr, nullptr, napi_default, nullptr},
+        // ---- Runtime compatibility exports ----
+        {"setHostGraphicsExperimentForLab", nullptr, SetHostGraphicsExperimentForLab, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setHostGraphicsBackend", nullptr, SetHostGraphicsBackend, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"runHostVulkanProbe", nullptr, RunHostVulkanProbe, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"stopHostVulkanProbe", nullptr, StopHostVulkanProbeNapi, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"getHostGpuName", nullptr, GetHostGpuNameNapi, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"refreshRenderer", nullptr, RefreshRenderer, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setRendererPaused", nullptr, SetRendererPaused, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"wineTextInputPreedit", nullptr, WineTextInputPreedit, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"wineTextInputCommit", nullptr, WineTextInputCommit, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"wineTextInputEnabled", nullptr, WineTextInputEnabled, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"wineTextInputSetArmed", nullptr, WineTextInputSetArmed, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"initAppLog", nullptr, InitAppLog, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"clearNativeLog", nullptr, ClearNativeLog, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"getDisplayFps", nullptr, GetDisplayFps, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"setFrameLoopDiagnostics", nullptr, SetFrameLoopDiagnosticsNapi, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"controllerSetStick", nullptr, ControllerSetStick, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"controllerSetTrigger", nullptr, ControllerSetTrigger, nullptr, nullptr, nullptr, napi_default, nullptr},
     };
     napi_define_properties(env, exports, sizeof(desc) / sizeof(desc[0]), desc);
 

@@ -33,8 +33,13 @@ BOX64_SRC="$ROOT/thirdparty/box64"
 BUILD="$BUILD_DIR/box64-pe"
 
 test -d "$BOX64_SRC/wine/wow64" || err "box64 源码缺失 wow64 支持: $BOX64_SRC/wine/wow64 (git submodule update --init)"
-command -v aarch64-linux-gnu-gcc >/dev/null 2>&1 \
-    || err "缺少 aarch64-linux-gnu-gcc (顶层 box64 configure 用; apt install gcc-aarch64-linux-gnu)"
+BOX64_CONFIGURE_CC="${BOX64_CONFIGURE_CC:-aarch64-linux-gnu-gcc}"
+command -v "$BOX64_CONFIGURE_CC" >/dev/null 2>&1 \
+    || err "缺少 $BOX64_CONFIGURE_CC (仅顶层 box64 configure 用)"
+case "$("$BOX64_CONFIGURE_CC" -dumpmachine)" in
+    aarch64*-linux-gnu*) ;;
+    *) err "BOX64_CONFIGURE_CC must target AArch64 GNU/Linux" ;;
+esac
 test -x "$LLVM_MINGW/bin/aarch64-w64-mingw32-clang" || err "llvm-mingw 缺失 aarch64-w64-mingw32-clang: $LLVM_MINGW"
 test -x "$LLVM_MINGW/bin/aarch64-w64-mingw32-dlltool" || err "llvm-mingw 缺失 aarch64-w64-mingw32-dlltool: $LLVM_MINGW"
 
@@ -55,7 +60,7 @@ cd "$BUILD"
 if [ ! -f CMakeCache.txt ]; then
     log "--- cmake configure (box64 wow64) ---"
     cmake -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+        -DCMAKE_C_COMPILER="$BOX64_CONFIGURE_CC" \
         -DARM_DYNAREC=ON \
         -DWOW64=ON \
         "$BOX64_SRC"

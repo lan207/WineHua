@@ -34,6 +34,8 @@ export COMPATIBLE_SDK_VERSION
 # Wine 模拟层架构 (arm64 真机 → aarch64 原生 wine + FEX; x86_64 → x86_64 同目标)
 WINE_ARCH ?= $(if $(filter arm64-v8a,$(NATIVE_ARCH)),aarch64,x86_64)
 export WINE_ARCH
+FEX_EXACTSTORE_DIAGNOSTICS ?= 0
+export FEX_EXACTSTORE_DIAGNOSTICS
 
 CONFIG    := $(NATIVE_ARCH)
 BUILD_DIR := $(ROOT)/build
@@ -105,6 +107,7 @@ ARCHES := $(NATIVE_ARCH)
 DEPS_SENTINEL   := $(BUILD_DIR)/sysroot-ext/usr/lib/$(WINE_ARCH)-linux-ohos/libfreetype.so.6
 WINE_SENTINEL   := $(BUILD_DIR)/wine-native/tools/winegcc/winegcc
 GUEST_GFX_SENTINEL := $(BUILD_DIR)/guest_gfx/$(GUEST_ARCH)/winehua-guest-gfx.env
+MESA_OHOS_PATCH_INPUTS := $(SCRIPTS)/apply_mesa_ohos_patches.sh $(wildcard $(ROOT)/patches/mesa/*.patch)
 GUEST_VULKAN_SENTINEL := $(BUILD_DIR)/guest_vulkan/$(GUEST_ARCH)/manifest.json
 WINE_MONO_SENTINEL := $(BUILD_DIR)/wine-mono/wine-mono-11.1.0-x86.msi
 HOST_VULKAN_SOURCE := $(ROOT)/smoke/venus_heaven_material_replay.c
@@ -133,7 +136,7 @@ WINE_SMOKE_EXES := $(foreach p,$(WINE_SMOKE_PROGRAMS), \
 	$(BUILD_DIR)/wine-ohos-$(WINE_ARCH)/programs/$(p)/i386-windows/$(p).exe)
 # 源码型用例跟踪 smoke/ 全树; 产物型用例 (from_wine/from_vkd3d) 跟踪
 # 代表产物与 stamp, 重编后触发载荷重建, 防止 assemble 拷到陈旧 exe
-SMOKE_PAYLOAD_INPUTS := $(shell find $(ROOT)/smoke -maxdepth 3 -type f 2>/dev/null) \
+SMOKE_PAYLOAD_INPUTS := $(ROOT)/automation/smoke.py $(shell find $(ROOT)/smoke -maxdepth 3 -type f 2>/dev/null) \
 	$(WINE_SMOKE_EXES) \
 	$(VKD3D_PROTON_STAMP)
 
@@ -164,7 +167,7 @@ dxvk: $(DXVK_STAMP)
 # arm64x 链接引用 wine 构建的 import lib (dlls/vulkan-1/aarch64-windows/libvulkan-1.a):
 # 必须显式前置 wine stamp, 否则干净环境 (无残留 build/) 中 dxvk 先于 wine 构建
 # → 链接失败 (CI 实测 2026-09-04: "no such file ... libvulkan-1.a")。
-$(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(SCRIPTS)/build_dxvk_arm64x.sh $(DXVK_SOURCE_INPUTS) \
+$(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(SCRIPTS)/build_dxvk_arm64x.sh $(DXVK_SOURCE_INPUTS) $(SCRIPTS)/arm64x_build_cache.sh \
 	$(STAMPS)/wine-$(CONFIG)-$(WINE_ARCH) | $(STAMPS)
 	@echo "=== dxvk legacy ($(WINE_ARCH)) ==="
 	bash $(SCRIPTS)/build_dxvk.sh
@@ -185,7 +188,7 @@ $(DXVK_ARTIFACTS): $(DXVK_STAMP)
 .PHONY: dxvk-modern
 dxvk-modern: $(DXVK_MODERN_STAMP)
 
-$(DXVK_MODERN_STAMP): $(SCRIPTS)/build_dxvk_modern.sh $(SCRIPTS)/build_dxvk_modern_arm64x.sh $(DXVK_MODERN_SOURCE_INPUTS) \
+$(DXVK_MODERN_STAMP): $(SCRIPTS)/build_dxvk_modern.sh $(SCRIPTS)/build_dxvk_modern_arm64x.sh $(DXVK_MODERN_SOURCE_INPUTS) $(SCRIPTS)/arm64x_build_cache.sh \
 	$(STAMPS)/wine-$(CONFIG)-$(WINE_ARCH) | $(STAMPS)
 	@echo "=== dxvk modern 2.6 ($(WINE_ARCH)) ==="
 	bash $(SCRIPTS)/build_dxvk_modern.sh
@@ -260,10 +263,15 @@ $(foreach a,arm64-v8a x86_64,$(eval $(call host_vulkan_rule,$(a))))
 # ============================================================
 # deps — 交叉编译依赖 → build/sysroot-ext/ (架构无关)
 # ============================================================
-.PHONY: deps
+.PHONY: deps host-wayland-scanner
+# A shared order-only prerequisite serializes the host-tool bootstrap under make -j.
+host-wayland-scanner:
+	bash $(SCRIPTS)/build_wayland.sh --scanner-only
+
 deps: $(STAMPS)/deps
 
-$(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/build_gstreamer.sh \
+$(STAMPS)/deps: $(SCRIPTS)/build_zlib_runtime.sh $(SCRIPTS)/verify_release_archive.py $(ROOT)/docs/migration/gnutls-archives.lock.json $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/build_gstreamer.sh \
+	$(MESA_OHOS_PATCH_INPUTS) \
 	$(SCRIPTS)/build_ohos_guest_gfx.sh \
 	$(SCRIPTS)/build_ohos_guest_vulkan.sh $(ROOT)/smoke/guest_vulkan_smoke.c \
 	$(ROOT)/smoke/venus_sampled_image_probe.c \
@@ -293,7 +301,7 @@ $(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/b
 	$(ROOT)/smoke/venus_spirv_replay.c \
 	$(wildcard $(ROOT)/replay_spv/CS_*.remapped.spv) \
 	$(ROOT)/smoke/venus_separated_sample.comp \
-	$(SCRIPTS)/env.sh FORCE | $(STAMPS)
+	$(SCRIPTS)/env.sh FORCE | $(STAMPS) host-wayland-scanner
 	@guest_gfx_ready=1; \
 	if [ "$(BUILD_GUEST_GFX)" = "1" ] && [ ! -f "$(GUEST_GFX_SENTINEL)" ]; then \
 	    guest_gfx_ready=0; \
@@ -309,8 +317,13 @@ $(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/b
 	if [ -f $@ ] && [ -f $(DEPS_SENTINEL) ] && [ "$$guest_gfx_ready" = "1" ] && \
 	    [ "$$guest_vulkan_ready" = "1" ] && [ "$$mono_ready" = "1" ] && \
 	    ! [ "$(SCRIPTS)/build_ohos_guest_gfx.sh" -nt $@ ] && \
+	    ! [ "$(SCRIPTS)/apply_mesa_ohos_patches.sh" -nt $@ ] && \
+	    ! find $(ROOT)/patches/mesa -type f -name '*.patch' -newer $@ 2>/dev/null | grep -q . && \
 	    ! [ "$(SCRIPTS)/build_ohos_guest_vulkan.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_gnutls.sh" -nt $@ ] && \
+	    ! [ "$(SCRIPTS)/build_zlib_runtime.sh" -nt $@ ] && \
+	    ! [ "$(SCRIPTS)/verify_release_archive.py" -nt $@ ] && \
+	    ! [ "$(ROOT)/docs/migration/gnutls-archives.lock.json" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_gstreamer.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_deps.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_libffi.sh" -nt $@ ] && \
@@ -375,10 +388,12 @@ $(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/b
 # → assemble 找不到 wine-ohos-x86_64。方案① (NATIVE_ARCH=x86_64) 无冲突但同样带后缀。
 wine: $(STAMPS)/wine-$(CONFIG)-$(WINE_ARCH)
 
-$(STAMPS)/wine-$(CONFIG)-$(WINE_ARCH): $(SCRIPTS)/build_wine.sh $(SCRIPTS)/env.sh $(STAMPS)/deps FORCE | $(STAMPS)
+$(STAMPS)/wine-$(CONFIG)-$(WINE_ARCH): $(SCRIPTS)/build_wine.sh $(SCRIPTS)/wine_build_identity.py $(SCRIPTS)/env.sh $(STAMPS)/deps FORCE | $(STAMPS)
+	@if [ -f "$@" ]; then mode=--check-cached-identity; else mode=--check-identity; fi; \
+	    BUILD_DIR="$(BUILD_DIR)" bash "$(SCRIPTS)/build_wine.sh" "$$mode"
 	@if [ -f $@ ] && [ -f $(WINE_SENTINEL) ] && \
 	    ! [ "$(SCRIPTS)/build_wine.sh" -nt $@ ] && \
-        ! find $(WINE_SRC) \
+        ! find "$(WINE_SRC)" \
 	           -newer $@ -type f \
 	           \( -name '*.c' -o -name '*.h' -o -name '*.cpp' -o -name '*.cc' \
 	              -o -name 'meson.build' -o -name 'CMakeLists.txt' \
@@ -400,14 +415,22 @@ $(STAMPS)/wine-$(CONFIG)-$(WINE_ARCH): $(SCRIPTS)/build_wine.sh $(SCRIPTS)/env.s
 # fex → assemble 缺 libarm64ecfex.dll。skip-touch 分支同样不落共享 stamp。
 fex: $(STAMPS)/fex-$(CONFIG)-$(WINE_ARCH)
 
-$(STAMPS)/fex-$(CONFIG)-$(WINE_ARCH): $(SCRIPTS)/build_fex.sh $(SCRIPTS)/env.sh FORCE | $(STAMPS)
+FEX_BUILD_INPUTS := $(SCRIPTS)/build_fex.sh $(SCRIPTS)/env.sh $(SCRIPTS)/check_fex_build_identity.sh $(wildcard $(SCRIPTS)/patches/fex-*.patch)
+$(STAMPS)/fex-$(CONFIG)-$(WINE_ARCH): $(FEX_BUILD_INPUTS) FORCE | $(STAMPS)
 	@if [ "$(WINE_ARCH)" = "x86_64" ]; then \
 	    echo "  [fex] skip (x86_64)"; \
 	    mkdir -p $(dir $@) && touch $@; \
 	elif [ -f $@ ] && \
 	    [ -f $(BUILD_DIR)/fex-ec/Bin/libarm64ecfex.dll ] && \
+	    [ -f $(BUILD_DIR)/fex-pe/Bin/libwow64fex.dll ] && \
+	    BUILD_DIR="$(BUILD_DIR)" FEX_SRC="$(FEX_SRC)" bash "$(SCRIPTS)/check_fex_build_identity.sh" check "$@" && \
 	    ! [ "$(SCRIPTS)/build_fex.sh" -nt $@ ] && \
-	    ! find $(ROOT)/thirdparty/fex \
+	    ! [ "$(SCRIPTS)/patches/fex-wow64-synthetic-return.patch" -nt $@ ] && \
+	    ! [ "$(SCRIPTS)/patches/fex-windows-jit-symbols.patch" -nt $@ ] && \
+	    ! [ "$(SCRIPTS)/patches/fex-windows-crt-file-open.patch" -nt $@ ] && \
+	    ! [ "$(SCRIPTS)/patches/fex-windows-jit-cost.patch" -nt $@ ] && \
+	    ! [ "$(SCRIPTS)/patches/fex-windows-file-loading.patch" -nt $@ ] && \
+	    ! find $(FEX_SRC) \
 	           -newer $@ -type f \
 	           \( -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.S' \
 	              -o -name 'CMakeLists.txt' -o -name '*.cmake' \) \
@@ -415,7 +438,8 @@ $(STAMPS)/fex-$(CONFIG)-$(WINE_ARCH): $(SCRIPTS)/build_fex.sh $(SCRIPTS)/env.sh 
 	    echo "  [fex] up to date"; \
 	else \
 	    echo "=== fex ==="; \
-	    bash $(SCRIPTS)/build_fex.sh && touch $@; \
+	    BUILD_DIR="$(BUILD_DIR)" FEX_SRC="$(FEX_SRC)" bash $(SCRIPTS)/build_fex.sh && \
+	    BUILD_DIR="$(BUILD_DIR)" FEX_SRC="$(FEX_SRC)" bash $(SCRIPTS)/check_fex_build_identity.sh write "$@" && touch $@; \
 	fi
 
 # ============================================================
@@ -477,6 +501,8 @@ $(STAMPS)/box64-wow64-$(CONFIG)-$(WINE_ARCH): $(SCRIPTS)/build_box64_wow64.sh $(
 .PHONY: native
 native: $(foreach a,$(ARCHES),$(STAMPS)/$(a)/native)
 
+VIRGL_OHOS_PATCH_INPUTS := $(SCRIPTS)/apply_virglrenderer_ohos_patches.sh $(wildcard $(ROOT)/patches/virglrenderer/*.patch)
+
 NATIVE_SENTINEL_arm64_v8a := $(ROOT)/entry/libs/arm64-v8a/libvirglrenderer.so.1
 NATIVE_SENTINEL_x86_64    := $(ROOT)/entry/libs/x86_64/libvirglrenderer.so.1
 
@@ -484,7 +510,7 @@ define native_rule
 .PHONY: native-$(1)
 native-$(1): $$(STAMPS)/$(1)/native
 
-$$(STAMPS)/$(1)/native: $(SCRIPTS)/build_native.sh $(SCRIPTS)/env.sh FORCE | $$(STAMPS)/$(1)
+$$(STAMPS)/$(1)/native: $(SCRIPTS)/build_native.sh $(SCRIPTS)/build_wayland.sh $(SCRIPTS)/env.sh $(VIRGL_OHOS_PATCH_INPUTS) FORCE | $$(STAMPS)/$(1) host-wayland-scanner
 	@sentinel="$(NATIVE_SENTINEL_$(subst -,_,$(1)))"; \
 	libs_dir="$(ROOT)/entry/libs/$(1)"; \
 		if [ -f $$@ ] && [ -f "$$$$sentinel" ] && \
@@ -495,6 +521,9 @@ $$(STAMPS)/$(1)/native: $(SCRIPTS)/build_native.sh $(SCRIPTS)/env.sh FORCE | $$(
 		    [ -f "$$$$libs_dir/libffi.so.8" ] && \
 		    [ -f "$$$$libs_dir/libwinehua_vtest_server.so" ] && \
 	    ! [ "$(SCRIPTS)/build_native.sh" -nt $$@ ] && \
+	    ! [ "$(SCRIPTS)/build_wayland.sh" -nt $$@ ] && \
+	    ! [ "$(SCRIPTS)/apply_virglrenderer_ohos_patches.sh" -nt $$@ ] && \
+	    ! find $(ROOT)/patches/virglrenderer -type f -name '*.patch' -newer $$@ 2>/dev/null | grep -q . && \
 	    ! find $(ROOT)/thirdparty/wayland \
 	           $(ROOT)/thirdparty/libffi \
 	           $(ROOT)/thirdparty/libepoxy \
@@ -561,8 +590,55 @@ arm64ec-release-gate:
 # test: 宿主机单元测试 (纯函数, 不依赖 OHOS SDK, 用宿主 g++ 编译)
 # ============================================================
 HOST_TEST_DIR := $(BUILD_DIR)/host_tests
+FEX_SRC ?= $(ROOT)/thirdparty/fex
 
-.PHONY: test-direct-viewport
+.PHONY: test-direct-viewport test-direct-session test-venus-present-retry test-wine-image-policy
+
+test-wine-image-policy:
+	@mkdir -p $(HOST_TEST_DIR)
+	g++ -std=c++17 -Wall -Wextra -Werror -no-pie -I$(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/wine_image_policy_test $(ROOT)/host_tests/wine_image_policy_test.cpp
+	$(HOST_TEST_DIR)/wine_image_policy_test
+
+test: test-wine-image-policy
+.PHONY: test-wine-broker-argv test-wined3d-legacy-alpha
+test: test-wine-broker-argv test-wined3d-legacy-alpha
+test-wine-broker-argv:
+	python3 $(ROOT)/host_tests/wine_broker_argv_test.py
+test-wined3d-legacy-alpha:
+	python3 $(ROOT)/host_tests/wined3d_legacy_alpha_test.py
+.PHONY: test-venus-low-map
+test-venus-low-map:
+	python3 $(ROOT)/host_tests/venus_low_map_test.py
+
+.PHONY: test-venus-native-present
+test-venus-native-present:
+	python3 $(ROOT)/host_tests/venus_native_present_test.py
+
+test-venus-present-retry:
+	python3 $(ROOT)/host_tests/venus_present_retry_test.py
+
+test-direct-session:
+	@mkdir -p $(HOST_TEST_DIR)
+	g++ -std=c++17 -Wall -Wextra -Werror -I $(ROOT)/host_tests/stubs -I $(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/display_cadence_test $(ROOT)/host_tests/display_cadence_test.cpp
+	$(HOST_TEST_DIR)/display_cadence_test
+	g++ -std=c++17 -Wall -Wextra -Werror -I $(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/direct_frame_stats_test $(ROOT)/host_tests/direct_frame_stats_test.cpp
+	$(HOST_TEST_DIR)/direct_frame_stats_test
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/graphics_policy_test $(ROOT)/host_tests/graphics_policy_test.cpp \
+	    $(ROOT)/entry/src/main/cpp/graphics/graphics_profile.cpp \
+	    $(ROOT)/entry/src/main/cpp/graphics/virgl_host_config.cpp
+	$(HOST_TEST_DIR)/graphics_policy_test
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
+	    -o $(HOST_TEST_DIR)/direct_session_env_test $(ROOT)/host_tests/direct_session_env_test.cpp \
+	    $(ROOT)/entry/src/main/cpp/proc/wine_spawn_compatibility.cpp \
+	    $(ROOT)/entry/src/main/cpp/wine/env_profiles.cpp \
+	    $(ROOT)/entry/src/main/cpp/wine/dll_overrides.cpp \
+	    $(ROOT)/entry/src/main/cpp/graphics/graphics_profile.cpp
+	$(HOST_TEST_DIR)/direct_session_env_test
+
 test-direct-viewport:
 	@mkdir -p $(HOST_TEST_DIR)
 	g++ -std=c++17 -Wall -Wextra -Werror -I $(ROOT)/entry/src/main/cpp \
@@ -576,6 +652,64 @@ test-benchmark-statistics:
 	$(HOST_TEST_DIR)/benchmark_statistics_test
 
 .PHONY: test
+.PHONY: test-wine-server-build
+test-wine-server-build:
+	python3 $(ROOT)/host_tests/wine_server_build_test.py
+
+test: test-wine-server-build
+
+.PHONY: test-fex-strict-mul24
+test-fex-strict-mul24:
+	python3 $(ROOT)/host_tests/fex_strict_mul24_test.py --fex-src $(FEX_SRC)
+
+.PHONY: test-fex-exact-store
+test-fex-exact-store:
+	python3 $(ROOT)/host_tests/fex_exact_store_test.py --fex-src $(FEX_SRC)
+	python3 $(ROOT)/host_tests/fex_exact_store_diagnostics_test.py
+	python3 $(ROOT)/host_tests/fex_build_identity_test.py
+
+.PHONY: test-gamepad-bridge
+test-gamepad-bridge:
+	python3 $(ROOT)/host_tests/gamepad_bridge_test.py
+
+.PHONY: test-gpu-followup
+test-gpu-followup:
+	@mkdir -p $(HOST_TEST_DIR)
+	g++ -std=c++17 -Wall -Wextra -Werror -I $(ROOT)/host_tests/stubs -I $(ROOT)/entry/src/main/cpp \
+	    $(ROOT)/host_tests/texture_upload_stats_test.cpp $(ROOT)/entry/src/main/cpp/common/perf_utils.cpp \
+	    -o $(HOST_TEST_DIR)/texture_upload_stats_test
+	$(HOST_TEST_DIR)/texture_upload_stats_test
+	python3 $(ROOT)/host_tests/gpu_owner_contract_test.py
+	python3 $(ROOT)/host_tests/gpu_scene_input_test.py
+	python3 $(ROOT)/host_tests/wine_build_identity_test.py
+	python3 $(ROOT)/host_tests/wine_graphics_capabilities_test.py
+	python3 $(ROOT)/host_tests/wine_make_identity_test.py
+
+.PHONY: test-steam-gpu-contracts
+test-steam-gpu-contracts:
+	python3 $(ROOT)/host_tests/steam_gpu_contract_test.py
+
+.PHONY: test-zc-binding-lifecycle
+test-zc-binding-lifecycle:
+	python3 $(ROOT)/host_tests/zc_binding_lifecycle_test.py
+
+.PHONY: test-egl-multi-consumer
+test-egl-multi-consumer:
+	python3 $(ROOT)/host_tests/egl_multi_consumer_test.py
+
+.PHONY: test-frame-loop-diagnostics test-cef-render-switches
+test-frame-loop-diagnostics:
+	@mkdir -p $(HOST_TEST_DIR)
+	g++ -std=c++17 -Wall -Wextra -Werror -I $(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/frame_loop_diagnostics_test $(ROOT)/host_tests/frame_loop_diagnostics_test.cpp
+	$(HOST_TEST_DIR)/frame_loop_diagnostics_test
+
+test-cef-render-switches:
+	@mkdir -p $(HOST_TEST_DIR)
+	g++ -std=c++17 -Wall -Wextra -Werror -I $(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/cef_render_switches_test $(ROOT)/host_tests/cef_render_switches_test.cpp
+	$(HOST_TEST_DIR)/cef_render_switches_test
+
 .PHONY: test-wine-surface-region-lock
 test-wine-surface-region-lock:
 	python3 $(ROOT)/host_tests/wine_surface_region_lock_test.py
@@ -584,7 +718,62 @@ test-wine-surface-region-lock:
 test-wine-patch-detection:
 	python3 $(ROOT)/host_tests/wine_patch_detection_test.py
 
-test: test-direct-viewport test-benchmark-statistics test-wine-surface-region-lock test-wine-patch-detection
+.PHONY: test-wine-large-address-aware
+test-wine-large-address-aware:
+	python3 $(ROOT)/host_tests/wine_large_address_aware_test.py --wine-src $(WINE_SRC)
+
+.PHONY: test-proton-stability
+test-proton-stability:
+	python3 $(ROOT)/host_tests/wine_proton_stability_test.py --wine-src $(WINE_SRC)
+	python3 $(ROOT)/host_tests/spawn_log_metadata_test.py
+
+.PHONY: test-broker-startup
+test-broker-startup:
+	python3 $(ROOT)/host_tests/broker_startup_contract_test.py --wine-src $(WINE_SRC)
+
+.PHONY: test-wine-shm-state-cache
+test-wine-shm-state-cache:
+	python3 $(ROOT)/host_tests/wine_shm_state_cache_test.py --wine-src $(WINE_SRC)
+	python3 $(ROOT)/host_tests/wayland_minimize_restore_test.py --wine-src $(WINE_SRC)
+	python3 $(ROOT)/host_tests/wayland_client_remap_test.py --wine-src $(WINE_SRC)
+	python3 $(ROOT)/host_tests/opengl_fshack_capability_test.py --wine-src $(WINE_SRC)
+	python3 $(ROOT)/host_tests/opengl_reserved_texture_test.py --wine-src $(WINE_SRC)
+	python3 $(ROOT)/host_tests/wine_activation_return_test.py --wine-src $(WINE_SRC)
+
+.PHONY: test-prefix-registry
+test-prefix-registry:
+	@mkdir -p $(HOST_TEST_DIR)
+	g++ -std=c++17 -Wall -Wextra -Werror -I $(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/prefix_registry_test $(ROOT)/host_tests/prefix_registry_test.cpp
+	$(HOST_TEST_DIR)/prefix_registry_test
+
+.PHONY: test-relative-pointer
+test-relative-pointer:
+	python3 $(ROOT)/host_tests/relative_pointer_regression_test.py
+	python3 $(ROOT)/host_tests/host_cursor_lock_test.py
+	@mkdir -p $(HOST_TEST_DIR)
+	g++ -std=c++17 -Wall -Wextra -Werror -Wno-unused-parameter -pthread \
+	    -I $(ROOT)/host_tests/stubs -I $(ROOT)/entry/src/main/cpp \
+	    $(ROOT)/host_tests/mouse_motion_queue_test.cpp \
+	    $(ROOT)/entry/src/main/cpp/compositor/input/input_queue.cpp \
+	    -o $(HOST_TEST_DIR)/mouse_motion_queue_test
+	$(HOST_TEST_DIR)/mouse_motion_queue_test
+
+.PHONY: test-text-input-focus
+test-text-input-focus:
+	bash $(SCRIPTS)/run_text_input_focus_tests.sh
+
+test: test-relative-pointer test-text-input-focus
+
+.PHONY: test-steam-client-args
+test-steam-client-args:
+	@mkdir -p $(HOST_TEST_DIR)
+	g++ -std=c++17 -Wall -Wextra -Werror -I $(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/steam_client_args_test $(ROOT)/host_tests/steam_client_args_test.cpp
+	$(HOST_TEST_DIR)/steam_client_args_test
+
+test: test-dll-overrides test-runtime-packaging test-wine-font-compat test-gpu-followup test-direct-viewport test-benchmark-statistics test-wine-surface-region-lock test-wine-patch-detection test-wine-large-address-aware test-proton-stability test-broker-startup test-wine-shm-state-cache test-prefix-registry test-steam-client-args test-shared-present-dispatch test-displayed-fps test-gamepad-bridge test-zc-binding-lifecycle test-egl-multi-consumer test-steam-gpu-contracts test-frame-loop-diagnostics test-cef-render-switches
+
 	@mkdir -p $(HOST_TEST_DIR)
 	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
 	    -o $(HOST_TEST_DIR)/geometry_test \
@@ -692,3 +881,231 @@ help:
 	@echo "  make clean     # 删除所有中间产物"
 	@echo ""
 	@echo "产物统一在 build/ 下"
+
+# ============================================================
+# hap-unsigned — unsigned CI/local packaging for the Proton runtime
+# Public CI has no device signing material. Never disguise unsigned output.
+# ============================================================
+.PHONY: hap-unsigned
+hap-unsigned: assemble
+	@echo "=== hap-unsigned ($(CONFIG)) ==="
+	bash $(SCRIPTS)/package.sh hap-unsigned
+	@echo ""
+	@echo "HAP(unsigned): $(ROOT)/entry/build/default/outputs/default/entry-default-unsigned.hap"
+	@ls -lh $(ROOT)/entry/build/default/outputs/default/entry-default-unsigned.hap 2>/dev/null || true
+
+.PHONY: test-shared-present-dispatch test-displayed-fps
+test-shared-present-dispatch:
+	python3 $(ROOT)/host_tests/shared_present_dispatch_test.py
+
+test-displayed-fps:
+	@mkdir -p $(HOST_TEST_DIR)
+	g++ -std=c++17 -Wall -Wextra -Werror -pthread -I $(ROOT)/entry/src/main/cpp \
+	    -o $(HOST_TEST_DIR)/displayed_fps_test $(ROOT)/host_tests/displayed_fps_test.cpp
+	$(HOST_TEST_DIR)/displayed_fps_test
+
+.PHONY: test-dll-overrides test-runtime-packaging test-arm64ec-seh
+test-arm64ec-seh:
+	python3 $(ROOT)/host_tests/seh_exit_thunk_test.py --wine-src $(WINE_SRC) \
+	    --toolchain $(if $(LLVM_MINGW),$(LLVM_MINGW),$(ROOT)/.temp/llvm-mingw-20260826-ucrt-ubuntu-22.04-x86_64)/bin
+
+test-dll-overrides:
+	@mkdir -p $(HOST_TEST_DIR)
+	g++ -std=c++17 -Wall -Wextra -I $(ROOT)/entry/src/main/cpp -I $(ROOT)/entry/src/main/cpp/wine \
+	    -o $(HOST_TEST_DIR)/dll_overrides_test $(ROOT)/host_tests/dll_overrides_test.cpp \
+	    $(ROOT)/entry/src/main/cpp/wine/dll_overrides.cpp \
+	    $(ROOT)/entry/src/main/cpp/wine/env_profiles.cpp \
+	    $(ROOT)/entry/src/main/cpp/graphics/graphics_profile.cpp
+	$(HOST_TEST_DIR)/dll_overrides_test
+
+test-runtime-packaging:
+	python3 $(ROOT)/host_tests/runtime_library_guard_test.py
+	python3 $(ROOT)/host_tests/wine_audio_contract_test.py
+
+.PHONY: test-wine-process-font-aa
+test: test-wine-process-font-aa
+test-wine-process-font-aa:
+	python3 $(ROOT)/host_tests/wine_process_font_aa_test.py
+
+.PHONY: test-wine-language-launch
+test: test-wine-language-launch
+test-wine-language-launch:
+	python3 $(ROOT)/host_tests/wine_language_launch_test.py
+
+.PHONY: test-opengl-wow64-buffer-flush
+test: test-opengl-wow64-buffer-flush
+
+.PHONY: test-opengl-present-storage test-virgl-gl31-contracts
+test: test-opengl-present-storage test-virgl-gl31-contracts
+test-opengl-present-storage:
+	python3 $(ROOT)/host_tests/virgl_explicit_present_test.py
+	python3 $(ROOT)/host_tests/pbuffer_front_storage_test.py
+test-virgl-gl31-contracts:
+	python3 $(ROOT)/host_tests/virgl_ubo_sysval_test.py
+	python3 $(ROOT)/host_tests/virgl_conditional_render_test.py
+	python3 $(ROOT)/host_tests/virgl_socket_transaction_test.py
+test-opengl-wow64-buffer-flush:
+	python3 $(ROOT)/host_tests/opengl_wow64_buffer_flush_test.py --wine-src $(WINE_SRC)
+
+.PHONY: test-wine-font-compat
+test-wine-font-compat:
+	python3 $(ROOT)/host_tests/wine_font_compat_test.py --wine-src $(WINE_SRC)
+
+.PHONY: test-wined3d-pixel-format test-winehua-perf test-wine-performance-summary
+test-wined3d-pixel-format:
+	python3 $(ROOT)/host_tests/wined3d_pixel_format_test.py --wine-src $(WINE_SRC)
+
+test-winehua-perf: test-wine-performance-summary
+
+test-wine-performance-summary:
+	python3 $(ROOT)/host_tests/winehua_perf_test.py --wine-src $(WINE_SRC)
+	python3 $(ROOT)/host_tests/winehua_perf_boundary_test.py --wine-src $(WINE_SRC)
+	python3 $(ROOT)/host_tests/winehua_upload_perf_test.py --wine-src $(WINE_SRC)
+
+.PHONY: test-wined3d-discard-map
+test: test-wined3d-discard-map
+test-wined3d-discard-map:
+	python3 $(ROOT)/host_tests/wined3d_discard_map_test.py --wine-src $(WINE_SRC)
+
+.PHONY: test-wined3d-dynamic-sysmem
+test: test-wined3d-dynamic-sysmem
+test-wined3d-dynamic-sysmem:
+	python3 $(ROOT)/host_tests/wined3d_dynamic_sysmem_test.py --wine-src $(WINE_SRC)
+
+.PHONY: test-virgl-shared-low-map
+test: test-virgl-shared-low-map
+test-virgl-shared-low-map:
+	python3 $(ROOT)/host_tests/virgl_shared_low_map_test.py --wine-src $(WINE_SRC)
+
+.PHONY: test-fex-wow64-synthetic-return
+test-fex-wow64-synthetic-return:
+	python3 $(ROOT)/host_tests/fex_wow64_synthetic_return_test.py
+
+.PHONY: test-fex-jit-symbols
+test-fex-jit-symbols:
+	python3 $(ROOT)/host_tests/fex_jit_symbols_test.py
+
+.PHONY: test-fex-crt-file-open
+test-fex-crt-file-open:
+	python3 $(ROOT)/host_tests/fex_crt_file_open_test.py
+
+.PHONY: test-winebus-ohos-poll
+test: test-winebus-ohos-poll
+test-winebus-ohos-poll:
+	python3 $(ROOT)/host_tests/winebus_ohos_poll_test.py --wine-src $(WINE_SRC)
+
+.PHONY: test-winehua-wgl-lock-wait
+test: test-winehua-wgl-lock-wait
+test-winehua-wgl-lock-wait:
+	python3 $(ROOT)/host_tests/winehua_wgl_lock_wait_test.py --wine-src $(WINE_SRC)
+
+.PHONY: test-controller-canonical
+test: test-controller-canonical
+test-controller-canonical:
+	@mkdir -p $(HOST_TEST_DIR)
+	g++ -std=c++17 -Wall -Wextra -Werror -I $(ROOT)/entry/src/main/cpp \
+	    $(ROOT)/host_tests/controller_merge_test.cpp $(ROOT)/entry/src/main/cpp/input/controller/controller_hub.cpp \
+	    -o $(HOST_TEST_DIR)/controller_merge_test
+	$(HOST_TEST_DIR)/controller_merge_test
+	python3 $(ROOT)/host_tests/controller_protocol_test.py --wine-src $(WINE_SRC)
+
+.PHONY: test-fex-jit-cost
+test-fex-jit-cost:
+	python3 $(ROOT)/host_tests/fex_jit_cost_test.py
+
+.PHONY: test-fex-windows-file-loading
+test-fex-windows-file-loading:
+	python3 $(ROOT)/host_tests/fex_windows_file_loading_test.py
+
+.PHONY: test-fex-fault-boundaries
+test: test-fex-fault-boundaries
+test-fex-fault-boundaries:
+	python3 $(ROOT)/host_tests/fex_fault_boundary_test.py
+
+
+# Real phone fork/SIGCHLD plus production registry and sandbox liveness.
+.PHONY: test-process-lifecycle
+test-process-lifecycle:
+	@mkdir -p $(HOST_TEST_DIR)
+	g++ -std=c++17 -Wall -Wextra -Werror -pthread -I $(ROOT)/host_tests/process_stubs -I $(ROOT)/entry/src/main/cpp \
+	    $(ROOT)/host_tests/process_lifecycle_test.cpp $(ROOT)/entry/src/main/cpp/proc/wine_process.cpp \
+	    -Wl,--wrap=fopen -o $(HOST_TEST_DIR)/process_lifecycle_test
+	$(HOST_TEST_DIR)/process_lifecycle_test
+
+.PHONY: test-wine-layered-child
+test: test-wine-layered-child
+test-wine-layered-child:
+	python3 $(ROOT)/host_tests/wine_layered_child_test.py --wine-src $(WINE_SRC)
+
+.PHONY: test-wine-direct-early-wsi
+test: test-wine-direct-early-wsi
+test-wine-direct-early-wsi:
+	python3 $(ROOT)/host_tests/wine_direct_early_wsi_test.py --wine-src $(WINE_SRC)
+
+.PHONY: test-direct-drawable-ipc
+test: test-direct-drawable-ipc
+test-direct-drawable-ipc:
+	python3 $(ROOT)/host_tests/direct_drawable_ipc_test.py
+
+.PHONY: test-fex-vm-contract
+test: test-fex-vm-contract
+test-fex-vm-contract:
+	python3 $(ROOT)/host_tests/fex_vm_contract_test.py
+
+.PHONY: test-wine-vm-diagnostics
+test: test-wine-vm-diagnostics
+test-wine-vm-diagnostics:
+	python3 $(ROOT)/host_tests/wine_vm_diagnostics_test.py
+
+.PHONY: test-wine-network-contract
+test: test-wine-network-contract
+test-wine-network-contract:
+	python3 $(ROOT)/host_tests/wine_network_contract_test.py
+
+# Migration gates run against native/runtime sources and protected WineHua UI.
+.PHONY: test-runtime-migration-boundary test-dxvk-runtime-contract test-virgl-srgb-policy
+test: test-runtime-migration-boundary test-dxvk-runtime-contract test-virgl-srgb-policy
+test-runtime-migration-boundary:
+	python3 $(ROOT)/scripts/verify_runtime_migration.py --product-only
+test-dxvk-runtime-contract:
+	python3 $(ROOT)/host_tests/dxvk_followup_contract_test.py
+test-virgl-srgb-policy:
+	python3 $(ROOT)/host_tests/virgl_srgb_policy_test.py
+
+.PHONY: test-fex-patch-sequence
+test: test-fex-patch-sequence
+test-fex-patch-sequence:
+	bash $(ROOT)/host_tests/fex_patch_sequence_test.sh
+
+# Compile/link all migrated entry native targets independently of runtime assembly.
+.PHONY: native-entry
+native-entry: native
+	cmake -S $(ROOT)/entry/src/main/cpp -B $(BUILD_DIR)/entry-native-$(NATIVE_ARCH) -GNinja \
+	    -DCMAKE_TOOLCHAIN_FILE=$(OHOS_SDK)/native/build/cmake/ohos.toolchain.cmake \
+	    -DOHOS_ARCH=$(NATIVE_ARCH) -DOHOS_PLATFORM=OHOS -DCMAKE_BUILD_TYPE=Release
+	cmake --build $(BUILD_DIR)/entry-native-$(NATIVE_ARCH) --parallel $(if $(JOBS),$(JOBS),2)
+
+.PHONY: test-release-archive-integrity
+test: test-release-archive-integrity
+test-release-archive-integrity:
+	python3 $(ROOT)/host_tests/release_archive_integrity_test.py
+
+test: test-process-lifecycle
+
+.PHONY: test-target-launch-policy
+test: test-target-launch-policy
+test-target-launch-policy:
+	python3 $(ROOT)/host_tests/target_launch_policy_test.py
+
+.PHONY: test-dxvk-package-identity
+test: test-dxvk-package-identity
+test-dxvk-package-identity:
+	python3 $(ROOT)/host_tests/dxvk_package_identity_test.py
+
+# Preserve target launch controls as a required aggregate-suite gate.
+test: test-direct-session
+
+.PHONY: test-smoke-import-architecture
+test: test-smoke-import-architecture
+test-smoke-import-architecture:
+	python3 $(ROOT)/host_tests/smoke_import_architecture_test.py

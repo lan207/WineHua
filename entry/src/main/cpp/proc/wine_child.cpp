@@ -1,3 +1,4 @@
+#include "spawn_codec.h"
 /**
  * wine_child.cpp - Wine 子进程入口 (libwine_child.so)
  *
@@ -5,7 +6,7 @@
  * (broker spawn 的唯一入口, 见 broker.cpp)。
  * 子进程从 appspawn 创建，全局状态干净，ntdll.so 首次 dlopen 构造正常执行。
  *
- * entryParams 格式: "homeDir|binDir|arg0|arg1|...|__env=K=V|..."
+ * entryParams 格式: "VPP2:" + base64(带长度的 home/bin/argv/env/fdNames)。
  *   binDir  = /data/storage/el2/base/files/wine/bin
  *   后续    = argv (如 "wineboot --init")
  *   特判    = argv[0]=="wineserver" → RunWineserver 本体 (纯 Unix ELF,
@@ -32,6 +33,8 @@
 #include "wine/wine_constants.h"
 #include "wine_scheme.h"
 #include "wine/wine_env.h"
+#include "wine/prefix_registry_io.h"
+#include "wine/steam_client_args.h"
 #include <fcntl.h>
 #include <dirent.h>
 #include <pthread.h>
@@ -195,24 +198,6 @@ static bool arg_equals(int argc, char *argv[], const char *value)
     return false;
 }
 
-static void apply_game_address_space_compatibility(int argc, char **argv)
-{
-    if (getenv("WINE_LARGE_ADDRESS_AWARE")) return;
-    for (int i = 1; i < argc; ++i)
-    {
-        char name[128];
-        if (!argv[i]) continue;
-        normalize_basename(argv[i], name, sizeof(name));
-        if (!program_is(name, "pal4")) continue;
-        // PAL4 does not declare LARGE_ADDRESS_AWARE. Proton's forced 4 GB
-        // override corrupts its UI initialization; honor the PE flag as the
-        // previous Wine runtime did. Keep explicit overrides for diagnosis.
-        setenv("WINE_LARGE_ADDRESS_AWARE", "0", 1);
-        OH_LOG_INFO(LOG_APP, "[WineChild] PAL4: honoring image address-space limit");
-        return;
-    }
-}
-
 static bool arg_starts_with(int argc, char *argv[], const char *prefix)
 {
     size_t prefixLen = prefix ? strlen(prefix) : 0;
@@ -324,6 +309,14 @@ static bool derive_launch_cwd(int argc, char *argv[], const char *homeDir, std::
     const char *program;
 
     if (argc <= 0 || !argv[0]) return false;
+    // Scheme 1/3 argv retains the loader token until __wine_main is called.
+    // Derive the program directory from the executable, not from "wine".
+    if (!strcasecmp(basename_of_path(argv[0]), "wine"))
+    {
+        ++argv;
+        --argc;
+        if (argc <= 0 || !argv[0]) return false;
+    }
     program = basename_of_path(argv[0]);
 
     if (!strcasecmp(program, "wineboot") ||
@@ -343,6 +336,32 @@ static bool derive_launch_cwd(int argc, char *argv[], const char *homeDir, std::
         return true;
 
     return false;
+}
+
+static void apply_process_font_aa_default(int argc, char *argv[])
+{
+    // main's legacy GDI fix is process-scoped. ArkTS launches already supply
+    // it, but Explorer/CreateProcess launches arrive through the NCP broker
+    // without going through WineEngineService::launchExecutable.
+    // Apply the same default before Wine loads win32u; explicit values win.
+    if (getenv("WINEHUA_FONT_AA") || argc <= 0 || !argv || !argv[0]) return;
+    std::string image = trim_quotes(argv[0]);
+    if (!strcasecmp(basename_of_path(image.c_str()), "wine")) {
+        if (argc < 2 || !argv[1]) return;
+        image = trim_quotes(argv[1]);
+    }
+    const char *program = basename_of_path(image.c_str());
+    if (!program || !program[0]) return;
+    // Desktop/bootstrap helpers keep the normal grayscale font appearance.
+    const char *desktopPrograms[] = {
+        "explorer", "explorer.exe", "wineboot", "wineboot.exe", "wineserver",
+        "services.exe", "winedevice.exe", "rpcss.exe", "plugplay.exe",
+        "svchost.exe", "conhost.exe", "winemenubuilder.exe"
+    };
+    for (const char *desktop : desktopPrograms)
+        if (!strcasecmp(program, desktop)) return;
+    setenv("WINEHUA_FONT_AA", "bitmap", 1);
+    OH_LOG_INFO(LOG_APP, "[WineChild] GDI font AA=bitmap (game process default)");
 }
 
 static const char *select_winedebug_profile(int argc, char *argv[])
@@ -410,10 +429,8 @@ static void setup_wine_env(const char* binDir, const char* homeDir, const char *
     // 方案③ arm64 原生 wine: 指定 FEX 模拟器 DLL (HODLL64), 由 ntdll loader 加载转译 x86_64 应用
     setenv("HODLL64", "libarm64ecfex.dll", 1);
     // 32 位 x86 应用: HODLL 由 wow64.dll get_cpu_dll_name() 读取, 转译 i386 PE。
-    // 引擎可选: box=Box64 wowbox64.dll (默认), fex=FEX libwow64fex.dll。
-    // Box64 是 arm64 产品基线，Steam/CEF 等高负载 Win32 子进程先走这条
-    // 已验证路径；FEX 保留为显式诊断覆盖，避免把未完成的 FEX JIT fault
-    // 路由作为所有用户进程的默认行为。
+    // Default: FEX libwow64fex.dll, including games launched by Steam.
+    // wowbox64.dll is selected only by an explicit engine override.
     // 注: HODLL 的最终选择放在 apply_entry_param_env_overrides() 之后
     // (见 select_wow64_backend)，否则从 Want 传入的 WINEHUA_WOW64_ENGINE
     // 会被这里的默认值覆盖。
@@ -521,6 +538,8 @@ static void select_wow64_backend(int argc, char **argv)
 
     const char *wow64_engine = getenv("WINEHUA_WOW64_ENGINE");
 
+    // Keep the Proton baseline on FEX. A partial prefix or a failed launch
+    // does not establish an emulator failure and must not change this default.
     if (wow64_engine && strcmp(wow64_engine, "box") == 0)
         setenv("HODLL", "wowbox64.dll", 1);
     else
@@ -554,27 +573,30 @@ static bool is_steam_bootstrap_exe(int argc, char **argv)
 // 需要复现历史 GPU 配置时用 WINEHUA_CEF_FORCE_GPU=1 (Run B)。
 // 这里按 exe 路径补默认值, 与 select_wow64_backend 的路径兜底同理: Steam 自更新
 // 结束后的 updater 自重启、以及应用 UI 不带参数的直接启动, 都不会传这些开关。
-static void apply_steam_client_default_args(int &argc, char **argv)
+static void apply_steam_client_default_args(int &argc, char **argv, size_t capacity)
 {
     if (!is_steam_bootstrap_exe(argc, argv)) return;
-    if (argc > 61) return;   // argv[64], 末尾保留 nullptr 槽位
 
     static char kForceGpu[] = "-cef-force-gpu";
     static char kDisableGpu[] = "-cef-disable-gpu";
     static char kNoSandbox[] = "-no-cef-sandbox";
 
-    bool hasSandboxSwitch = arg_equals(argc, argv, kNoSandbox) ||
-                            arg_equals(argc, argv, "-cef-disable-sandbox");
+    // Keep client flags ahead of -applaunch; Steam otherwise passes them to
+    // RPGXP.exe and every other game launched through that command.
+    auto injectClientArg = [&](char* flag) {
+        if (winehua::InsertSteamClientArg(argc, argv, capacity, flag))
+            OH_LOG_INFO(LOG_APP, "[WineChild] steam default arg injected: %{public}s", flag);
+    };
+    bool hasSandboxSwitch = winehua::HasSteamClientArg(argc, argv, kNoSandbox) ||
+                            winehua::HasSteamClientArg(argc, argv, "-cef-disable-sandbox");
     if (!hasSandboxSwitch)
     {
-        argv[argc++] = kNoSandbox;
-        OH_LOG_INFO(LOG_APP, "[WineChild] steam default arg injected: %{public}s", kNoSandbox);
+        injectClientArg(kNoSandbox);
     }
     const char* forceGpu = getenv("WINEHUA_CEF_FORCE_GPU");
-    if (forceGpu && forceGpu[0] == '1' && !arg_equals(argc, argv, kForceGpu))
+    if (forceGpu && forceGpu[0] == '1' && !winehua::HasSteamClientArg(argc, argv, kForceGpu))
     {
-        argv[argc++] = kForceGpu;
-        OH_LOG_INFO(LOG_APP, "[WineChild] steam default arg injected: %{public}s", kForceGpu);
+        injectClientArg(kForceGpu);
     }
     /* WINEHUA_CEF_STEAM_DISABLE_GPU=1 -> Steam 自己的 -cef-disable-gpu。
      * 32 位客户端当初能出画面时的 GPU 进程命令行就是 `--use-gl=disabled`
@@ -582,10 +604,9 @@ static void apply_steam_client_default_args(int &argc, char **argv)
      * 只加这一条 Steam 原生开关, 不再叠 WineHua 的 --disable-gpu-compositing
      * (实测二者叠加会把 CEF 推成半 GPU 状态: 窗口整体黑 + renderer 反复崩)。 */
     const char* disableGpu = getenv("WINEHUA_CEF_STEAM_DISABLE_GPU");
-    if (disableGpu && disableGpu[0] == '1' && !arg_equals(argc, argv, kDisableGpu))
+    if (disableGpu && disableGpu[0] == '1' && !winehua::HasSteamClientArg(argc, argv, kDisableGpu))
     {
-        argv[argc++] = kDisableGpu;
-        OH_LOG_INFO(LOG_APP, "[WineChild] steam default arg injected: %{public}s", kDisableGpu);
+        injectClientArg(kDisableGpu);
     }
     argv[argc] = nullptr;
 }
@@ -600,12 +621,12 @@ static void apply_steam_client_default_args(int &argc, char **argv)
  * 现成的 [SMC-MAP]/[SMC-stack]/[fault-map] 归属就能直接给出模块与调用来源。
  *
  * 默认关闭, 只有 WINEHUA_CEF_NO_CRASH_HANDLER=1 才注入; 只影响崩溃报告, 不影响渲染。 */
-static void apply_steam_webhelper_diag_args(int &argc, char **argv)
+static void apply_steam_webhelper_diag_args(int &argc, char **argv, size_t capacity)
 {
     const char* flag = getenv("WINEHUA_CEF_NO_CRASH_HANDLER");
     if (!flag || flag[0] != '1') return;
     if (!is_steam_webhelper_exe(argc, argv)) return;
-    if (argc > 60) return;
+    if (static_cast<size_t>(argc) + 4 > capacity) return;
 
     static char kNoBreakpad[] = "--disable-breakpad";
     static char kNoCrashReporter[] = "--disable-crash-reporter";
@@ -643,40 +664,11 @@ static const char* const kWineUiFontFamilies[] = {
 
 struct WineHuaRegEntry { const char* key; const char* value; };
 
-static bool winehua_read_text_file(const char* path, std::string& out)
-{
-    int fd = open(path, O_RDONLY);
-    if (fd < 0) return false;
-    char buf[65536];
-    ssize_t n;
-    out.clear();
-    while ((n = read(fd, buf, sizeof(buf))) > 0) out.append(buf, (size_t)n);
-    close(fd);
-    return !out.empty();
-}
-
-static bool winehua_write_text_file(const char* path, const std::string& data)
-{
-    int fd = open(path, O_WRONLY | O_TRUNC);
-    if (fd < 0) return false;
-    size_t off = 0;
-    while (off < data.size())
-    {
-        ssize_t w = write(fd, data.data() + off, data.size() - off);
-        if (w <= 0) break;
-        off += (size_t)w;
-    }
-    close(fd);
-    return off == data.size();
-}
-
 // 已知"指向不存在 family"的值: 这些目标名在本 runtime 里没有对应字体。
 static bool winehua_font_target_is_broken(const std::string& value)
 {
     return value.find("HarmonyOS Sans") != std::string::npos ||
-           value.find("Noto Sans CJK") != std::string::npos ||
-           value.find("Noto Serif") != std::string::npos ||
-           value.find("Noto Sans Mono") != std::string::npos;
+           value.find("Noto Sans CJK") != std::string::npos;
 }
 
 // 在 [section] 段内补齐缺失项 / 纠正失效目标; 段不存在且 add_missing 时追加该段。
@@ -732,7 +724,8 @@ static int winehua_patch_reg_section(std::string& text, const char* section,
     return changed;
 }
 
-// 会话启动时自愈 prefix: 字体替换链 + 中文代码页。幂等, 只在有改动时写回。
+// Run once under wineserver's session lock, before it reads the registry.
+// Ordinary Wine children must never edit hives behind the active server.
 static void ensure_prefix_fonts_and_codepage()
 {
     const char* prefix = getenv("WINEPREFIX");
@@ -748,16 +741,13 @@ static void ensure_prefix_fonts_and_codepage()
 
     std::string path = std::string(prefix) + "/user.reg";
     std::string text;
-    if (winehua_read_text_file(path.c_str(), text))
+    if (winehua::ReadPrefixRegistry(path.c_str(), text))
     {
         int n = winehua_patch_reg_section(text, "Software\\\\Wine\\\\Fonts\\\\Replacements",
                                          font_entries, font_count, true, true);
         if (n > 0)
         {
-            std::string backup = path + ".winehua.bak";
-            int bfd = open(backup.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
-            if (bfd >= 0) close(bfd);
-            if (winehua_write_text_file(path.c_str(), text))
+            if (winehua::WritePrefixRegistry(path.c_str(), text))
                 OH_LOG_INFO(LOG_APP, "[WineChild] font Replacements patched (%{public}d entries)", n);
             else
                 OH_LOG_WARN(LOG_APP, "[WineChild] font Replacements write failed");
@@ -769,7 +759,7 @@ static void ensure_prefix_fonts_and_codepage()
     };
     path = std::string(prefix) + "/system.reg";
     text.clear();
-    if (winehua_read_text_file(path.c_str(), text))
+    if (winehua::ReadPrefixRegistry(path.c_str(), text))
     {
         int n = winehua_patch_reg_section(
             text, "Software\\\\Microsoft\\\\Windows NT\\\\CurrentVersion\\\\FontSubstitutes",
@@ -780,10 +770,7 @@ static void ensure_prefix_fonts_and_codepage()
                                        true, false);
         if (n > 0)
         {
-            std::string backup = path + ".winehua.bak";
-            int bfd = open(backup.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0644);
-            if (bfd >= 0) close(bfd);
-            if (winehua_write_text_file(path.c_str(), text))
+            if (winehua::WritePrefixRegistry(path.c_str(), text))
                 OH_LOG_INFO(LOG_APP, "[WineChild] system.reg font/codepage patched (%{public}d entries)", n);
             else
                 OH_LOG_WARN(LOG_APP, "[WineChild] system.reg write failed");
@@ -827,8 +814,8 @@ static void apply_entry_param_env_overrides(const std::vector<std::string>& envO
         size_t sep = envLine.find('=');
         if (sep == std::string::npos || sep == 0)
         {
-            OH_LOG_WARN(LOG_APP, "[WineChild] ignoring malformed __env token: %{public}s",
-                        envLine.c_str());
+            OH_LOG_WARN(LOG_APP, "[WineChild] ignoring malformed __env token bytes=%{public}zu",
+                        envLine.size());
             continue;
         }
 
@@ -839,14 +826,14 @@ static void apply_entry_param_env_overrides(const std::vector<std::string>& envO
         // 它恒等于 App 侧下发的值, profile 选择失效。显式诊断请走 WINEHUA_WINEDEBUG。
         if (key == "WINEDEBUG")
         {
-            OH_LOG_INFO(LOG_APP, "[WineChild] __env WINEDEBUG ignored: %{public}s",
-                        value.c_str());
+            OH_LOG_INFO(LOG_APP, "[WineChild] __env WINEDEBUG ignored bytes=%{public}zu",
+                        value.size());
             continue;
         }
         setenv(key.c_str(), value.c_str(), 1);
         if (key == "WINEHUA_BOOTSTRAP_PHASE" || key.rfind("BOX64_DYNAREC_", 0) == 0)
-            OH_LOG_INFO(LOG_APP, "[WineChild] env override %{public}s=%{public}s",
-                        key.c_str(), value.c_str());
+            OH_LOG_INFO(LOG_APP, "[WineChild] env override keyBytes=%{public}zu valueBytes=%{public}zu",
+                        key.size(), value.size());
     }
 }
 
@@ -1754,50 +1741,47 @@ static void WineHuaStallSampleAllThreads(void)
 
 extern "C" void Main(NativeChildProcess_Args args)
 {
-    OH_LOG_INFO(LOG_APP, "[WineChild] Main() ENTER pid=%{public}d entryParams=%{public}s",
-                getpid(), args.entryParams ? args.entryParams : "(null)");
+    OH_LOG_INFO(LOG_APP, "[WineChild] Main() ENTER pid=%{public}d entryParamsBytes=%{public}zu",
+                getpid(), args.entryParams ? strlen(args.entryParams) : size_t{0});
     LogWineScheme("libwine_child.so Main");
     OhosInstallEarlyFaultLogger();
 
-    // 1. 解析 entryParams: "homeDir|binDir|arg0|arg1|...|__env=KEY=VALUE|..."
+    // Decode completely before changing the environment or entering Wine.
     const char* entryParams = args.entryParams ? args.entryParams : "";
-    char* buf = strdup(entryParams);
-    char* homeDir = strtok(buf, "|");
-    char* binDir = strtok(nullptr, "|");
-    if (!binDir) { OH_LOG_ERROR(LOG_APP, "[WineChild] entryParams parse failed (no binDir)"); free(buf); return; }
-
-    // 统计 argc, argv, 收集 __env= 覆盖
-    int argc = 0;
-    char* argv[64];
-    char* tok;
-    std::vector<std::string> envOverrides;
-    while ((tok = strtok(nullptr, "|")) && argc < 63)
-    {
-        if (strncmp(tok, "__env=", 6) == 0)
-        {
-            envOverrides.emplace_back(tok + 6);
-            continue;
-        }
-        argv[argc++] = tok;
+    winehua::spawn::Request startup;
+    if (!winehua::spawn::DecodeEntry(entryParams, startup) || startup.home.empty()) {
+        OH_LOG_ERROR(LOG_APP, "[WineChild] invalid startup envelope");
+        return;
     }
-    argv[argc] = nullptr;
+    std::vector<std::string> actualNames;
+    for (auto* node = args.fdList.head; node; node = node->next) {
+        if (actualNames.size() >= VP_FDS_CAP || !node->fdName || node->fd < 0 ||
+            strnlen(node->fdName, 21) > 20) {
+            OH_LOG_ERROR(LOG_APP, "[WineChild] startup descriptor mismatch");
+            return;
+        }
+        actualNames.emplace_back(node->fdName);
+    }
+    if (!winehua::spawn::MatchNames(startup, actualNames)) return;
+    char* homeDir = startup.home.data();
+    char* binDir = startup.bin.data();
+    int argc = static_cast<int>(startup.argv.size());
+    // Three client and three webhelper policy flags plus the terminating NULL.
+    std::vector<char*> argvStorage(startup.argv.size() + 8, nullptr);
+    for (size_t i = 0; i < startup.argv.size(); ++i) argvStorage[i] = startup.argv[i].data();
+    char** argv = argvStorage.data();
+    const auto& envOverrides = startup.env;
 
     // 线程名 = argv[0] basename (prctl 最长 15 字符)。崩溃记录 (DfxSignalHandler
     // threadName) 直接显示进程身份, 即使 hilog 日志丢失也能从 tombstone 认出是谁。
     if (argc > 0 && argv[0] && argv[0][0])
         prctl(PR_SET_NAME, basename_of_path(argv[0]));
 
-    // 检查 __winehua_desktop__ 标记: 有 → desktop 模式, 需要传 env 给 wine
-    {
-        for (int i = 0; i < argc; i++) {
-            if (strcmp(argv[i], "__winehua_desktop__") == 0) {
-                setenv("WINEHUA_DESKTOP_MODE", "1", 1);
-                OH_LOG_INFO(LOG_APP, "[WineChild] __winehua_desktop__ → WINEHUA_DESKTOP_MODE=1");
-                for (int j = i; j < argc; j++) argv[j] = argv[j + 1];
-                argc--;
-                break;
-            }
-        }
+    // The spawner's desktop marker is first; later matching arguments are data.
+    if (argc > 0 && strcmp(argv[0], "__winehua_desktop__") == 0) {
+        setenv("WINEHUA_DESKTOP_MODE", "1", 1);
+        for (int j = 0; j < argc; ++j) argv[j] = argv[j + 1];
+        --argc;
     }
 
     // wineserver 截获 (重构第 5 步): 所有 wineserver 启动经 broker → Main;
@@ -1807,12 +1791,11 @@ extern "C" void Main(NativeChildProcess_Args args)
         // broker 会为每个请求挂 audio bootstrap fd; wineserver 用不到, 关掉防泄漏
         for (auto* node = args.fdList.head; node; node = node->next) close(node->fd);
         RunWineserver(binDir, argc, argv, envOverrides, entryParams);
-        free(buf);
         return;
     }
 
-    OH_LOG_INFO(LOG_APP, "[WineChild] homeDir=%{public}s binDir=%{public}s argc=%{public}d argv[0]=%{public}s",
-                homeDir ? homeDir : "(null)", binDir, argc, argc > 0 ? argv[0] : "(none)");
+    OH_LOG_INFO(LOG_APP, "[WineChild] parsed argc=%{public}d envCount=%{public}zu",
+                argc, envOverrides.size());
 
     // 2. Step A: 设置 Wine 环境变量 baseline (硬编码默认值, 确保非 broker 路径可用)
     const char *winedebug = select_winedebug_profile(argc, argv);
@@ -1837,6 +1820,11 @@ extern "C" void Main(NativeChildProcess_Args args)
 
     // Step B: entryParams 中的环境覆盖应用。
     apply_entry_param_env_overrides(envOverrides);
+#if defined(__aarch64__) && !defined(WINEHUA_WINE_ARCH_IS_X86_64)
+    OH_LOG_INFO(LOG_APP, "[WineChild] final FEX_X87REDUCEDPRECISION=%{public}s (after entry env)",
+                getenv("FEX_X87REDUCEDPRECISION"));
+#endif
+    apply_process_font_aa_default(argc, argv);
     const char* vulkanBackend = getenv("WINEHUA_VULKAN_BACKEND");
     if (vulkanBackend && strcmp(vulkanBackend, "direct") == 0) {
         // Wine's Direct Vulkan loader must discover the system driver, not the
@@ -1845,7 +1833,6 @@ extern "C" void Main(NativeChildProcess_Args args)
         unsetenv("VK_ICD_FILENAMES");
         OH_LOG_WARN(LOG_APP, "[WineChild] Direct Vulkan selected; guest ICD overrides cleared");
     }
-    apply_game_address_space_compatibility(argc, argv);
     // entryParams 覆盖之后再选一次 WINEDEBUG 档位: 上一次调用发生在
     // apply_entry_param_env_overrides() 之前, 取不到 entryParams 里的覆盖。
     // 档位来源是 WINEHUA_WINEDEBUG 与内置 profile —— WINEDEBUG 键本身在
@@ -1882,16 +1869,13 @@ extern "C" void Main(NativeChildProcess_Args args)
     // WINEHUA_WOW64_ENGINE 生效。
     select_wow64_backend(argc, argv);
     // Steam 客户端缺省参数兜底 (CEF 沙箱/gpu), 理由见函数注释。
-    apply_steam_client_default_args(argc, argv);
+    apply_steam_client_default_args(argc, argv, argvStorage.size());
     // 诊断: webhelper 系崩溃处理器开关 (默认关闭, 见函数注释)。
-    apply_steam_webhelper_diag_args(argc, argv);
+    apply_steam_webhelper_diag_args(argc, argv, argvStorage.size());
     // WINEPREFIX is a per-session override. Derive paths only after the final
     // value is known, and avoid a "prefix/../" path whose intermediate prefix
     // may not exist after a clean install.
     refresh_wine_session_paths();
-    // 前缀字体/代码页自愈 (必须在 Wine 起来之前): 新装/重置 prefix 后 UI 字体链是断的,
-    // 会让 win64/32 位 Steam 的 VGUI2 断言 surface_gdiwin32.cpp:1336 winFont 并卡在启动画面。
-    ensure_prefix_fonts_and_codepage();
     // Migrate the old file-hiding workaround before Steam verifies its files.
     if (is_steam_bootstrap_exe(argc, argv)) restore_shadowed_vulkan_loaders();
 
@@ -1974,8 +1958,8 @@ extern "C" void Main(NativeChildProcess_Args args)
     int errFile = open(logPath, O_WRONLY | O_CREAT | O_APPEND, 0666);
     // 写分隔标记，确认本进程的日志从哪开始
     if (errFile >= 0) {
-        dprintf(errFile, "\n=== PID=%d entryParams=%s ===\n", getpid(),
-                args.entryParams ? args.entryParams : "(null)");
+        dprintf(errFile, "\n=== PID=%d entryParamsBytes=%zu argc=%d ===\n", getpid(),
+                args.entryParams ? strlen(args.entryParams) : size_t{0}, argc);
     }
     auto* ctx = new stderr_ctx{errPipe[0], errFile};
     pthread_t tid;
@@ -1999,7 +1983,6 @@ extern "C" void Main(NativeChildProcess_Args args)
     void* box64_lib = dlopen("box64.so", RTLD_NOW);
     if (!box64_lib) {
         OH_LOG_ERROR(LOG_APP, "[WineChild] dlopen(box64.so) failed: %{public}s", dlerror());
-        free(buf);
         return;
     }
 
@@ -2007,7 +1990,6 @@ extern "C" void Main(NativeChildProcess_Args args)
     if (!box64_main) {
         OH_LOG_ERROR(LOG_APP, "[WineChild] dlsym(box64_hmos_main) failed: %{public}s", dlerror());
         dlclose(box64_lib);
-        free(buf);
         return;
     }
 
@@ -2028,15 +2010,22 @@ extern "C" void Main(NativeChildProcess_Args args)
     delete[] box64_argv;
     // 不 dlclose(box64_lib): box64 内部注册 atexit handler / 包装函数指针,
     // 卸载后回调引用已卸载代码 → SIGSEGV。进程即将退出, OS 回收。
-    free(buf);
     return;
 #else
     // Wine 与设备同架构 (方案① x86_64 / 方案③ arm64 原生): dlopen ntdll.so → __wine_main
+    if (getenv("WINEHUA_LAYOUT_DIAGNOSTICS")) {
+        static char layout[512 * 1024];
+        const size_t bytes = OhosReadFullMaps(layout, sizeof(layout));
+        const char marker[] = "[NATIVE-LAYOUT-BEFORE-WINE]\n";
+        (void)write(2, marker, sizeof(marker) - 1);
+        (void)write(2, layout, bytes);
+        const char end[] = "[NATIVE-LAYOUT-END]\n";
+        (void)write(2, end, sizeof(end) - 1);
+    }
     OH_LOG_INFO(LOG_APP, "[WineChild] dlopen ntdll.so...");
     void* ntdll = dlopen("ntdll.so", RTLD_NOW);
     if (!ntdll) {
         OH_LOG_ERROR(LOG_APP, "[WineChild] dlopen(ntdll.so) failed: %{public}s", dlerror());
-        free(buf);
         return;
     }
 
@@ -2044,7 +2033,6 @@ extern "C" void Main(NativeChildProcess_Args args)
     if (!wine_main) {
         OH_LOG_ERROR(LOG_APP, "[WineChild] dlsym(__wine_main) failed: %{public}s", dlerror());
         dlclose(ntdll);
-        free(buf);
         return;
     }
 
@@ -2058,7 +2046,6 @@ extern "C" void Main(NativeChildProcess_Args args)
     // 已执行 virtual_init/init_environment/server_init_process_done,
     // 这些可能注册了 atexit 回调 → dlclose 后退出时 SIGSEGV。
     OH_LOG_ERROR(LOG_APP, "[WineChild] __wine_main returned unexpectedly! Wine init FAILED");
-    free(buf);
 #endif
 }
 
@@ -2106,8 +2093,8 @@ static void RunWineserver(char* binDir, int argc2, char** argv2,
              tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday);
     int errFile = open(logPath, O_WRONLY | O_CREAT | O_APPEND, 0666);
     if (errFile >= 0) {
-        dprintf(errFile, "\n=== PID=%d entryParams=%s ===\n", getpid(),
-                entryParamsForLog ? entryParamsForLog : "(null)");
+        dprintf(errFile, "\n=== PID=%d entryParamsBytes=%zu argc=%d ===\n", getpid(),
+                entryParamsForLog ? strlen(entryParamsForLog) : size_t{0}, argc2);
     }
     auto* ctx = new stderr_ctx{errPipe[0], errFile};
     pthread_t tid;
@@ -2176,6 +2163,12 @@ static void RunWineserver(char* binDir, int argc2, char** argv2,
         dlclose(h);
         return;
     }
+    auto* set_registry_hook = (void (*)(void (*)(void)))dlsym(h, "winehua_set_registry_startup_hook");
+    if (!set_registry_hook) {
+        OH_LOG_ERROR(LOG_APP, "[WineChild] wineserver missing locked registry startup hook");
+        return;
+    }
+    set_registry_hook(ensure_prefix_fonts_and_codepage);
     OH_LOG_INFO(LOG_APP, "[WineChild] ws step7: calling ws_main(%{public}d, [...]), WINEPREFIX=%{public}s",
                 argc2, getenv("WINEPREFIX"));
     int wsRc = ws_main(argc2, argv2);

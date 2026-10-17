@@ -1,0 +1,25 @@
+From f62670cda1760928e3d889f1646e19b583d64472 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 17 Oct 2026 01:53:16 -0400
+Subject: [PATCH] dxil-spirv: include exception for std::terminate
+
+---
+ subprojects/dxil-spirv/scratch_pool.hpp | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/subprojects/dxil-spirv/scratch_pool.hpp b/subprojects/dxil-spirv/scratch_pool.hpp
+index 013f8aa..b2640ba 100644
+--- a/subprojects/dxil-spirv/scratch_pool.hpp
++++ b/subprojects/dxil-spirv/scratch_pool.hpp
+@@ -20,6 +20,8 @@
+ 
+ #include "thread_local_allocator.hpp"
+ 
++#include <exception>
++
+ namespace dxil_spv
+ {
+ template <typename T>
+-- 
+2.52.0
+

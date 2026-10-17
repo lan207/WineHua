@@ -145,3 +145,24 @@ void PluginManager::MoveRendererToToplevel(uint32_t oldId, uint32_t newId) {
     toplevelRenderers_[newId] = std::move(it->second);
     toplevelRenderers_.erase(it);
 }
+
+// ---- VPP additions ----
+void PluginManager::RefreshRenderer(uint32_t toplevelId) {
+    auto it = toplevelRenderers_.find(toplevelId);
+    if (it == toplevelRenderers_.end() || !it->second->IsValid()) {
+        OH_LOG_WARN(LOG_APP, "[MW-Refresh] toplevel #%{public}u renderer NOT found or invalid", toplevelId);
+        return;
+    }
+
+    // 压测路径绝不能模拟 onSurfaceDestroyed/onSurfaceCreated：频繁释放 EGL
+    // Surface 会与 ArkUI 的真实生命周期竞争。请求 Wayland 将当前帧重新提交，
+    // 能覆盖 compositor/renderer 刷新，同时保留同一个 NativeWindow 与 EGLContext。
+    WaylandServer::GetInstance()->ForceToplevelRedraw(toplevelId);
+}
+
+void PluginManager::SetRendererPaused(uint32_t toplevelId, bool paused) {
+    // proton 基线 renderer 无逐 toplevel pause API: 降级为日志 (不阻塞渲染)
+    OH_LOG_INFO(LOG_APP, "[MW-RNDR] toplevel #%{public}u pause request %{public}s (no-op on proton baseline)",
+                toplevelId, paused ? "paused" : "resumed");
+    (void)toplevelId; (void)paused;
+}

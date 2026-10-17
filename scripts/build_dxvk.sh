@@ -57,11 +57,11 @@ if [ "$WINE_ARCH" != "aarch64" ]; then
 fi
 
 log "--- DXVK Legacy fork ($DXVK_SRC) ---"
-ninja -C "$DXVK_SRC/build.winehua32" install
+ninja -j"$JOBS" -C "$DXVK_SRC/build.winehua32" install
 if [ "$WINE_ARCH" = "aarch64" ]; then
     log "scheme ③: skip meson x64 (ARM64X overlay replaces it in wine-data x64/)"
 else
-    ninja -C "$DXVK_SRC/build.winehua64" install
+    ninja -j"$JOBS" -C "$DXVK_SRC/build.winehua64" install
 fi
 
 for dll in d3d11.dll dxgi.dll; do

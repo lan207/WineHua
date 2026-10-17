@@ -1,7 +1,10 @@
 #include "env_profiles.h"
 #include "wine_env.h"
+#include "dll_overrides.h"
+#include "graphics/graphics_profile.h"
 
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
 
 namespace winehua {
@@ -135,6 +138,21 @@ std::vector<std::string> BuildSessionEnv(const SessionEnvPolicy& p)
         AppendStableDxvkEnv(env, env, d3dBackend, dxvkBackend);
     if (p.desktopShellFlag)
         UpsertEnvLine(env, "WINEHUA_DESKTOP=shell");
+    // New shared profiles are opt-in. Empty/unknown profiles retain WineHua's
+    // existing environment pipeline and explicit per-program transport choices.
+    const char* sessionProfile = getenv("WINEHUA_GRAPHICS_PROFILE");
+    std::vector<std::string> graphicsEnvironment;
+    const auto backendKind = ParseD3dBackend(d3dBackend);
+    ProductGraphicsPolicy explicitPolicy;
+    const bool explicitProduct = sessionProfile &&
+        ResolveProductGraphicsPolicy(backendKind, &explicitPolicy) &&
+        explicitPolicy.route == sessionProfile;
+    const bool explicitLab = sessionProfile &&
+        BuildLabGuestGraphicsEnvironment(sessionProfile, backendKind, &graphicsEnvironment);
+    const bool graphicsPolicyApplied = explicitLab || (explicitProduct &&
+        BuildProductGuestGraphicsEnvironment(backendKind, &graphicsEnvironment));
+    if (graphicsPolicyApplied)
+        for (const auto& line : graphicsEnvironment) UpsertEnvLine(env, line);
     // Direct Vulkan programs intentionally keep d3dBackend=wined3d, so the
     // D3D overlay above does not configure Venus.
     if (FindEnvValue(p.extraEnv, "WINEHUA_VULKAN_RUNTIME") == "1" &&
@@ -151,8 +169,19 @@ std::vector<std::string> BuildSessionEnv(const SessionEnvPolicy& p)
             line.rfind("WINEHUA_DXVK_VERSION=", 0) == 0 ||
             line.rfind("WINEHUA_VKD3D_", 0) == 0)
             continue;
+        if (line.rfind("WINEDLLOVERRIDES=", 0) == 0) {
+            std::string merged;
+            if (MergeDllOverrides(FindEnvValue(env, "WINEDLLOVERRIDES"),
+                                  line.substr(std::strlen("WINEDLLOVERRIDES=")), merged))
+                UpsertEnvLine(env, "WINEDLLOVERRIDES=" + merged);
+            else
+                std::fprintf(stderr, "[WineEnv] invalid DLL overrides; keeping previous rules\n");
+            continue;
+        }
         UpsertEnvLine(env, line);
     }
+    // Legacy explicit per-program overrides keep their original precedence.
+    // NCP routing, desktop composition and the guest driver remain distinct.
     return env;
 }
 

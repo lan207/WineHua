@@ -387,6 +387,47 @@ def resolve_vkd3d_artifact(env: dict, case: Case, arch: str) -> Path:
     return Path(env["VKD3D_PROTON_BUILD_ROOT"]) / case.from_vkd3d
 
 
+def resolve_vulkan_import(env: dict, compiler: str, flags: list[str] = ()) -> Path:
+    """Match the compiler ISA, not the logical x64 smoke slot.
+
+    ARM64 Wine ships an ARM64X Vulkan facade but no AMD64 import archive.
+    Generate that archive from the facade's complete named export surface for
+    AMD64 emulation probes; the runtime DLL and probe ISA remain unchanged.
+    """
+    triple = subprocess.check_output([compiler, *flags, "-dumpmachine"], text=True).strip()
+    cpu = triple.split("-", 1)[0]
+    directory = {"i686": "i386-windows", "i386": "i386-windows",
+                 "x86_64": "x86_64-windows", "aarch64": "aarch64-windows",
+                 "arm64ec": "arm64ec-windows"}.get(cpu)
+    if not directory:
+        die(f"unsupported Vulkan import compiler target: {triple}")
+    root = Path(env["BUILD_DIR"]) / WINE_BUILD_DIRNAME / "dlls/vulkan-1"
+    archive = root / directory / "libvulkan-1.a"
+    if archive.is_file():
+        return archive
+    if cpu != "x86_64" or WINE_ARCH != "aarch64":
+        die(f"wine Vulkan import library missing: {archive}")
+    dll = root / "aarch64-windows/vulkan-1.dll"
+    tools = Path(env["LLVM_MINGW"]) / "bin"
+    exports = subprocess.check_output(
+        [str(tools / "llvm-readobj"), "--coff-exports", str(dll)], text=True)
+    if "Format: COFF-ARM64X" not in exports:
+        die(f"AMD64 Vulkan probe requires the ARM64X facade: {dll}")
+    names = re.findall(r"^  Name: (.+)$", exports, re.MULTILINE)
+    if not names or len(set(names)) != len(names) or any(
+            not re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", name) for name in names):
+        die(f"invalid or ambiguous Vulkan export surface: {dll}")
+    out = Path(env["BUILD_DIR"]) / "smoke-imports/x86_64"
+    out.mkdir(parents=True, exist_ok=True)
+    definition = out / "vulkan-1.def"
+    definition.write_text("LIBRARY vulkan-1.dll\nEXPORTS\n" +
+                          "".join(f"  {name}\n" for name in names))
+    archive = out / "libvulkan-1.a"
+    subprocess.run([str(tools / "llvm-dlltool"), "-m", "i386:x86-64",
+                    "-d", str(definition), "-l", str(archive)], check=True)
+    return archive
+
+
 def build_case(env: dict, case: Case, arch: str, dest: Path) -> None:
     """把一个用例的一个架构构建/拷贝到 dest。"""
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -416,10 +457,7 @@ def build_case(env: dict, case: Case, arch: str, dest: Path) -> None:
     if spec.get("dxvk_include"):
         command.append(f"-I{env['DXVK_SRC']}/include")
     if spec.get("vulkan_import"):
-        import_lib = (Path(env["BUILD_DIR"]) /
-                      f"{WINE_BUILD_DIRNAME}/dlls/vulkan-1/{WINE_ARCH_DIR[arch]}/libvulkan-1.a")
-        if not import_lib.is_file():
-            die(f"wine Vulkan import library missing: {import_lib}")
+        import_lib = resolve_vulkan_import(env, command[0], spec.get("cflags", []))
         command.append(str(import_lib))
     command.extend(spec.get("libs", []))
     result = subprocess.run(command, capture_output=True, text=True, errors="replace")
@@ -513,7 +551,7 @@ def write_payload(out_dir: Path, suites: dict, cases: dict, env: dict) -> None:
 # 设备与传输
 # ---------------------------------------------------------------------------
 
-BUNDLE = "app.hackeris.winehua"
+BUNDLE = os.environ.get("WINEHUA_SMOKE_BUNDLE", "app.hackeris.winehua")
 ABILITY = "EntryAbility"
 # 沙箱路径有两个视角，用途不同（2026-09-16 实测，不可混用）：
 #   hdc file send -b <bundle>：remote 必须写沙箱视角，写真实路径会落到不存在的相对位置

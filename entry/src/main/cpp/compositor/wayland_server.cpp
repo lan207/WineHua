@@ -323,7 +323,7 @@ void WaylandServer::OnToplevelDestroyed(uint32_t toplevelId) {
             if (!resource) continue;
             auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(resource));
             if (sd && sd->hasToplevel && sd->toplevelId == toplevelId)
-                desktopCompositor_.zc().InvalidateBindingsForWindow(sd->clientPid, sd->protocolId);
+                desktopCompositor_.zc().InvalidateBindingsForSurface(sd->clientPid, sd->protocolId);
         }
         toplevelMgr_.EraseToplevelLocked(toplevelId);
         // 会话状态读写经 DesktopSessionState (重构第 6B 步: 旧为宿主私有字段,
@@ -495,13 +495,17 @@ void WaylandServer::SetToplevelMaximizedState(uint32_t id, bool on) {
 void WaylandServer::SetToplevelFullscreen(uint32_t id, bool on) {
     OH_LOG_INFO(LOG_APP, "[MW] SetToplevelFullscreen id=%{public}u on=%{public}s",
                 id, on ? "yes" : "no");
-    auto lk = toplevelMgr_.Lock();
-    // Ensure 建档语义同 SetToplevelMinimized: pre-commit 全屏同样记录状态。
-    // 状态转换 (置位 + 锚定 + preFs 快照 + 不变式断言) 收在
-    // ToplevelState::ApplyFullscreen
-    auto& st = toplevelMgr_.EnsureToplevelLocked(id);
-    st.ApplyFullscreen(on);
-    MarkDesktopRootDirtyLocked();
+    {
+        auto lk = toplevelMgr_.Lock();
+        // Ensure 建档语义同 SetToplevelMinimized: pre-commit 全屏同样记录状态。
+        // 状态转换 (置位 + 锚定 + preFs 快照 + 不变式断言) 收在
+        // ToplevelState::ApplyFullscreen
+        auto& st = toplevelMgr_.EnsureToplevelLocked(id);
+        st.ApplyFullscreen(on);
+        MarkDesktopRootDirtyLocked();
+    }
+    InputManager::GetInstance()->InvalidateRelativePointerBaseline(
+        on ? "fullscreen-enter" : "fullscreen-exit");
 }
 
 void WaylandServer::ForceToplevelRedraw(uint32_t id) {

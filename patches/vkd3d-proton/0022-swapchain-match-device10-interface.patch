@@ -1,0 +1,43 @@
+From d524d157eb4fbd67e369b500f03f3772cee045d8 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Sat, 17 Oct 2026 01:55:03 -0400
+Subject: [PATCH] vkd3d: match swapchain helper to stored Device10 interface
+
+---
+ libs/vkd3d/swapchain.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/libs/vkd3d/swapchain.c b/libs/vkd3d/swapchain.c
+index 5166a13..3618b75 100644
+--- a/libs/vkd3d/swapchain.c
++++ b/libs/vkd3d/swapchain.c
+@@ -227,7 +227,7 @@ static inline const struct vkd3d_vk_device_procs* d3d12_swapchain_procs(struct d
+     return &swapchain->command_queue->device->vk_procs;
+ }
+ 
+-static inline struct ID3D12Device9* d3d12_swapchain_device_iface(struct d3d12_swapchain* swapchain)
++static inline struct ID3D12Device10* d3d12_swapchain_device_iface(struct d3d12_swapchain* swapchain)
+ {
+     return &swapchain->command_queue->device->ID3D12Device_iface;
+ }
+@@ -1821,7 +1821,7 @@ static HRESULT STDMETHODCALLTYPE d3d12_swapchain_GetDevice(dxgi_swapchain_iface
+ 
+     TRACE("iface %p, iid %s, device %p.\n", iface, debugstr_guid(iid), device);
+ 
+-    return ID3D12Device9_QueryInterface(d3d12_swapchain_device_iface(swapchain), iid, device);
++    return ID3D12Device10_QueryInterface(d3d12_swapchain_device_iface(swapchain), iid, device);
+ }
+ 
+ /* IDXGISwapChain methods */
+@@ -2942,7 +2942,7 @@ static HRESULT d3d12_swapchain_init(struct d3d12_swapchain *swapchain, IDXGIFact
+     if (swapchain_desc->Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT)
+         swapchain->frame_latency = 1;
+ 
+-    if (FAILED(hr = ID3D12Device9_CreateFence(d3d12_swapchain_device_iface(swapchain), DXGI_MAX_SWAP_CHAIN_BUFFERS,
++    if (FAILED(hr = ID3D12Device10_CreateFence(d3d12_swapchain_device_iface(swapchain), DXGI_MAX_SWAP_CHAIN_BUFFERS,
+             0, &IID_ID3D12Fence, (void **)&swapchain->frame_latency_fence)))
+     {
+         WARN("Failed to create frame latency fence, hr %#x.\n", hr);
+-- 
+2.52.0
+

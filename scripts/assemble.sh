@@ -223,6 +223,16 @@ EOF
         _pick_lib_pad() {
             local name="$1" soname="$2" linker="${3:-}"
             local dest="$NATIVE_LIBS"
+            if [ "$soname" = libz.so ]; then
+                local zlib_ext="$SYSROOT_EXT_LIB"
+                if [ -f "$BUILD_DIR/zlib-runtime/$WINE_ARCH/lib/libz.so" ]; then
+                    zlib_ext="$BUILD_DIR/zlib-runtime/$WINE_ARCH/lib"
+                fi
+                python3 "$SCRIPT_DIR/copy_runtime_library.py" \
+                    --ext "$zlib_ext" --sdk "$SYSROOT/usr/lib/$TARGET" \
+                    --dest "$dest" --system "$@"
+                return
+            fi
             if [ -f "$SYSROOT_EXT_LIB/$soname" ]; then
                 cp -L "$SYSROOT_EXT_LIB/$soname" "$dest/$soname"
             elif [ -f "$SYSROOT/usr/lib/$TARGET/$name" ]; then
@@ -345,6 +355,16 @@ EOF
         _pick_lib_pad_rf() {
             local name="$1" soname="$2" linker="${3:-}"
             local dest="$wine_data/bin/x86_64-unix"
+            if [ "$soname" = libz.so ]; then
+                local zlib_ext="$SYSROOT_EXT_LIB"
+                if [ -f "$BUILD_DIR/zlib-runtime/$WINE_ARCH/lib/libz.so" ]; then
+                    zlib_ext="$BUILD_DIR/zlib-runtime/$WINE_ARCH/lib"
+                fi
+                python3 "$SCRIPT_DIR/copy_runtime_library.py" \
+                    --ext "$zlib_ext" --sdk "$SYSROOT/usr/lib/$TARGET" \
+                    --dest "$dest" "$@"
+                return
+            fi
             if [ -f "$SYSROOT_EXT_LIB/$soname" ]; then
                 cp -L "$SYSROOT_EXT_LIB/$soname" "$dest/$soname"
             elif [ -f "$SYSROOT/usr/lib/$TARGET/$name" ]; then
@@ -437,6 +457,16 @@ EOF
         _pick_lib_pad() {
             local name="$1" soname="$2" linker="${3:-}"
             local dest="$NATIVE_LIBS"
+            if [ "$soname" = libz.so ]; then
+                local zlib_ext="$SYSROOT_EXT_LIB"
+                if [ -f "$BUILD_DIR/zlib-runtime/$WINE_ARCH/lib/libz.so" ]; then
+                    zlib_ext="$BUILD_DIR/zlib-runtime/$WINE_ARCH/lib"
+                fi
+                python3 "$SCRIPT_DIR/copy_runtime_library.py" \
+                    --ext "$zlib_ext" --sdk "$SYSROOT/usr/lib/$TARGET" \
+                    --dest "$dest" --system "$@"
+                return
+            fi
             if [ -f "$SYSROOT_EXT_LIB/$soname" ]; then
                 cp -L "$SYSROOT_EXT_LIB/$soname" "$dest/$soname"
             elif [ -f "$SYSROOT/usr/lib/$TARGET/$name" ]; then
@@ -821,6 +851,24 @@ EOF
   }
 }
 EOF
+    python3 - "$wine_data/dxvk/manifest.json" "$DXVK_MODERN_SRC/src" "$SCRIPT_DIR" <<'PYDXVK'
+import hashlib, json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+manifest = json.loads(path.read_text())
+sys.path.insert(0, sys.argv[3])
+from dxvk_runtime_contract import source_digest, load_modern_lock
+modern_source_sha = source_digest(pathlib.Path(sys.argv[2]))
+if modern_source_sha != load_modern_lock()['sourceSha256']:
+    raise SystemExit('Modern DXVK source differs from reviewed source')
+manifest['runtimes']['modern-2.6']['sourceSha256'] = modern_source_sha
+manifest['runtimes']['modern-2.6']['artifactIdentity'] = 'local-build-sha256'
+for profile, runtime in manifest['runtimes'].items():
+    directory = path.parent / profile / 'arm64x'
+    if directory.is_dir():
+        runtime['arm64x'] = {name: hashlib.sha256((directory/name).read_bytes()).hexdigest()
+                            for name in ('d3d11.dll', 'dxgi.dll')}
+path.write_text(json.dumps(manifest, indent=2) + '\n')
+PYDXVK
     # Suite 编排定义由 automation/smoke.py 产出 (smoke/tests + smoke/suites),
     # 见 assemble 尾部的载荷拷贝。
     log "  VKD3D-Proton 2.6 limited-500K (default mixed D3D12 profile) → vkd3d/limited-500k/x64 (sha256=$vkd3d64_d3d12_sha)"
@@ -904,6 +952,9 @@ HKLM,%FontSubStr%,"Courier",,"Noto Sans Mono"\
 HKLM,%FontSubStr%,"Courier New",,"Noto Sans Mono"\
 HKLM,%FontSubStr%,"Fixedsys",,"Noto Sans Mono"\
 HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/wine.inf"
+    # Preserve identical INF timestamps only when prefix-installed PE builtins
+    # are also identical. Otherwise an FEX/ntdll update can keep old DLLs active.
+    python3 "$SCRIPT_DIR/stamp_wine_builtin_identity.py" "$wine_data"
     # XKB
     if [ -d "$SYSROOT_EXT_SHARE/X11/xkb" ]; then
         cp -r "$SYSROOT_EXT_SHARE/X11/xkb" "$wine_data/share/X11/"
@@ -1015,6 +1066,9 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
     cp -a "$smoke_payload/." "$wine_data/smoke/"
     log "  smoke payload → wine-data/smoke ($(find "$wine_data/smoke" -name '*.exe' | wc -l) exe)"
 
+    # Catch SDK copies from optional/legacy paths too, before creating payloads.
+    python3 "$SCRIPT_DIR/runtime_library_guard.py" "$NATIVE_LIBS" "$wine_data"
+
     # -- 3. 打包 zip → rawfile (不带 wine-data/ 前缀) --
     local rawfile_dir="$WINEHUA/entry/src/main/resources/rawfile"
     mkdir -p "$rawfile_dir"
@@ -1033,6 +1087,7 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
         'import json,sys; print(json.load(open(sys.argv[1]))["suiteVersion"])' \
         "$smoke_payload/manifest.json")"
     cat > "$rawfile_dir/wine-runtime-manifest.json" <<EOF
+
 {
   "schemaVersion": 1,
   "payload": "wine-data.zip",
@@ -1040,6 +1095,16 @@ HKLM,%FontSubStr%,"Lucida Console",,"Noto Sans Mono"' "$wine_data/share/wine/win
   "smokeSuiteVersion": "$smoke_suite_version"
 }
 EOF
+# VPP 兼容: wine_runtime.version (WineEngineService 启动时整读比较的版本标记)。
+# 方案③布局, 内容为 zip sha256 + 关键 pin, 仅供人工核对与设备端 marker 比对。
+VP_VERSION_FILE="$rawfile_dir/wine_runtime.version"
+VP_ZIP_SHA="$payload_sha"
+VP_WINE_PIN="$(git -C "$ROOT" ls-tree HEAD thirdparty/wine-valve 2>/dev/null | awk '{print substr($3,1,10)}')"
+VP_FEX_PIN="$(git -C "$ROOT" ls-tree HEAD thirdparty/fex 2>/dev/null | awk '{print substr($3,1,10)}')"
+printf 'content=%s;wine-valve=%s;fex=%s;arch=%s:%s\n' \
+    "${VP_ZIP_SHA:0:16}" "${VP_WINE_PIN:-unknown}" "${VP_FEX_PIN:-unknown}" "$NATIVE_ARCH" "$WINE_ARCH" \
+    > "$VP_VERSION_FILE"
+log "    wine_runtime.version (VPP compat) -> rawfile/"
     log "  $zip_name → rawfile/ ($(du -h "$rawfile_dir/$zip_name" | cut -f1))"
 
     # 记录本次 assemble 的架构组合, package.sh hap 校验一致性 (方案切换后未重跑

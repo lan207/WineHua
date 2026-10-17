@@ -37,7 +37,7 @@
 #define WAYLAND_SERVER_H
 
 #include <stdint.h>
-#include "wayland-server-core.h"
+#include "protocols/wayland-server-core.h"
 
 #ifdef  __cplusplus
 extern "C" {
@@ -101,6 +101,6 @@ wl_display_remove_global(struct wl_display *display,
 }
 #endif
 
-#include "wayland-server-protocol.h"
+#include "protocols/wayland-server-protocol.h"
 
 #endif

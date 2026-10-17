@@ -27,8 +27,8 @@
 #define WAYLAND_CLIENT_CORE_H
 
 #include <stdint.h>
-#include "wayland-util.h"
-#include "wayland-version.h"
+#include "protocols/wayland-util.h"
+#include "protocols/wayland-version.h"
 
 #ifdef  __cplusplus
 extern "C" {

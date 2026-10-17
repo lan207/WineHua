@@ -11,6 +11,9 @@ from pathlib import Path
 from typing import FrozenSet, Iterable, Union
 from zipfile import ZipFile
 
+from runtime_library_guard import RuntimeLibraryError, validate_library
+from dxvk_runtime_contract import validate_modern_runtime
+
 
 GSTREAMER_VERSION = "1.24.4"
 MONO_VERSION = "11.1.0"
@@ -487,6 +490,12 @@ def validate_graphics_runtime_payload(archive: Archive, wine_arch: str) -> None:
         require_equal(runtime.get("version"), version, f"DXVK {profile} version")
         require_equal(runtime.get("state"), state, f"DXVK {profile} state")
 
+    if wine_arch == 'aarch64':
+        try:
+            validate_modern_runtime(archive)
+        except (KeyError, ValueError) as exc:
+            raise ValidationError(str(exc)) from exc
+
     require_equal(vkd3d.get("schemaVersion"), 1, "VKD3D manifest schema version")
     require_equal(vkd3d.get("profile"), "limited-500k", "VKD3D profile")
     require_equal(vkd3d.get("version"), VKD3D_VERSION, "VKD3D version")
@@ -632,6 +641,15 @@ def validate_hap(path: Path) -> RuntimeInfo:
         try:
             info = validate_runtime_payload(payload)
             validate_media_dependency_closure(payload, hap, info.wine_arch)
+            audio_sources = [(archive, name) for archive in (payload, hap) for name in archive.names
+                             if Path(name).name == 'wineohos.so']
+            if not audio_sources:
+                raise ValidationError('missing Wine audio driver wineohos.so')
+            for archive, name in audio_sources:
+                try:
+                    validate_library(archive.read(name), name)
+                except RuntimeLibraryError as error:
+                    raise ValidationError(str(error)) from error
         finally:
             payload.close()
 

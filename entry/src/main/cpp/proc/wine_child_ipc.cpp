@@ -1,3 +1,4 @@
+#include "spawn_codec.h"
 // CreateNativeChildProcess bootstrap for a future opt-in Direct Wine path.
 // The existing StartNativeChildProcess Main(NativeChildProcess_Args) entry is unchanged.
 #include "wine_child_ipc.h"
@@ -7,6 +8,7 @@
 #include <hilog/log.h>
 #include <native_window/external_window.h>
 #include <unistd.h>
+#include <dlfcn.h>
 
 #include <chrono>
 #include <condition_variable>
@@ -72,8 +74,8 @@ int OnSurfaceRequest(uint32_t code, const OHIPCParcel* request, OHIPCParcel* rep
     int32_t result = -1;
     {
         std::lock_guard<std::mutex> lock(g_surfaceMutex);
-        const uint64_t last = g_lastGeneration[token.toplevelId];
-        auto it = g_surfaces.find(token.toplevelId);
+        const uint64_t last = g_lastGeneration[token.wlSurfaceId];
+        auto it = g_surfaces.find(token.wlSurfaceId);
         if (code == winehua::wineipc::kAttachSurface) {
             if (token.generation > last) {
                 // Reject stale messages before deserializing their producer.
@@ -86,20 +88,20 @@ int OnSurfaceRequest(uint32_t code, const OHIPCParcel* request, OHIPCParcel* rep
                         OH_NativeWindow_DestroyNativeWindow(it->second.window);
                         g_surfaces.erase(it);
                     }
-                    g_surfaces[token.toplevelId] = {token, incoming};
-                    g_lastGeneration[token.toplevelId] = token.generation;
+                    g_surfaces[token.wlSurfaceId] = {token, incoming};
+                    g_lastGeneration[token.wlSurfaceId] = token.generation;
                     incoming = nullptr;
                     result = 0;
                 }
             } else if (token.generation == last && it != g_surfaces.end() &&
-                       it->second.token.wlSurfaceId == token.wlSurfaceId &&
+                       it->second.token.toplevelId == token.toplevelId &&
                        it->second.token.width == token.width &&
                        it->second.token.height == token.height) {
                 result = 0; // retry after an ambiguous IPC reply
             }
         } else if (code == winehua::wineipc::kDetachSurface) {
             if (it != g_surfaces.end() && it->second.token.generation == token.generation &&
-                it->second.token.wlSurfaceId == token.wlSurfaceId) {
+                it->second.token.toplevelId == token.toplevelId) {
                 OH_NativeWindow_DestroyNativeWindow(it->second.window);
                 g_surfaces.erase(it);
                 result = 0;
@@ -109,14 +111,14 @@ int OnSurfaceRequest(uint32_t code, const OHIPCParcel* request, OHIPCParcel* rep
             // already borrowed this producer. The generation identifies the
             // queue, not each xdg configure/resize event.
             if (it != g_surfaces.end() && it->second.token.generation == token.generation &&
-                it->second.token.wlSurfaceId == token.wlSurfaceId) {
+                it->second.token.toplevelId == token.toplevelId) {
                 it->second.token.width = token.width;
                 it->second.token.height = token.height;
                 result = 0;
             }
         } else if (code == winehua::wineipc::kQuerySurface) {
             if (it != g_surfaces.end() && it->second.token.generation == token.generation &&
-                it->second.token.wlSurfaceId == token.wlSurfaceId &&
+                it->second.token.toplevelId == token.toplevelId &&
                 OH_NativeWindow_NativeObjectReference(it->second.window) == 0) {
                 OH_NativeWindow_NativeObjectUnreference(it->second.window);
                 result = 0;
@@ -165,7 +167,7 @@ int OnRequest(uint32_t code, const OHIPCParcel* request, OHIPCParcel* reply, voi
     if (code != winehua::wineipc::kBootstrap)
         return OH_IPC_CHECK_PARAM_ERROR;
     const char* params = OH_IPCParcel_ReadString(request);
-    if (!params || std::strlen(params) > 16384 ||
+    if (!params || strnlen(params, VP_ENTRY_CAP) >= VP_ENTRY_CAP ||
         OH_IPCParcel_ReadInt32(request, &count) != OH_IPC_SUCCESS ||
         count < 0 || count > winehua::wineipc::kMaxFds)
         return OH_IPC_CHECK_PARAM_ERROR;
@@ -181,6 +183,15 @@ int OnRequest(uint32_t code, const OHIPCParcel* request, OHIPCParcel* reply, voi
             return OH_IPC_CHECK_PARAM_ERROR;
         }
         received.push_back({name, fd});
+    }
+
+    if (!winehua::wineipc::IsProbeParams(params)) {
+        winehua::spawn::Request startup;
+        std::vector<std::string> actualNames;
+        for (const auto& item : received) actualNames.push_back(item.name);
+        bool valid = winehua::spawn::DecodeEntry(params, startup) && !startup.home.empty() &&
+            winehua::spawn::MatchNames(startup, actualNames);
+        if (!valid) { CloseFds(received); return OH_IPC_CHECK_PARAM_ERROR; }
     }
 
     // Do not release MainProc until the PID reply is ready. A short-lived
@@ -230,8 +241,8 @@ WineHua_DirectSurfaceAcquire(uint32_t toplevelId, uint32_t wlSurfaceId,
                               uint64_t* generation, int32_t* width, int32_t* height)
 {
     std::lock_guard<std::mutex> lock(g_surfaceMutex);
-    auto it = g_surfaces.find(toplevelId);
-    if (it == g_surfaces.end() || it->second.token.wlSurfaceId != wlSurfaceId ||
+    auto it = g_surfaces.find(wlSurfaceId);
+    if (it == g_surfaces.end() || it->second.token.toplevelId != toplevelId ||
         OH_NativeWindow_NativeObjectReference(it->second.window) != 0)
         return nullptr;
     if (generation) *generation = it->second.token.generation;
@@ -246,16 +257,15 @@ WineHua_DirectSurfaceAcquireByWlSurface(uint32_t wlSurfaceId, uint32_t* toplevel
                                          int32_t* height)
 {
     std::lock_guard<std::mutex> lock(g_surfaceMutex);
-    for (const auto& [id, surface] : g_surfaces) {
-        if (surface.token.wlSurfaceId != wlSurfaceId) continue;
-        if (OH_NativeWindow_NativeObjectReference(surface.window) != 0) return nullptr;
-        if (toplevelId) *toplevelId = id;
-        if (generation) *generation = surface.token.generation;
-        if (width) *width = surface.token.width;
-        if (height) *height = surface.token.height;
-        return surface.window;
-    }
-    return nullptr;
+    auto it = g_surfaces.find(wlSurfaceId);
+    if (it == g_surfaces.end() || OH_NativeWindow_NativeObjectReference(it->second.window) != 0)
+        return nullptr;
+    const auto& surface = it->second;
+    if (toplevelId) *toplevelId = surface.token.toplevelId;
+    if (generation) *generation = surface.token.generation;
+    if (width) *width = surface.token.width;
+    if (height) *height = surface.token.height;
+    return surface.window;
 }
 
 extern "C" __attribute__((visibility("default"))) void
@@ -285,7 +295,12 @@ extern "C" __attribute__((visibility("default"))) void NativeChildProcess_MainPr
         fds = std::move(g_fds);
     }
     if (params == winehua::wineipc::kProbeParams ||
-        params.rfind(std::string(winehua::wineipc::kProbeParams) + "|__env=WINEHUA_DIRECT_NCP=1", 0) == 0) {
+        params == std::string(winehua::wineipc::kProbeParams) + "|__env=WINEHUA_DIRECT_NCP=1" ||
+        [&] {
+            winehua::spawn::Request startup;
+            return winehua::spawn::DecodeEntry(params.c_str(), startup) &&
+                startup.argv == std::vector<std::string>{winehua::wineipc::kProbeParams};
+        }()) {
         RunProbe(fds);
         return;
     }
@@ -314,6 +329,16 @@ extern "C" __attribute__((visibility("default"))) void NativeChildProcess_MainPr
     NativeChildProcess_Args args{};
     args.entryParams = const_cast<char*>(params.c_str());
     args.fdList.head = nodes.empty() ? nullptr : &nodes[0];
+    if (params == winehua::wineipc::kBufferProbeParams) {
+        // Qualify Vulkan under the same Create/IPC child context as Direct
+        // games. The Start API's child cannot create a Vulkan instance here.
+        void* probe = dlopen("libdirect_shared_buffer_probe.so", RTLD_NOW | RTLD_LOCAL);
+        auto run = probe ? reinterpret_cast<void (*)(NativeChildProcess_Args)>(
+            dlsym(probe, "Main")) : nullptr;
+        if (!run) { CloseFds(fds); _exit(1); }
+        run(args);
+        _exit(1); // the standalone entry owns cleanup and exits itself
+    }
     Main(args);
     // Main may close or hand off its fds; process exit releases any survivors.
 }

@@ -23,18 +23,26 @@ TARBALL_DIR="$BUILD_DIR/gnutls_tarballs"
 # git 树的 bootstrap 依赖 gnulib 且与 libtasn1 等库存在版本错配
 # (src/gl/lib/malloc.c.diff 打不上, 且 build-aux 生成不全/软链断链),
 # fresh clone 下无法一次构建成功 → 改用同版本官方 release tarball,
-# 语义等价且可复现。
+# 这些 release archives 单独锁定与校验；不冒充 submodule checkout。
 fetch_tarball() {
     local name="$1" primary="$2" fallback="$3"
     local out="$TARBALL_DIR/$name"
     local archive="$TARBALL_DIR/$(basename "$primary")"
     # 幂等: configure 就位才算就绪 (防上次解压中断留下不完整目录被误判)
-    if [ -f "$out/configure" ]; then return 0; fi
+    if [ -f "$out/configure" ] && [ -f "$archive" ]; then
+        python3 "$SCRIPT_DIR/verify_release_archive.py" "$archive" --source-dir "$out"
+        return 0
+    fi
     mkdir -p "$TARBALL_DIR"
     if ! curl -fL --retry 3 -o "$archive" "$primary"; then
         [ -n "$fallback" ] || err "下载 $name 失败: $primary"
         log "--- $name 首选源失败, 回退: $fallback ---"
         curl -fL --retry 3 -o "$archive" "$fallback" || err "下载 $name 失败: $fallback"
+    fi
+    python3 "$SCRIPT_DIR/verify_release_archive.py" "$archive"
+    if [ -f "$out/configure" ]; then
+        python3 "$SCRIPT_DIR/verify_release_archive.py" "$archive" --source-dir "$out"
+        return 0
     fi
     case "$archive" in
         *.tar.xz) tar -xJf "$archive" -C "$TARBALL_DIR" ;;

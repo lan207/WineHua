@@ -31,12 +31,18 @@ cpp = '$OHOS_SDK/native/llvm/bin/clang++'
 ar = '$OHOS_SDK/native/llvm/bin/llvm-ar'
 strip = '$OHOS_SDK/native/llvm/bin/llvm-strip'
 pkg-config = '$PKG_CONFIG_BIN'
+wayland-scanner = '$WAYLAND_SCANNER'
 
 [built-in options]
 c_args = ['--target=$NATIVE_TARGET', '--sysroot=$SYSROOT', '-I$ffi_prefix/include']
 c_link_args = ['--target=$NATIVE_TARGET', '--sysroot=$SYSROOT', '-fuse-ld=lld', '-L$ffi_prefix/lib']
 # meson 构建机依赖查找 (wayland-scanner 等) 由此选项决定, 环境变量 PKG_CONFIG_PATH 会被它覆盖
 build.pkg_config_path = ['$BUILD_DIR/host-tools/lib/pkgconfig']
+# Cross-target dependency search must not inherit the build-machine path.
+pkg_config_path = ['$NATIVE_BUILD/libxml2/install/lib/pkgconfig', '$ffi_prefix/lib/pkgconfig', '$NATIVE_BUILD/libepoxy/install/lib/pkgconfig']
+
+[properties]
+pkg_config_libdir = ['$NATIVE_BUILD/libxml2/install/lib/pkgconfig', '$ffi_prefix/lib/pkgconfig', '$NATIVE_BUILD/libepoxy/install/lib/pkgconfig', '$SYSROOT/usr/lib/pkgconfig']
 
 [host_machine]
 system = 'linux'
@@ -60,7 +66,11 @@ build_libffi() {
     mkdir -p "$build"
     cd "$build"
 
-    "$src/autogen.sh" 2>/dev/null || true
+    # autoreconf resolves configure.ac relative to the source directory.
+    # Never hide bootstrap failures or run it inside the out-of-tree build.
+    if [ ! -x "$src/configure" ]; then
+        (cd "$src" && ./autogen.sh)
+    fi
     if [ "$HOST_OS" = "Darwin" ]; then
         CC="$OHOS_SDK/native/llvm/bin/clang" CCAS="$OHOS_SDK/native/llvm/bin/clang" \
         AR="$OHOS_SDK/native/llvm/bin/llvm-ar" \
@@ -129,7 +139,7 @@ build_native_freetype() {
         -DFT_DISABLE_PNG=ON \
         -DFT_DISABLE_BZIP2=ON \
         -DBUILD_SHARED_LIBS=ON
-    ninja -C "$build"
+    ninja -j"$JOBS" -C "$build"
 
     copy_soname_with_linker_alias "$build/libfreetype.so.6.20.2" "libfreetype.so.6" "libfreetype.so"
     log "freetype ($NATIVE_ARCH) → $NATIVE_LIBS"
@@ -157,7 +167,7 @@ build_native_libxml2() {
         -DLIBXML2_WITH_FTP=OFF -DLIBXML2_WITH_MODULES=OFF \
         -DLIBXML2_WITH_LZMA=OFF -DLIBXML2_WITH_ZLIB=OFF -DLIBXML2_WITH_ICONV=OFF \
         -DCMAKE_INSTALL_PREFIX="$build/install"
-    cmake --build "$build"
+    cmake --build "$build" --parallel "$JOBS"
     cmake --install "$build"
 
     copy_soname_with_linker_alias "$build/libxml2.so.2.12.0" "libxml2.so.2" "libxml2.so"
@@ -183,13 +193,14 @@ build_native_xkbcommon() {
     export PKG_CONFIG_PATH="$NATIVE_BUILD/libxml2/install/lib/pkgconfig:$NATIVE_BUILD/libffi/install/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
     meson setup "$build" "$src" \
         --cross-file "$cross" \
+        -Dbuild.pkg_config_path="$BUILD_DIR/host-tools/lib/pkgconfig" \
         -Denable-x11=false \
         -Denable-wayland=false \
         -Denable-xkbregistry=true \
         -Denable-tools=false \
         -Denable-docs=false \
         -Denable-bash-completion=false
-    ninja -C "$build"
+    ninja -j"$JOBS" -C "$build"
 
     copy_soname_with_linker_alias "$build/libxkbcommon.so.0.0.0" "libxkbcommon.so.0" "libxkbcommon.so"
     copy_soname_with_linker_alias "$build/libxkbregistry.so.0.0.0" "libxkbregistry.so.0" "libxkbregistry.so"
@@ -205,6 +216,7 @@ build_wayland() {
         return 0
     fi
 
+    bash "$SCRIPT_DIR/build_wayland.sh" --scanner-only
     log "--- wayland ($NATIVE_ARCH) ---"
     local src="$ROOT/thirdparty/wayland"
     local build="$NATIVE_BUILD/wayland"
@@ -215,9 +227,10 @@ build_wayland() {
     export PKG_CONFIG_PATH="$NATIVE_BUILD/libffi/install/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
     meson setup "$build" "$src" \
         --cross-file "$cross" \
+        -Dbuild.pkg_config_path="$BUILD_DIR/host-tools/lib/pkgconfig" \
         -Ddocumentation=false -Dtests=false -Dscanner=false
 
-    ninja -C "$build"
+    ninja -j"$JOBS" -C "$build"
 
     # 安装 .so 到 Native libs
     cp "$build/src/libwayland-server.so.0.22.0" "$NATIVE_LIBS/libwayland-server.so.0"
@@ -233,7 +246,8 @@ build_wayland() {
 # ── 3. xdg-shell + wayland 协议文件 (架构无关, 只生成一次) ──
 build_protocols() {
     if [ -f "$WINEHUA_INC/xdg-shell-protocol.c" ] \
-       && [ -f "$WINEHUA_INC/winehua-toplevel-protocol.c" ]; then
+       && [ -f "$WINEHUA_INC/winehua-toplevel-protocol.c" ] \
+       && [ "$WINEHUA_INC/winehua-toplevel-protocol.c" -nt "$WINEHUA_INC/winehua-toplevel.xml" ]; then
         log "协议文件已就绪，跳过"
         return 0
     fi
@@ -255,7 +269,7 @@ build_protocols() {
 
     # WineHua 私有协议 (权威源在 winewayland.drv/Makefile.in 同文件, 双端
     # 同一 XML; server 侧只需 server-header + private-code)
-    local wh_xml="$ROOT/thirdparty/wine/dlls/winewayland.drv/winehua-toplevel.xml"
+    local wh_xml="$WINEHUA_INC/winehua-toplevel.xml"
     "$scanner" server-header "$wh_xml" "$WINEHUA_INC/winehua-toplevel-server-protocol.h"
     "$scanner" private-code "$wh_xml" "$WINEHUA_INC/winehua-toplevel-protocol.c"
 
@@ -307,6 +321,7 @@ build_libepoxy() {
     rm -rf "$build"
     meson setup "$build" "$src" \
         --cross-file "$cross" \
+        -Dbuild.pkg_config_path="$BUILD_DIR/host-tools/lib/pkgconfig" \
         --prefix "$build/install" \
         --libdir lib \
         -Dglx=no \
@@ -315,7 +330,7 @@ build_libepoxy() {
         -Ddocs=false \
         -Dtests=false
 
-    ninja -C "$build"
+    ninja -j"$JOBS" -C "$build"
     meson install -C "$build"
 
     cp "$build/install/lib/libepoxy.so.0"* "$NATIVE_LIBS/libepoxy.so.0" 2>/dev/null || \
@@ -343,6 +358,9 @@ build_virglrenderer() {
     local config_stamp="$build/.winehua-config"
     local expected_config="venus=1;render-server-mode=thread;render-server-worker=thread;vulkan-dload=1"
 
+    [ -d "$src" ] || err "thirdparty/virglrenderer is missing"
+    bash "$ROOT/scripts/apply_virglrenderer_ohos_patches.sh" "$src"
+
     rm -f "$NATIVE_LIBS/libvirgl_test_server.so"
 
     if [ -f "$NATIVE_LIBS/libvirglrenderer.so.1" ] && \
@@ -369,6 +387,7 @@ build_virglrenderer() {
     rm -rf "$build"
     meson setup "$build" "$src" \
         --cross-file "$cross" \
+        -Dbuild.pkg_config_path="$BUILD_DIR/host-tools/lib/pkgconfig" \
         --prefix "$build/install" \
         --libdir lib \
         -Dplatforms=egl \
@@ -383,7 +402,7 @@ build_virglrenderer() {
         -Dfuzzer=false \
         -Dtracing=none
 
-    ninja -C "$build"
+    ninja -j"$JOBS" -C "$build"
     meson install -C "$build"
 
     # libvirglrenderer

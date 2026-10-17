@@ -5,6 +5,7 @@
 #include "env_profiles.h"
 #include "proc/spawner.h"
 #include "wine_constants.h"
+#include "prefix_registry.h"
 #include "compositor/wayland_server.h"
 #include "audio_ipc_protocol.h"
 #include "graphics/graphics_broker.h"
@@ -74,7 +75,8 @@ bool IsWinePrefixInitialized(const std::string& prefixDir) {
            FileHasData((prefix + "/user.reg").c_str()) &&
            DirExists((prefix + "/drive_c/windows/system32").c_str()) &&
            DirExists((prefix + "/drive_c/windows/temp").c_str()) &&
-           DirExists((prefix + "/drive_c/users").c_str());
+           DirExists((prefix + "/drive_c/users").c_str()) &&
+           winehua::HasPrefixShellRegistrations(prefix + "/system.reg");
 }
 
 bool IsWinePrefixInitialized() {
@@ -409,7 +411,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         && access(initMarker.c_str(), F_OK) != 0;
 
     if (!prefixReady) {
-        OH_LOG_WARN(LOG_APP, "[Launch-Async] prefix not initialized, preparing WoW64 and running wineboot --init...");
+        OH_LOG_WARN(LOG_APP, "[Launch-Async] prefix incomplete, preparing WoW64 and running wineboot --init --update...");
         if (FILE* marker = fopen(initMarker.c_str(), "w")) {
             fputs("wineboot\n", marker);
             fclose(marker);
@@ -455,6 +457,9 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         // (argv/兼容档位由 Spawner 按 kind 注入; wine 加载器 token 按方案判定 —
         // 方案② box64 不带, 方案①③ 原生 __wine_main 带, 见 spawner.cpp)
         winehua::SpawnRequest wbReq{winehua::SpawnKind::Wineboot};
+        // An interrupted install may already have .update-timestamp. Force
+        // wine.inf registration without deleting the user's existing prefix.
+        wbReq.argv = {"--update"};
         wbReq.desktopSurface = ws->IsDesktopMode();
         wbReq.env = {"LANG=" + p->wineLang + ".UTF-8",
                      "LC_ALL=" + p->wineLang + ".UTF-8"};
@@ -545,7 +550,7 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         }
         OH_LOG_WARN(LOG_APP, "[Launch-Async] wineboot --init pid=%{public}d", childPid);
         /* 播种: wineboot 退出即 SetEvent, explorer 即可放行。等待按设备模式
-         * 分流 (IsLaunchChildExited): 手机 fork 走 /proc 判活, NCP 走退出回调。
+         * 分流 (IsLaunchChildExited): 手机 fork 走真实 waitpid, NCP 走退出回调。
          * 3 分钟大超时仅作挂死安全网; 超时未退出必须判失败上报: 缺少这次
          * wineboot, explorer 的 run_wineboot 永远等不到 boot 事件 (静默失败,
          * 不能放行)。 */
@@ -592,6 +597,8 @@ static bool LaunchPadMode(LaunchParams* p, int audioBootstrapFd, bool* desktopDe
         // 新桌面会话开始: 清除上次会话的桌面 shell 标记守卫, 使本次 root 出现时
         // 重新标记基础进程 (desktop + explorer 等) 为不可由用户结束。
         BeginDesktopSession();
+        if (gStateTsfn)
+            napi_call_threadsafe_function(gStateTsfn, strdup("phase:explorer"), napi_tsfn_blocking);
         int dw = ws->OutputWidth() > 0 ? ws->OutputWidth() : 1280;
         int dh = ws->OutputHeight() > 0 ? ws->OutputHeight() : 720;
         OH_LOG_WARN(LOG_APP, "[Launch-Async] explorer desktop size: outputW=%{public}d outputH=%{public}d → %{public}dx%{public}d",
@@ -660,6 +667,9 @@ void LaunchThreadFunc(LaunchParams* p) {
     OH_LOG_WARN(LOG_APP, "[Launch-Async] wineserver + wineboot + wine starting in background");
     OH_LOG_WARN(LOG_APP, "[Launch-Async] XKB_CONFIG_ROOT=%{public}s",
                 (p->winehuaBin + "/../share/X11/xkb").c_str());
+
+    if (gStateTsfn)
+        napi_call_threadsafe_function(gStateTsfn, strdup("phase:graphics"), napi_tsfn_blocking);
 
     auto& graphicsBroker = winehua::GraphicsBroker::GetInstance();
     graphicsBroker.SetWineRuntimeBinaryDir(p->winehuaBin);

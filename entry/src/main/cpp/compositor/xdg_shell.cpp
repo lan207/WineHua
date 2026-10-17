@@ -78,8 +78,9 @@ static void tl_move(wl_client*, wl_resource* tlRes, wl_resource* /*seat*/, uint3
     WaylandServer::GetInstance()->StartMoveGrab(td->toplevelId, serial);
 }
 static void tl_resize(wl_client*, wl_resource*, wl_resource*, uint32_t, uint32_t) {}
-static void fire_limits_event(SurfaceData* sd) {
-    if (!sd || sd->toplevelId == 0) return;
+static void fire_limits_event(ToplevelData* td, SurfaceData* sd) {
+    if (!td || !sd || !td->limitsEvents.ShouldPublish(
+            sd->toplevelId, sd->minWidth, sd->minHeight, sd->maxWidth, sd->maxHeight)) return;
     std::string json =
         ToplevelEventBus::JsonLimits(sd->minWidth, sd->minHeight, sd->maxWidth, sd->maxHeight);
     OH_LOG_INFO(LOG_APP, "[XDG] fire_limits tl=%{public}u %{public}s maxState=%{public}s",
@@ -100,9 +101,7 @@ static void tl_set_min_size(wl_client*, wl_resource* tlRes, int32_t w, int32_t h
     sd->minWidth = w;
     sd->minHeight = h;
     sd->hasSizeLimits = true;
-    OH_LOG_INFO(LOG_APP, "[XDG] tl_set_min_size toplevel=%{public}u %{public}dx%{public}d",
-                sd->toplevelId, w, h);
-    fire_limits_event(sd);
+    fire_limits_event(td, sd);
 }
 
 // Wine 最大化时不调 xdg_toplevel.set_maximized, 只把 max_size 设为
@@ -141,11 +140,8 @@ static void tl_set_max_size(wl_client* client, wl_resource* tlRes, int32_t w, in
                          {XDG_TOPLEVEL_STATE_MAXIMIZED, XDG_TOPLEVEL_STATE_ACTIVATED});
         OH_LOG_INFO(LOG_APP, "[XDG] max_size→maximize tl=%{public}u → configure(%{public}d,%{public}d)",
                     sd->toplevelId, w, workH);
-    } else {
-        OH_LOG_INFO(LOG_APP, "[XDG] tl_set_max_size toplevel=%{public}u %{public}dx%{public}d",
-                    sd->toplevelId, w, h);
     }
-    fire_limits_event(sd);
+    fire_limits_event(td, sd);
 }
 static void tl_set_maximized(wl_client* client, wl_resource* tlRes) {
     auto* td = static_cast<ToplevelData*>(wl_resource_get_user_data(tlRes));
@@ -347,7 +343,10 @@ static void xs_get_toplevel(wl_client* client, wl_resource* xsRes, uint32_t id) 
             d->toplevelId = sd->toplevelId;
             td->toplevelId = sd->toplevelId;
             WaylandServer::GetInstance()->RegisterToplevelResource(sd->toplevelId, tl);
-            DirectWineSurfaceCreated(sd->clientPid, sd->toplevelId, sd->protocolId);
+            // Managed OHOS windows retain their single-output WSI. Desktop
+            // Direct queues are declared per drawable by winehua_toplevel v2.
+            if (!WaylandServer::GetInstance()->IsDesktopMode())
+                DirectWineSurfaceCreated(sd->clientPid, sd->toplevelId, sd->protocolId);
             // WineHua: 应用暂存的 modal 关系 (set_modal 早于 get_toplevel 到达)。
             // 在 created 事件之前执行 — PC 模式 ArkTS 据此把 modal 窗口接入
             // owner 的子窗口路径而非启动独立 Ability (事件顺序红线)
@@ -357,7 +356,7 @@ static void xs_get_toplevel(wl_client* client, wl_resource* xsRes, uint32_t id) 
             if (!WaylandServer::GetInstance()->Policy().OhosWindowPerToplevel()) {
                 WaylandServer::GetInstance()->PostToplevelEvent(
                     sd->toplevelId, ToplevelEventType::Created,
-                    ToplevelEventBus::JsonCreatedDefault());
+                    ToplevelEventBus::JsonCreatedDefault(sd->clientPid));
             }
         }
     }
@@ -377,13 +376,18 @@ static void xs_set_window_geometry(wl_client*, wl_resource* xsRes, int32_t x, in
     // 语义 (contentRect=buffer 内内容偏移, toplevel 的"桌面屏幕位置"义另经
     // compute 派生存入 screenPos) 与取值时机与旧"写 geo 字段→commit 时读"
     // 逐点等价, 含"写后未 commit 即被读"窗口期。
+    const bool changed = !sd->committed.hasWindowGeometry ||
+                         sd->committed.contentRect.x != x || sd->committed.contentRect.y != y ||
+                         sd->committed.contentRect.w != w || sd->committed.contentRect.h != h;
     sd->committed.hasWindowGeometry = true;
     sd->committed.contentRect.x = x;
     sd->committed.contentRect.y = y;
     sd->committed.contentRect.w = w;
     sd->committed.contentRect.h = h;
-    OH_LOG_INFO(LOG_APP, "[MW-GEO] window_geometry for surface -> toplevel #%{public}u: (%{public}d,%{public}d %{public}dx%{public}d)",
-                sd->toplevelId, x, y, w, h);
+    if (changed) {
+        OH_LOG_INFO(LOG_APP, "[MW-GEO] window_geometry for surface -> toplevel #%{public}u: (%{public}d,%{public}d %{public}dx%{public}d)",
+                    sd->toplevelId, x, y, w, h);
+    }
 }
 static void xs_ack_configure(wl_client*, wl_resource*, uint32_t) {}
 
