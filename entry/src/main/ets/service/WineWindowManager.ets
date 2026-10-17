@@ -262,6 +262,15 @@ export class WineWindowManager {
     return forced === 'subwindow';
   }
 
+  // 系统装饰承载判据 (本文件唯一出处): x11 路线 ∧ ability 承载。满足时承载
+  // 窗的标题栏在系统层 —— wine 的窗口内绝对坐标不含它, 凡按内容原点落坐标
+  // 的场合需 +getWindowDecorHeight×scale 补偿 (modal 装饰制度注入 #170 /
+  // popup 定位补偿 #171); wayland 自绘 caption、Pad 页面内顶条
+  // (stripPxOf) 各自天然自洽, 不在本档
+  systemDecorCarrying(): boolean {
+    return DisplayRouteService.getInstance().isX11() && !this.fusionUsesSubWindow();
+  }
+
   async init(windowStage: window.WindowStage, abilityContext: common.UIAbilityContext): Promise<void> {
     this.windowStage = windowStage;
     this.mainWindowStage = windowStage;
@@ -588,16 +597,8 @@ export class WineWindowManager {
           const obj: Record<string, number> = JSON.parse(data) as Record<string, number>;
           if (obj.modal === 1) {
             this.modalToplevelIds.add(id);
-            // modal 装饰制度 (任务 #170): 系统标题栏需要**两个条件同时成立**
-            // ① x11 路线 —— wayland 路线 wine 自绘 CSD (标题栏在内容里),
-            //    开系统装饰 = 双标题栏 + 内容被挤, incumbent 行为逐字节不变
-            //    是隔离红线; x11 无人绘制 caption, 系统标题栏是唯一出口
-            // ② ability 承载 (非 fusionUsesSubWindow) —— Pad subWindow 承载
-            //    走自绘顶条 (#167 续)
-            // 2026-10-17 MOR-M1 首装实测: x11 PC modal 沿用 Pad 的
-            // decorEnabled=false 裸奔无标题栏
-            ModalWindowManager.getInstance().setUseSystemDecor(
-              DisplayRouteService.getInstance().isX11() && !this.fusionUsesSubWindow());
+            // modal 装饰制度 (任务 #170): 判据收口 systemDecorCarrying()
+            ModalWindowManager.getInstance().setUseSystemDecor(this.systemDecorCarrying());
             // 清 title 先到时的幽灵 entry (modal 无 ability, 不建 entry)。
             // 守卫: 真 Ability (win/ctx/starting 已回填) 存在时绝不删 —
             // 若因时序它先建 (C++ pending 未兜住等), 删掉会让双窗口并存
@@ -801,6 +802,9 @@ export class WineWindowManager {
       case 'popup_hide':
         // PC 模式 popup 子窗口 (desktop 模式 C++ 不会发这些事件)
         if (this.isDesktopMode) return;
+        // popup 定位的系统装饰补偿判据 (任务 #171, 与 modal 的 ModalDecor
+        // 注入同源单点 systemDecorCarrying)
+        PopupWindowManager.getInstance().setParentSystemDecor(this.systemDecorCarrying());
         // 父窗口 Wine 尺寸传给 PopupWindowManager: 全屏游戏把渲染 surface 放
         // popup (popup 尺寸==模拟分辨率==父窗口尺寸), 需判定并拉伸到宿主屏幕;
         // 普通菜单 popup 不受影响。

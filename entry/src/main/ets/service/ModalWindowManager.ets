@@ -407,12 +407,15 @@ export class ModalWindowManager {
     const modalH = Math.max(1, Math.round(h * scale)) + stripPx + decorPx;
     let x: number;
     let y: number;
+    // owner 内容原点在 frame 原点下方一个 caption (SystemDecor 制度下
+    // decorPx 即此值, Pad 制度 decorPx=0 原样), wine 的 dx/dy 与居中基准
+    // 都是内容坐标 —— 不补则 PC 对话框整体上移一个标题栏 (#171)
     if (FusionWindowManager.getInstance().has(ownerId)) {
       x = pr.left + Math.round((pr.width - modalW) / 2);
-      y = pr.top + Math.round((pr.height - modalH) / 2);
+      y = pr.top + decorPx + Math.round((pr.height - decorPx - modalH) / 2);
     } else {
       x = pr.left + Math.round(Number(d.dx ?? 0) * scale);
-      y = pr.top + Math.round(Number(d.dy ?? 0) * scale);
+      y = pr.top + decorPx + Math.round(Number(d.dy ?? 0) * scale);
     }
     try {
       const scr = display.getDefaultDisplaySync();
