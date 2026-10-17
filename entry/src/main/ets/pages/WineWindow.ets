@@ -276,7 +276,7 @@ struct WineWindow {
   // 在 FusionWindowManager 侧完成, plan RF#1)。
   @State stripBtnHover: number = -1;  // 鼠标悬停的按钮 idx (触摸无悬停态)
   @State stripBtnPress: number = -1;  // 按压中的按钮 idx
-  private static readonly STRIP_BTN_W: number = 46; // Win11 caption 按钮宽
+  private static readonly STRIP_BTN_W: number = 40; // caption 按钮宽 (Win11 46, 用户裁定收窄至 40vp)
 
   // 10vp 图标在 46×stripVp 按钮内居中 (Win11 caption 字形规格: 10×10, 1vp 描边)。
   // 坑: Path.commands 坐标单位是 px (物理像素), 与属性单位 (vp) 不同轨 ——
