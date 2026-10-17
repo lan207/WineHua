@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import shutil
 from pathlib import Path, PurePosixPath
 import tarfile
 
@@ -46,9 +47,25 @@ def verify(archive, source=None):
             raise ValueError('Unexpected cached source files: ' + str(sorted(actual_files - expected)[:10]))
     print('PASS release archive identity: ' + archive.name + ' ' + actual)
 
+def prepare_build_source(archive, source, destination):
+    """Keep the verified release cache immutable across upstream generators."""
+    source, destination = Path(source), Path(destination)
+    if (destination.resolve().is_relative_to(source.resolve()) or
+            source.resolve().is_relative_to(destination.resolve())):
+        raise ValueError('Build source and release cache must be separate trees')
+    verify(archive, source)
+    # Refuse a reused destination instead of mixing old/generated source files.
+    shutil.copytree(source, destination, symlinks=True)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('archive', type=Path)
     parser.add_argument('--source-dir', type=Path)
+    parser.add_argument('--build-copy', type=Path, help='Copy verified sources to a new writable build tree')
     args = parser.parse_args()
-    verify(args.archive, args.source_dir)
+    if args.build_copy is not None:
+        if args.source_dir is None:
+            parser.error('--build-copy requires --source-dir')
+        prepare_build_source(args.archive, args.source_dir, args.build_copy)
+    else:
+        verify(args.archive, args.source_dir)

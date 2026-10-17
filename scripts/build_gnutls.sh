@@ -24,10 +24,12 @@ TARBALL_DIR="$BUILD_DIR/gnutls_tarballs"
 # (src/gl/lib/malloc.c.diff 打不上, 且 build-aux 生成不全/软链断链),
 # fresh clone 下无法一次构建成功 → 改用同版本官方 release tarball,
 # 这些 release archives 单独锁定与校验；不冒充 submodule checkout。
+declare -A RELEASE_ARCHIVES
 fetch_tarball() {
     local name="$1" primary="$2" fallback="$3"
     local out="$TARBALL_DIR/$name"
     local archive="$TARBALL_DIR/$(basename "$primary")"
+    RELEASE_ARCHIVES["$name"]="$archive"
     # 幂等: configure 就位才算就绪 (防上次解压中断留下不完整目录被误判)
     if [ -f "$out/configure" ] && [ -f "$archive" ]; then
         python3 "$SCRIPT_DIR/verify_release_archive.py" "$archive" --source-dir "$out"
@@ -116,6 +118,12 @@ build_one() {
     log "--- 构建 $name ---"
     rm -rf "$build"
     mkdir -p "$build"
+    # Upstream generators (notably libunistring.sym-t1) may write to srcdir even
+    # in an out-of-tree build. Keep the verified archive cache pristine so the
+    # next make invocation can enforce the same strict source identity gate.
+    python3 "$SCRIPT_DIR/verify_release_archive.py" "${RELEASE_ARCHIVES[$name]}" \
+        --source-dir "$src" --build-copy "$build/source"
+    src="$build/source"
     cd "$build"
     CC="$CC" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" \
     "$src/configure" --host=$GNU_HOST --prefix="$STAGING" \

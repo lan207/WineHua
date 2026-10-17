@@ -180,3 +180,11 @@ All 70 packaged native `.so` files have ELF machine 183. Build identities and
 remaining host/device validation limits are recorded in `local-validation.json`.
 For local SDK 26, target SDK syntax is `26.0.0`; compatible remains `6.1.0(23)`.
 The target's existing SDK 23 defaults and product files remain unchanged.
+
+GNU release caches remain pristine across repeated dependency builds. Each
+Autotools build configures a separate, verified source copy under its own build
+directory, because upstream generators can write into `srcdir` even during a
+VPATH build (for example, libunistring's export-symbol temporary files).
+Archive and cached-source checks remain strict; unexpected cache additions or
+changed source bytes are still rejected. This separates build-generated files
+without weakening provenance checks or changing the runtime source inputs.

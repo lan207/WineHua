@@ -39,6 +39,43 @@ class ArchiveIntegrity(unittest.TestCase):
     def test_valid_archive_and_cached_tree(self):
         gate.verify(self.archive, self.source)
 
+    def test_generated_build_source_does_not_mutate_release_cache(self):
+        build_source = self.root / 'build/source'
+        gate.prepare_build_source(self.archive, self.source, build_source)
+        (build_source / 'configure').write_text('build generator changed this file')
+        (build_source / 'lib').mkdir()
+        (build_source / 'lib/libunistring.sym-t1').write_text('generated symbols')
+        gate.verify(self.archive, self.source)
+        with self.assertRaises(ValueError):
+            gate.verify(self.archive, build_source)
+
+    def test_builder_configures_and_touches_only_mutable_copy(self):
+        script = (ROOT / 'scripts/build_gnutls.sh').read_text()
+        body = script.split('build_one() {', 1)[1].split('\n}', 1)[0]
+        copy_at = body.index('--source-dir "$src" --build-copy "$build/source"')
+        bind_at = body.index('src="$build/source"')
+        configure_at = body.index('"$src/configure"')
+        touch_at = body.index('find "$src"')
+        self.assertLess(copy_at, bind_at)
+        self.assertLess(bind_at, configure_at)
+        self.assertLess(configure_at, touch_at)
+        self.assertNotIn('TARBALL_DIR', body)
+
+    def test_build_copy_rejects_tampered_source(self):
+        (self.source / 'extra.h').write_text('unexpected')
+        with self.assertRaisesRegex(ValueError, 'Unexpected cached'):
+            gate.prepare_build_source(self.archive, self.source, self.root / 'build/source')
+        self.assertFalse((self.root / 'build/source').exists())
+
+    def test_build_copy_requires_separate_and_fresh_destination(self):
+        for destination in (self.source, self.source / 'nested', self.root):
+            with self.assertRaisesRegex(ValueError, 'separate trees'):
+                gate.prepare_build_source(self.archive, self.source, destination)
+        destination = self.root / 'existing'
+        destination.mkdir()
+        with self.assertRaises(FileExistsError):
+            gate.prepare_build_source(self.archive, self.source, destination)
+
     def test_archive_tamper_rejected(self):
         with self.archive.open('ab') as output:
             output.write(b'tampered')
