@@ -32,6 +32,109 @@ class ModalEntry {
   h: number = 0;
 }
 
+// ─── modal 装饰制度 (路线×承载形态差异的唯一收口, 流程体零路线分支) ───
+// 谁画模态对话框的标题栏, 两条路线答案不同, 全部差异收在本接口两实现:
+//  - NoSystemDecor: wayland 全形态 (wine 自绘 CSD —— incumbent 行为逐字节
+//    不变是隔离红线) + x11 Pad subWindow 承载 (页面自绘顶条, #167 续)
+//  - SystemDecor: x11 + ability 承载 (PC/2in1 独立窗) —— 系统标题栏,
+//    decor 逐项配置同 WWA 主窗; 系统 ✕ 经 systemCloseModal 回发
+//    WM_DELETE, 只销毁不回发会让 wine 侧 owner 永久禁用
+interface ModalDecor {
+  readonly useSystemDecor: boolean;
+  optionsTitle(modalId: number): string;
+  // resize 的承载装饰高度补偿 (px): Pad=0 (顶条补偿走 stripPxOf),
+  // SystemDecor=getWindowDecorHeight()×scale
+  heightCompPx(subWin: window.Window | null, scale: number): number;
+  // loadContent 后的窗口配置 (decor API + close 契约监听)。isCurrent =
+  // 本 entry 仍在册判据 (身份语义归 manager), 供监听回发前防同 id 复用/
+  // 自身销毁竞态
+  configureWindow(subWin: window.Window, modalId: number,
+                  isCurrent: () => boolean): void;
+  titleChanged(subWin: window.Window | null, title: string): void;
+  releaseWindow(subWin: window.Window): void;
+}
+
+class NoSystemDecor implements ModalDecor {
+  readonly useSystemDecor: boolean = false;
+  optionsTitle(_modalId: number): string { return ''; }
+  heightCompPx(_subWin: window.Window | null, _scale: number): number { return 0; }
+  configureWindow(_subWin: window.Window, _modalId: number,
+                  _isCurrent: () => boolean): void { }
+  titleChanged(_subWin: window.Window | null, _title: string): void { }
+  releaseWindow(_subWin: window.Window): void { }
+}
+
+class SystemDecor implements ModalDecor {
+  readonly useSystemDecor: boolean = true;
+  // setWindowDecorHeight 注入值。⚠ 单位是 vp 不是 px (SDK d.ts: 合法区间
+  // [37,112], 单位 vp) —— 首版按 40px 补偿, 实际 caption 40vp=80px
+  // (scale 2.0), 差 40px 把对话框底部按钮裁了一半 (2026-10-17 MOR-M1
+  // 实测 + d.ts 判据)。补偿以 getWindowDecorHeight() 读回为准, 本值只是
+  // 注入值与读回失败时的兜底
+  private static readonly DECOR_HEIGHT_VP: number = 40;
+
+  optionsTitle(modalId: number): string {
+    return ModalWindowManager.getInstance().titleOf(modalId);
+  }
+
+  heightCompPx(subWin: window.Window | null, scale: number): number {
+    if (!subWin) {
+      return 0;
+    }
+    try {
+      const vp = subWin.getWindowDecorHeight();  // [37,112] vp, d.ts 判据
+      if (vp >= 37 && vp <= 112) {
+        return Math.round(vp * scale);
+      }
+    } catch (_) { /* 读回失败走兜底 */ }
+    return Math.round(SystemDecor.DECOR_HEIGHT_VP * scale);
+  }
+
+  configureWindow(subWin: window.Window, modalId: number,
+                  isCurrent: () => boolean): void {
+    // 逐项独立 try/catch: 装饰 API 设备能力面窄 (801/1300004 各调用不同),
+    // 合并 catch 吞精确错误面 (WWA 同款纪律)
+    const dstep = (name: string, fn: () => void): void => {
+      try {
+        fn();
+        hilog.info(DOMAIN, TAG, '[MODAL] #%{public}d decor step %{public}s ok', modalId, name);
+      } catch (e) {
+        hilog.warn(DOMAIN, TAG, '[MODAL] #%{public}d decor step %{public}s FAILED: %{public}s',
+          modalId, name, JSON.stringify(e));
+      }
+    };
+    dstep('decorVisible(true)', () => { subWin.setWindowDecorVisible(true); });
+    dstep('titleButtons(false,false,true)',
+      () => { subWin.setWindowTitleButtonVisible(false, false, true); });
+    dstep('titleMove(true)', () => { subWin.setWindowTitleMoveEnabled(true); });
+    dstep('decorHeight', () => { subWin.setWindowDecorHeight(SystemDecor.DECOR_HEIGHT_VP); });
+    const t = ModalWindowManager.getInstance().titleOf(modalId);
+    if (t) {
+      dstep('title', () => { subWin.setWindowTitle(t); });
+    }
+    // 系统标题栏 close 契约 (与 WWA cleanup 同款): WINDOW_DESTROYED →
+    // 先回发 WM_DELETE (wine 结束模态循环并恢复 owner) 再本地销毁
+    subWin.on('windowEvent', (eventType: number) => {
+      if (eventType === window.WindowEventType.WINDOW_DESTROYED) {
+        ModalWindowManager.getInstance().systemCloseModal(modalId, isCurrent);
+      }
+    });
+  }
+
+  titleChanged(subWin: window.Window | null, title: string): void {
+    if (subWin) {
+      try { subWin.setWindowTitle(title); } catch (_) { /* ignore */ }
+    }
+  }
+
+  releaseWindow(subWin: window.Window): void {
+    try { subWin.off('windowEvent'); } catch (_) { /* 未注册则忽略 */ }
+  }
+}
+
+const NO_SYSTEM_DECOR: ModalDecor = new NoSystemDecor();
+const SYSTEM_DECOR: ModalDecor = new SystemDecor();
+
 // owner 未就绪时暂存的 show 请求数据 (ArkTS 禁内联对象类型, 必须命名 interface)
 interface PendingShow {
   data: Record<string, string | number>;
@@ -50,6 +153,18 @@ interface PendingShow {
  *    (与 Win32 模态对话框语义一致)
  * 窗口内容复用 pages/WineWindow (全键盘/触控/鼠标 + renderer), 与
  * PopupWindowManager 同构 (XComponent + createRenderer(modalId))。
+ *
+ * 装饰制度差异 (谁画模态对话框的标题栏) 收口在 ModalDecor 接口两实现
+ * (本文件, 承载流程体零路线分支):
+ *  - NoSystemDecor: wayland 全形态 (wine 自绘 CSD —— incumbent 行为逐字节
+ *    不变是隔离红线) + x11 Pad subWindow 承载 (页面自绘顶条, #167 续)
+ *  - SystemDecor: x11 + ability 承载 (PC/2in1) —— 系统标题栏, decor 逐项
+ *    配置同 WWA 主窗 (2026-10-17 MOR-M1 首装实测: modal subWindow 沿用
+ *    false 裸奔无标题栏, 而 WWA 主窗 decor 五步全 ok); 标题按钮只开
+ *    close (win32 模态语义无 min/max); 系统 ✕ 回发 WM_DELETE (WWA cleanup
+ *    同款契约, 只销毁不回发会让 owner 永久禁用)
+ * 判据单点 = WineWindowManager modal 分支 (isX11 ∧ 非 subWindow 承载),
+ * 经 setUseSystemDecor 注入; 路线冷启动定死 → 制度会话内稳定, 不逐窗存储。
  */
 export class ModalWindowManager {
   private static instance: ModalWindowManager | null = null;
@@ -65,12 +180,20 @@ export class ModalWindowManager {
   // WineWindowManager 的 modal 分支经 onTitle 喂入, WineWindow 页经
   // WineWindowManager.getWindowTitle → titleOf 读取
   private titles: Map<number, string> = new Map();
+  // 装饰制度 (路线×承载形态差异的唯一收口, 见 ModalDecor): 会话内稳定,
+  // WineWindowManager modal 分支每次事件重申注入
+  private decor: ModalDecor = NO_SYSTEM_DECOR;
 
   static getInstance(): ModalWindowManager {
     if (!ModalWindowManager.instance) {
       ModalWindowManager.instance = new ModalWindowManager();
     }
     return ModalWindowManager.instance;
+  }
+
+  // 装饰制度注入 (WineWindowManager modal 分支调用; 判据在其侧)
+  setUseSystemDecor(v: boolean): void {
+    this.decor = v ? SYSTEM_DECOR : NO_SYSTEM_DECOR;
   }
 
   // 模态阻断查询 (任务 #167): ownerToplevelId 名下有活 modal (已建表 +
@@ -110,6 +233,9 @@ export class ModalWindowManager {
       const t = String(obj.title ?? '');
       if (t) {
         this.titles.set(id, t);
+        // 标题同步到系统标题栏 (title 事件常晚于 show 到达; 无系统装饰的
+        // 制度此调用为 no-op)
+        this.decor.titleChanged(this.modals.get(id)?.subWin ?? null, t);
       }
     } catch (_) { /* 坏数据忽略, 顶条标题留空 */ }
   }
@@ -176,8 +302,9 @@ export class ModalWindowManager {
       modalId, entry.ownerId, entry.w, entry.h, d.dx ?? 0, d.dy ?? 0, scale.toFixed(2));
 
     hostStage.createSubWindowWithOptions(`wine_modal_${modalId}`, {
-      title: '',
-      decorEnabled: false,
+      // 装饰制度差异 (标题/开关) 经 ModalDecor 收口, 流程体零路线分支
+      title: this.decor.optionsTitle(modalId),
+      decorEnabled: this.decor.useSystemDecor,
       isModal: true
     }).then(async (subWin) => {
       try {
@@ -196,6 +323,10 @@ export class ModalWindowManager {
       try {
         subWin.setWindowCornerRadius(0);
       } catch (_) { /* ignore */ }
+      // 装饰配置 + 系统 close 契约监听 —— ModalDecor 策略面; isCurrent 供
+      // 监听回发前防同 id 复用/自身销毁竞态 (身份语义归 manager)
+      this.decor.configureWindow(subWin, modalId,
+        () => this.modals.get(modalId) === entry);
 
       entry.subWin = subWin;
       this.creating.delete(modalId);
@@ -210,16 +341,17 @@ export class ModalWindowManager {
       this.modals.set(modalId, entry);
 
       try {
-        // 尺寸: wine 逻辑 × scale; 高度 +stripPxOf = 自绘顶条几何补偿位
-        // (与 FWM.ensure 同款: 页面顶条 Row 占补偿区, XComponent 保持
-        // guest 尺寸; x11 modal 承载 #167 续, wayland 恒 0 不补偿)。
-        // 位置见 computePosition
+        // 尺寸: wine 逻辑 × scale; 高度 = guest + 承载装饰补偿。两个补偿
+        // 位: ① stripPxOf = Pad 自绘顶条 (页面 Row 占补偿区, #167 续);
+        // ② heightCompPx = PC 系统标题栏 (系统 resize 按整窗计, 装饰区在
+        // 内容区外占位)。位置见 computePosition
         const stripPx = FusionWindowManager.getInstance().stripPxOf(modalId);
+        const decorPx = this.decor.heightCompPx(subWin, scale);
         await subWin.resize(Math.max(1, Math.round(entry.w * scale)),
-                            Math.max(1, Math.round(entry.h * scale)) + stripPx);
+                            Math.max(1, Math.round(entry.h * scale)) + stripPx + decorPx);
         const pr = hostWin!.getWindowProperties().windowRect;
         const pos = this.computePosition(entry.ownerId, pr, d, entry.w, entry.h, scale,
-                                         stripPx);
+                                         stripPx, decorPx);
         await subWin.moveWindowToGlobal(pos[0], pos[1]);
         await subWin.showWindow();
         hilog.info(DOMAIN, TAG, '[MODAL] #%{public}d shown at screen(%{public}d,%{public}d)',
@@ -270,9 +402,9 @@ export class ModalWindowManager {
   private computePosition(ownerId: number, pr: window.Rect,
                           d: Record<string, string | number>,
                           w: number, h: number, scale: number,
-                          stripPx: number): number[] {
+                          stripPx: number, decorPx: number): number[] {
     const modalW = Math.max(1, Math.round(w * scale));
-    const modalH = Math.max(1, Math.round(h * scale)) + stripPx;
+    const modalH = Math.max(1, Math.round(h * scale)) + stripPx + decorPx;
     let x: number;
     let y: number;
     if (FusionWindowManager.getInstance().has(ownerId)) {
@@ -307,10 +439,11 @@ export class ModalWindowManager {
     entry.h = h;
     const subWin = entry.subWin;
     const stripPx = FusionWindowManager.getInstance().stripPxOf(entry.modalId);
+    const decorPx = this.decor.heightCompPx(subWin, scale);
     subWin.resize(Math.max(1, Math.round(w * scale)),
-                  Math.max(1, Math.round(h * scale)) + stripPx).then(() => {
+                  Math.max(1, Math.round(h * scale)) + stripPx + decorPx).then(() => {
       const pr = parentWin.getWindowProperties().windowRect;
-      const pos = this.computePosition(entry.ownerId, pr, d, w, h, scale, stripPx);
+      const pos = this.computePosition(entry.ownerId, pr, d, w, h, scale, stripPx, decorPx);
       return subWin.moveWindowToGlobal(pos[0], pos[1]);
     }).then(() => subWin.showWindow()).catch(() => { /* ignore */ });
   }
@@ -329,11 +462,30 @@ export class ModalWindowManager {
       }
       entry.subWin.resize(Math.max(1, Math.round(entry.w * scale)),
                           Math.max(1, Math.round(entry.h * scale)) +
-                            FusionWindowManager.getInstance().stripPxOf(modalId))
+                            FusionWindowManager.getInstance().stripPxOf(modalId) +
+                            this.decor.heightCompPx(entry.subWin, scale))
         .catch(() => { /* ignore */ });
     } catch (e) {
       hilog.error(DOMAIN, TAG, '[MODAL] #%{public}d onResize bad data: %{public}s',
         modalId, JSON.stringify(e));
+    }
+  }
+
+  // SystemDecor close 契约落点 (ModalDecor 策略回调): 系统标题栏 ✕ →
+  // 先 sendToplevelClose 给 wine 发 WM_DELETE (结束模态循环并恢复 owner),
+  // 再本地销毁承载。只销毁不回发会让 wine 侧 owner 永久禁用 —— 表现为
+  // 所有窗口点不动。isCurrent 防同 id 复用/自身销毁竞态误发
+  systemCloseModal(modalId: number, isCurrent: () => boolean): void {
+    if (!isCurrent()) {
+      return;
+    }
+    hilog.info(DOMAIN, TAG, '[MODAL] #%{public}d system close → sendToplevelClose + destroy', modalId);
+    try {
+      testNapi.sendToplevelClose(modalId);
+    } catch (_) { /* 队列不可用则跳过回发, 本地仍要清理 */ }
+    const entry = this.modals.get(modalId);
+    if (entry) {
+      this.destroyEntry(entry);
     }
   }
 
@@ -385,6 +537,7 @@ export class ModalWindowManager {
     const subWin = entry.subWin;
     entry.subWin = null;
     if (subWin) {
+      this.decor.releaseWindow(subWin);
       // 有 loadContent 的窗口必须异步销毁 (同步 destroy 会崩溃)
       subWin.destroyWindow().then(() => {
         hilog.info(DOMAIN, TAG, '[MODAL] #%{public}d destroyed', entry.modalId);

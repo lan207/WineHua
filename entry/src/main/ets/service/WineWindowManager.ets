@@ -588,6 +588,16 @@ export class WineWindowManager {
           const obj: Record<string, number> = JSON.parse(data) as Record<string, number>;
           if (obj.modal === 1) {
             this.modalToplevelIds.add(id);
+            // modal 装饰制度 (任务 #170): 系统标题栏需要**两个条件同时成立**
+            // ① x11 路线 —— wayland 路线 wine 自绘 CSD (标题栏在内容里),
+            //    开系统装饰 = 双标题栏 + 内容被挤, incumbent 行为逐字节不变
+            //    是隔离红线; x11 无人绘制 caption, 系统标题栏是唯一出口
+            // ② ability 承载 (非 fusionUsesSubWindow) —— Pad subWindow 承载
+            //    走自绘顶条 (#167 续)
+            // 2026-10-17 MOR-M1 首装实测: x11 PC modal 沿用 Pad 的
+            // decorEnabled=false 裸奔无标题栏
+            ModalWindowManager.getInstance().setUseSystemDecor(
+              DisplayRouteService.getInstance().isX11() && !this.fusionUsesSubWindow());
             // 清 title 先到时的幽灵 entry (modal 无 ability, 不建 entry)。
             // 守卫: 真 Ability (win/ctx/starting 已回填) 存在时绝不删 —
             // 若因时序它先建 (C++ pending 未兜住等), 删掉会让双窗口并存
