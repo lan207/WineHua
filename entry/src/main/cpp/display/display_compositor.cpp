@@ -898,9 +898,14 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
         wl_ohos_output_shutdown();
         // M4a: 多窗映射层会话重置 (补发 destroyed + 清 id 表; 幂等, 单窗
         // 模式下空表 no-op)。xwayland destroy 之后 (xs 已全灭, 补发的是
-        // ArkTS 清理语义), x11_toplevel_active 位在此不翻 — 链重启时
-        // StartWithSurface 按新模式位重置。
+        // ArkTS 清理语义)。多窗激活位随链清零 (#172): 该位是 createRenderer
+        // 与按窗输入路由的路线门, 链停后未必有下一次 chain_start 来重置它
+        // (x11→wayland 切换即此) —— 不清则 wayland 会话的窗口全部误入 x11
+        // 分支: renderer 不建、输入被空表吞, 黑屏且输入死 (2026-10-17
+        // MOR-M1 实测; 旧注释「位在此不翻, 链重启时重置」的前提——切换后
+        // 仍有链重启——不成立)。
         x11_toplevel_session_reset();
+        x11_toplevel_set_active(false);
         if (server)
         {
             wl_list_remove(&g_xwayland_ready_listener.link);
