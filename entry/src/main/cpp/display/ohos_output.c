@@ -252,6 +252,12 @@ static struct ohos_client_surface *g_desktop_client;
 static int g_deskrect_have;
 static int g_deskrect_x, g_deskrect_y, g_deskrect_w, g_deskrect_h;
 
+/* 上次成功提交时的实测 surface 尺寸 (wayland egl_renderer.h:92 lastDrawW/H
+ * 同构): FrameStep 每拍 eglQuerySurface 比对, 尺寸变化即重绘 —— 「实测变了
+ * 就重绘, 天然收敛」, 不需要重试状态机。chain_start 复位 (同 deskrect)。 */
+static int g_last_draw_w = -1;
+static int g_last_draw_h = -1;
+
 int WineHua_DisplayRoute_DesktopShellMapped(void)
 {
     return g_desktop_shell_mapped;
@@ -938,6 +944,19 @@ static void FrameStep(bool via_vsync)
          * 直接跳过, 混入会稀释均值)。分段基线 ~18-20ms/帧 (T3 ledger),
          * 零拷贝重构属 M2 present 重构, 本遥测作其前后对照。 */
         bool render = wlr_scene_output_needs_frame(g_out.scene_output);
+        /* surface 尺寸收敛判定 (wayland egl_renderer.h:92/156 同构): 每拍
+         * 实测 buffer 尺寸 (eglQuerySurface = 当帧 renderbuffer), 与上次
+         * 成功提交的尺寸比对 —— 变了就渲染这一帧。窗口 resize 时系统异步
+         * 重写 buffer, 静态桌面 damage 断流会让帧流停在滞后尺寸上; 每拍
+         * 实测 + 变化即绘 = query 收敛后必出正确帧, 天然收敛, 无需补偿
+         * 常数。稳态 (无 damage + 尺寸未变) 零渲染不变。 */
+        {
+            int sw = 0, sh = 0;
+            wl_ohos_egl_canvas_size(&sw, &sh);
+            if (g_out.window && sw > 0 &&
+                (sw != g_last_draw_w || sh != g_last_draw_h))
+                render = true;
+        }
         struct timespec ts_r0;
         clock_gettime(CLOCK_MONOTONIC, &ts_r0);
         /* M2-T4: gles2 + 可见窗 ⇒ 零拷贝 present (渲染直落队列 buffer);
@@ -953,7 +972,20 @@ static void FrameStep(bool via_vsync)
             !wl_ohos_egl_window_surface_active())
             presented = PresentFrameZeroCopy() != 0;
         if (!presented)
-            wlr_scene_output_commit(g_out.scene_output, NULL);
+        {
+            bool committed = wlr_scene_output_commit(g_out.scene_output, NULL);
+            /* 记录本次成功提交的实测尺寸 (收敛判定的参照, 见 render 判定处):
+             * 仅 render 拍记档 —— 非 render 的例行 commit 无新绘制内容。
+             * query 收敛过程中滞后帧也在此记档, 收敛帧因尺寸再变仍会触发。 */
+            if (render && committed) {
+                int sw = 0, sh = 0;
+                wl_ohos_egl_canvas_size(&sw, &sh);
+                if (sw > 0) {
+                    g_last_draw_w = sw;
+                    g_last_draw_h = sh;
+                }
+            }
+        }
         /* 诊断 (PRES): 每帧上屏 + 各窗当前 x —— 「同一位置连续几帧」直接可数 */
         if (render && DiagTimelineOn()) {
             char pos[64] = {0};
@@ -1939,9 +1971,20 @@ int wl_ohos_output_attach_window(OHNativeWindow *window, bool canvas_egl_present
 {
     if (!window || !g_out.output)
         return -1;
+    if (g_out.window == window)
+        return 0;
     if (g_out.window) {
-        OH_LOG_WARN(LOG_APP, "attach window refused: output already bound");
-        return -1;
+        /* VDA 承载 (2026-10-17 承载统一): 关窗后台运行语义下重开 = 运行中
+         * 换窗 —— 旧窗的 XComponent surface 已销毁, 其 EGL 面随之失效
+         * (实测 2026-10-18: 重开黑屏, 晚到挂载被本函数的「一次性」守卫
+         * 拒绝, surface 不重建且无强制帧)。旧前提「surface 重建走 stop/
+         * start 全链」是 Pad DesktopWindow 的关画布=停链语义; VDA 关窗
+         * 不停链 (链生命周期归 applyRoute), 换窗合法 —— 摘旧建新。
+         * 旧窗对象由调用方 (DisplayRouteRetriggerWake 的 g_present_window
+         * 记名处) 销毁, 本函数只负责呈现面重建。 */
+        OHLOG("attach window: replacing stale window (canvas reopen)");
+        g_out.window = NULL;
+        wl_ohos_egl_window_surface_destroy();
     }
     g_out.window = window;
     /* 挂载时按输出当前尺寸配置 (无窗早启的尺寸来源见 display_compositor
@@ -1950,7 +1993,31 @@ int wl_ohos_output_attach_window(OHNativeWindow *window, bool canvas_egl_present
     int rc = WindowPresentSetup(window, canvas_egl_present);
     OHLOG("attach window rc=%{public}d egl=%{public}d out=%{public}dx%{public}d",
           rc, canvas_egl_present, g_out.out_w, g_out.out_h);
+    /* 换窗后强制一帧: X 侧已稳态 (桌面静态无 damage → scene 不提交 →
+     * output commit 断流, 实测 outCommits=0 恒定), 新窗永远收不到首帧。
+     * 整屏 damage 让下一帧时钟拍 (vsync 直推 FrameStep) 真提交 —— headless
+     * output 无 frame 事件, wlr_output_schedule_frame 在本架构无人消费。 */
+    if (rc == 0 && g_out.scene_output)
+        wlr_damage_ring_add_whole(&g_out.scene_output->damage_ring);
     return rc;
+}
+
+/* 输出几何动态响应 (D10, 2026-10-05): 折叠/旋转使画布 surface 物理尺寸
+ * 变化 (实测 2800x1840 ↔ 1840x2800), 此前链几何启动时钉死 → 旧帧多时期
+ * 合成 (花屏) / 输入归一化分母错位 (touch y=2798 > 1840) / 转回后呈现
+ * 倍率失效 (内容缩小)。resize = output custom_mode 重提交 + 背景 rect +
+ * buffer geometry; 输入归一化 (frame_size) 与呈现 blit 随 g_out 自愈。
+ * loop 线程调用。返回 0 = 已应用 (含 no-op)。 */
+
+/* 画布 surface resize 后强制一帧 (VDA 承载统一 2026-10-17): 整屏 damage,
+ * 下一帧时钟拍真提交 —— 静态桌面无 damage 时 output commit 断流, 窗口
+ * resize 后系统重写 buffer 而无新帧 (wayland 同款事故见 egl_renderer.h
+ * :84-92)。multiwindow 无 output 提交路径, 本调用 no-op。loop 线程调用。 */
+void wl_ohos_output_damage_whole(void)
+{
+    if (g_out.multiwindow || !g_out.scene_output)
+        return; /* per-xs 呈现无 output 提交路径 (FrameStep 同款分叉) */
+    wlr_damage_ring_add_whole(&g_out.scene_output->damage_ring);
 }
 
 /* 输出几何动态响应 (D10, 2026-10-05): 折叠/旋转使画布 surface 物理尺寸

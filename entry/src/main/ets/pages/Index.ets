@@ -296,8 +296,10 @@ struct Index {
       return;
     }
     DisplayRouteService.getInstance().setPreferred(route);
+    // x11 链起尺寸 = 桌面分辨率 (屏幕/scale, 同 entry 路径判据)
+    const outSize = this.wm.desktopOutputSize();
     DisplayRouteService.getInstance().applyRoute(route, 'settings',
-      this.wm.shouldUseMultiwindow(route));
+      this.wm.shouldUseMultiwindow(route), outSize[0], outSize[1]);
     this.routeSel = [route == ROUTE_X11 ? 0 : 1];
     // 提示只在应用值落后于选择时成立 (重启被打断时可见, 正常路径重启完成
     // 即随镜像刷新消失)

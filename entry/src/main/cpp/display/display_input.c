@@ -21,6 +21,7 @@
 #include "display_input.h"
 #include "ohos_output.h"
 #include "desktop_fit.h"   /* 游戏全屏适配: letterbox 逆映射 (C 壳, 单一实现) */
+#include "ohos_egl_import.h" /* wl_ohos_egl_canvas_size: fit 基准与 present 同源 */
 #include "xim_bridge.h"
 #include "x11_toplevel.h" /* M4a-T5: mm 注入 drain 分派 (C1: loop 线程) */
 #include <wlr/types/wlr_data_device.h>
@@ -340,12 +341,16 @@ void display_input_inject_motion(float nx, float ny, int phase)
         g_ptr_focus_xs = NULL;
         return;
     }
-    /* 归一化 (XComponent 局部) → 帧坐标 → 命中窗口 → 窗口局部坐标。
-     * 帧尺寸取数口化 (当前 800x600, 与 chain_start 的 output 一致)。 */
+    /* 归一化 (XComponent 局部) → 画布坐标 → fit 逆映射 → 帧内桌面坐标 →
+     * 命中窗口 → 窗口局部坐标。fit 基准 = 画布 surface 实时尺寸 (#172
+     * 尾随, 与 ohos_egl_import.c present 正变换同源同参 —— wayland
+     * EglRenderer 同语义); 查询失败退回帧尺寸 (= 旧基准, 行为不变)。 */
     int fw = 800, fh = 600;
     wl_ohos_output_frame_size(&fw, &fh);
-    int fx = (int)(nx * (float)fw);
-    int fy = (int)(ny * (float)fh);
+    int cw = fw, ch = fh;
+    wl_ohos_egl_canvas_size(&cw, &ch);
+    int fx = (int)(nx * (float)cw);
+    int fy = (int)(ny * (float)ch);
     /* 游戏全屏适配 (2026-10-15): 桌面内容 letterbox 逆映射 —— 与
      * ohos_egl_import.c present 的正变换同源 (WineHua_ComputeDesktopFit,
      * 唯一实现)。桌面 == 画布 (恒等) 或桌面矩形无效时原样直通, 与改动前
@@ -355,9 +360,15 @@ void display_input_inject_motion(float nx, float ny, int phase)
     {
         int dx = 0, dy = 0, dw = 0, dh = 0;
         struct DesktopFitRect fit;
+        /* 直通判定用数学恒等 (scale 1 + 零偏移), 不比 dst==canvas 尺寸:
+         * 活窗口基准下 dst 可恰等于 canvas 而 scale=2 (桌面 1560 → 窗口
+         * 3120), 尺寸相等会误判直通跳过缩放 —— 实测 2026-10-18: 坐标未
+         * 除 2, 物理左下角 (6,2040) 直通成 X 系 (6,2040), 落在 1560x1040
+         * 桌面之外, topmost 命中失败, 任务栏点击全部丢失。#157 时代
+         * canvas==buffer 时两判定等价, 无此坑。 */
         if (wl_ohos_output_desktop_rect(&dx, &dy, &dw, &dh) &&
-            WineHua_ComputeDesktopFit(fw, fh, dw, dh, &fit) &&
-            (fit.dstW != fw || fit.dstH != fh)) {
+            WineHua_ComputeDesktopFit(cw, ch, dw, dh, &fit) &&
+            (fit.scale != 1.0 || fit.offX != 0 || fit.offY != 0)) {
             g_ptr_in_letterbox = (fx < fit.offX || fx >= fit.offX + fit.dstW ||
                                   fy < fit.offY || fy >= fit.offY + fit.dstH);
             double ux = dx + WineHua_FitUnmapX(&fit, (double)fx);
@@ -383,8 +394,8 @@ void display_input_inject_motion(float nx, float ny, int phase)
     if (!wl_ohos_surface_has_content(xs ? xs->surface : NULL))
     {
         if (sampled)
-            OHLOG("motion DROP at (%{public}d,%{public}d) xs=%{public}p frame=%{public}dx%{public}d",
-                  fx, fy, (void *)xs, fw, fh);
+            OHLOG("motion DROP at (%{public}d,%{public}d) canvas=%{public}dx%{public}d xs=%{public}p frame=%{public}dx%{public}d",
+                  fx, fy, cw, ch, (void *)xs, fw, fh);
         return;
     }
     double sx = (double)(fx - xs->x);

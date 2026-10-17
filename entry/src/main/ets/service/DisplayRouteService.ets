@@ -91,7 +91,12 @@ export class DisplayRouteService {
   // 基础设施晚于它 59s 到达即 XOpenDisplay(:0) 落空 (2026-10-05 实测) ——
   // 起 x11 路线必须同拍起链 (surfaceId=0 仅内核形态, 画布后到经
   // StartWithSurface refresh first-caller-wins 挂 output)。
-  applyRoute(target: string, reason: string, multiwindow: boolean): void {
+  // outW/outH: x11 链起输出尺寸 (逻辑分辨率 = 桌面分辨率, 消费方传
+  // WineWindowManager.desktopOutputSize(); 0 = native 800x600 台架缺省,
+  // smoke 台架路径专用)。桌面分辨率解耦语义的 x11 决定点 — 与 wayland
+  // setOutputSize 同值 (桌面分辨率恒 = 屏幕/scale, 窗口只是显示口)。
+  applyRoute(target: string, reason: string, multiwindow: boolean,
+    outW: number = 0, outH: number = 0): void {
     if (target !== ROUTE_WAYLAND && target !== ROUTE_X11) {
       hilog.warn(DOMAIN, 'wine', '[DisplayRoute] applyRoute reject: %{public}s (%{public}s)',
         target, reason);
@@ -110,7 +115,7 @@ export class DisplayRouteService {
     // 实测: 印章缺失无任何日志, 排查多耗一轮构建)
     displayRouteNapi.setDisplayRoute(target);
     if (target === ROUTE_X11) {
-      displayRouteNapi.startDisplayRouteChain(0n, false, 0, 0, false, multiwindow);
+      displayRouteNapi.startDisplayRouteChain(0n, false, outW, outH, false, multiwindow);
     }
     this.route = target;
     this.applied = true;

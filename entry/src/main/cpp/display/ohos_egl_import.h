@@ -72,6 +72,10 @@ void wl_ohos_egl_window_surface_destroy(void);
 int wl_ohos_egl_window_surface_active(void);
 int wl_ohos_egl_window_present(struct wlr_buffer *frame,
                                struct NativeWindow *window);
+/* 画布 surface 实时尺寸 (eglQuerySurface): present fit 正变换与
+ * display_input 逆映射的共同基准; 查询失败返回 false, 调用方退回
+ * 帧尺寸 (wl_ohos_output_frame_size)。 */
+bool wl_ohos_egl_canvas_size(int *w, int *h);
 
 #ifdef __cplusplus
 }

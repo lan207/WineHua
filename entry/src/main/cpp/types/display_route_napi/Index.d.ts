@@ -34,6 +34,11 @@ export const displayRouteFrameSize: () => { w: number, h: number };
 /** 画布尺寸动态响应 (折叠/旋转后 onSurfaceChanged 的逻辑尺寸)。 */
 export const resizeDisplayRouteOutput: (w: number, h: number) => boolean;
 
+/** 画布 surface 物理尺寸变化通知 (VDA 承载, onSurfaceChanged 且尺寸变化时
+ * 调): 链整屏 damage 强制一帧 —— 静态桌面 damage 断流, resize 后系统重写
+ * buffer 而无新帧 (wayland resizeRenderer 事件链的 x11 对应物)。 */
+export const displayRouteCanvasResized: () => boolean;
+
 /** evdev 键码注入 (KEY_A=30)。 */
 export const injectDisplayRouteKey: (keycode: number, press: boolean) => boolean;
 

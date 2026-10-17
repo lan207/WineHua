@@ -49,7 +49,16 @@ export class WineWindowManager {
   private uiAbilityContext: common.UIAbilityContext | null = null;
   // 设备显示密度 + 屏幕尺寸 (用于缩放)
   private displayScale: number = 1.0;
-  private scaleBoost: number = 1.0;  // 放大系数, 使 effectiveScale = displayScale × boost = 2.0
+  private scaleBoost: number = 1.0;  // 放大系数, 使 effectiveScale = displayScale × boost = DESKTOP_PRESENT_SCALE
+
+  // ── 桌面呈现倍率的权威定义点 (唯一) ──────────────────────────────────
+  // 桌面分辨率 = 屏幕物理尺寸 / 本值; init 的 scaleBoost (使 effectiveScale
+  // 收敛到它) 与 desktopOutputSize (x11 链起参数, 承载统一 2026-10-17) 都以
+  // 它为准。静态常量而非实例字段: desktopOutputSize 在 EntryAbility.onCreate
+  // (applyRoute) 调用, 早于 init (onWindowStageCreate), 实例字段彼时未定值
+  // (实测 2026-10-18: 用 getEffectiveScale() 算出物理分辨率, 元素缩小一半)。
+  // 未来开放用户调整缩放: 本常量改为从设置服务读的静态取值 — 消费方不动。
+  static readonly DESKTOP_PRESENT_SCALE: number = 2.0;
   // 标题栏 + 边框总高度 (VP), 用于窗口 resize
   // = getWindowDecorHeight() + decorBorderOffset
   private measuredTitleBarH: number = 56;
@@ -295,9 +304,10 @@ export class WineWindowManager {
     try {
       const d = display.getDefaultDisplaySync();
       this.displayScale = d.densityPixels;
-      this.scaleBoost = 2.0 / this.displayScale;  // 使 effectiveScale = 2.0
-      hilog.info(DOMAIN, TAG, '[MW] display %{public}dx%{public}d deviceDPI=%{public}s boost=%{public}s -> effective=2.0',
-        d.width, d.height, this.displayScale.toFixed(2), this.scaleBoost.toFixed(2));
+      this.scaleBoost = WineWindowManager.DESKTOP_PRESENT_SCALE / this.displayScale;
+      hilog.info(DOMAIN, TAG, '[MW] display %{public}dx%{public}d deviceDPI=%{public}s boost=%{public}s -> effective=%{public}f',
+        d.width, d.height, this.displayScale.toFixed(2), this.scaleBoost.toFixed(2),
+        WineWindowManager.DESKTOP_PRESENT_SCALE);
       testNapi.setDisplayScale(this.displayScale * this.scaleBoost);
 
       // Wine 输出尺寸: 沉浸模式下 avoid area 为 0, 直接用显示尺寸
@@ -406,6 +416,20 @@ export class WineWindowManager {
   // effectiveScale = displayScale × scaleBoost (Wine 逻辑坐标 → 物理像素)
   getEffectiveScale(): number {
     return this.displayScale * this.scaleBoost;
+  }
+
+  // 桌面输出逻辑尺寸 (物理 / DESKTOP_PRESENT_SCALE): 桌面分辨率判据的唯一定义处 —
+  // wayland 决定点 (init 的 setOutputSize) 与 x11 链起参数 (applyRoute 的
+  // outW/H, 承载统一 2026-10-17) 共用, 倍率取权威常量 (见其注释: 时序坑
+  // 记档 — 不可用 getEffectiveScale(), applyRoute 时实例字段未定值)。
+  desktopOutputSize(): number[] {
+    try {
+      const d = display.getDefaultDisplaySync();
+      const s = WineWindowManager.DESKTOP_PRESENT_SCALE;
+      return [Math.round(d.width / s), Math.round(d.height / s)];
+    } catch (_) {
+      return [0, 0];
+    }
   }
 
   // 拖拽缩放标记 (见 WineWindowEntry.resizeDragging 注释): windowRectChange
@@ -1347,6 +1371,28 @@ export class WineWindowManager {
 
   restoreDesktopIfRunning(): void {
     if (!this.isDesktopMode || this.desktopRootId < 0) return;
+    // x11 PC (VDA 承载, 承载统一 2026-10-17): 桌面窗存活性以
+    // desktopWindowActive 判; singleton 重拉 startAbility = onNewWant 带回
+    // 前台。wayland PC 不进此分支 (现状 restore 对 VDA 承载是 no-op —
+    // desktopAbilityRunning 只由 DWA 维护; 对齐它是行为变化, 不夹带)。
+    if (this.desktopSeparateWindow && DisplayRouteService.getInstance().isX11()) {
+      if (!this.desktopWindowActive) return;
+      hilog.info(DOMAIN, TAG, '[MW] refocusing VirtualDesktopAbility (x11, delayed 300ms)');
+      // 延迟对齐 D18: Entry.onNewWant 窗口迁移未完成时同步 startAbility 会被吞
+      setTimeout(() => {
+        if (this.uiAbilityContext) {
+          const want: Want = {
+            bundleName: 'app.hackeris.winehua',
+            abilityName: 'VirtualDesktopAbility'
+          };
+          this.uiAbilityContext.startAbility(want).catch((err: Error) => {
+            hilog.warn(DOMAIN, TAG, '[MW] refocus VirtualDesktopAbility failed: %{public}s',
+              JSON.stringify(err));
+          });
+        }
+      }, 300);
+      return;
+    }
     // D18: 同 registerHostWindow 恢复块 —— 只恢复真开过的窗。x11 root 恒 0,
     // rootId 判据在冷启恒过, 会把恢复路径变成冷启早开窗 (DWA 抢跑 picker)。
     if (!this.desktopAbilityRunning) return;
@@ -1365,15 +1411,29 @@ export class WineWindowManager {
     }, 300);
   }
 
-  // x11 路线画布页打开 (引擎就绪时机)。与 wayland 的 desktop_root 事件同款
+  // x11 路线桌面窗打开 (引擎就绪时机)。与 wayland 的 desktop_root 事件同款
   // 晚触发: 先会话后开窗。调用方 = WineEnvService (state:ready /
   // ready-degraded); 早期版本在 applyModePolicy (会话开始) 拉起, 与 run-job
   // Want 抢跑导致 DWA 被主页压住 (#68, 2026-10-05 三连挂)。singleton 重复
   // 调用安全 (已开 = onNewWant, 顺带把被压的画布窗拉回前台)。
+  // 承载分派 (2026-10-17 承载统一): PC (desktopSeparateWindow) 走
+  // VirtualDesktopAbility — 与 wayland PC 同承载, 沉浸最大化/退出全屏按钮/
+  // 关窗后台+Index 重开入口/分辨率解耦 letterbox 全部由该承载提供; 出图
+  // 绑定经 DesktopLayer 的 X11Sink (链已由 applyRoute 早启, surface 晚到
+  // 挂载 D8)。Pad 维持 DesktopAbility (DesktopWindow 画布页, Pad 语义已
+  // 在 M4d 收口, 不动)。
   openX11Canvas(): void {
     if (!DisplayRouteService.getInstance().isX11()) return;
     this.desktopRootId = 0;
-    hilog.info(DOMAIN, TAG, '[MW] x11 canvas open at engine-ready (root=0)');
+    // desktopActive = wayland desktop_root 事件的 x11 等价置位: Index
+    // 「打开桌面」按钮判据的第一条件 (关闭路径对称复位 closeX11Canvas)
+    this.desktopActive = true;
+    if (this.desktopSeparateWindow) {
+      hilog.info(DOMAIN, TAG, '[MW] x11 desktop open at engine-ready (VDA, root=0)');
+      this.openDesktopWindow();
+      return;
+    }
+    hilog.info(DOMAIN, TAG, '[MW] x11 canvas open at engine-ready (DWA, root=0)');
     this.startDesktopAbility(0);
   }
 
@@ -1388,6 +1448,16 @@ export class WineWindowManager {
   // 手动关 DWA 窗 (✕) 不经此: DesktopAbility.onDestroy →
   // unregisterDesktopAbility 自有路径, 引擎后台继续语义不变。
   closeX11Canvas(): void {
+    // 桌面窗承载两形态 (PC=VDA / Pad=DWA): shell 全灭时按存活的那个关
+    if (this.desktopWinCtx) {
+      const ctx = this.desktopWinCtx;
+      this.desktopWinCtx = null;
+      hilog.info(DOMAIN, TAG, '[MW] x11 desktop shell exited → terminateSelf(VirtualDesktopAbility)');
+      ctx.terminateSelf().catch((err: Error) => {
+        hilog.warn(DOMAIN, TAG, '[MW] ERR terminateSelf VirtualDesktopAbility: %{public}s', JSON.stringify(err));
+      });
+      this.desktopWindowActive = false;
+    }
     if (this.desktopAbilityCtx) {
       const ctx = this.desktopAbilityCtx;
       this.desktopAbilityCtx = null;
@@ -1399,6 +1469,9 @@ export class WineWindowManager {
     // root 置 -1 (非 0): 0 是 x11 的合法 root id, 留 0 会让 restoreDesktopIfRunning
     // 在桌面结束后把已销毁的画布窗拉回前台 (与 onToplevelDestroyed 的 -1 语义一致)
     this.desktopAbilityRunning = false;
+    // desktopActive 同步复位: 它是 Index「打开桌面」按钮判据的第一条件
+    // (x11 无 desktop_root destroyed 事件, 打开/关闭路径都要显式维护)
+    this.desktopActive = false;
     this.desktopRootId = -1;
     this.notify();
   }

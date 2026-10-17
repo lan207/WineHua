@@ -169,6 +169,12 @@ int wl_ohos_output_attach_window(OHNativeWindow *window, bool canvas_egl_present
 // loop 线程调用。返回 0 = 已应用 (含同尺寸 no-op)。
 int wl_ohos_output_resize(int w, int h);
 
+/* 画布 surface resize 后强制一帧 (VDA 承载统一 2026-10-17): 整屏 damage,
+ * 下一帧时钟拍 (vsync 直推 FrameStep) 真提交 —— 静态桌面无 damage 时
+ * output commit 断流, 窗口 resize 后系统重写 buffer 而无新帧。multiwindow
+ * 模式无 output 提交路径, 本调用为 no-op。 */
+void wl_ohos_output_damage_whole(void);
+
 #ifdef __cplusplus
 }
 #endif

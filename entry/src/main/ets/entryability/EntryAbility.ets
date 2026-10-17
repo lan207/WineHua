@@ -117,8 +117,12 @@ export default class EntryAbility extends UIAbility {
     if (explicitDisplayRoute || !this.displayRouteApplied) {
       this.displayRouteApplied = true;
       try {
+        // x11 链起尺寸 = 桌面分辨率 (屏幕/scale, 与 wayland setOutputSize
+        // 同判据 — WineWindowManager.desktopOutputSize 唯一定义处)
+        const outSize = WineWindowManager.getInstance().desktopOutputSize();
         DisplayRouteService.getInstance().applyRoute(routeValue, 'entry',
-          WineWindowManager.getInstance().shouldUseMultiwindow(routeValue));
+          WineWindowManager.getInstance().shouldUseMultiwindow(routeValue),
+          outSize[0], outSize[1]);
       } catch (e) {
         // 不得吞异常: 印章/起链失败 = 后续 wine 进程全部走错路线且零痕迹
         // (2026-10-04 xwedge3 实测: 排查多耗一轮构建)

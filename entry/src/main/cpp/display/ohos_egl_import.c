@@ -663,6 +663,24 @@ static int64_t WinPresentNowNs(void)
     return (int64_t)ts.tv_sec * 1000000000ll + (int64_t)ts.tv_nsec;
 }
 
+/* 画布 surface 实时尺寸: present 的 fit 正变换与 display_input 的逆映射
+ * 共同基准 (wayland EglRenderer 同语义 —— 桌面内容每一帧等比 fit 进当前
+ * 窗口, 最大化铺满、浮窗黑边, 不依赖 buffer 分辨率与窗口的巧合相等)。
+ * 查询失败 / surface 未建返回 false, 调用方退回帧尺寸 (= 旧行为)。 */
+bool wl_ohos_egl_canvas_size(int *w, int *h)
+{
+    if (!w || !h || g_display == EGL_NO_DISPLAY || g_win_surface == EGL_NO_SURFACE)
+        return false;
+    EGLint sw = 0, sh = 0;
+    if (eglQuerySurface(g_display, g_win_surface, EGL_WIDTH, &sw) != EGL_TRUE ||
+        eglQuerySurface(g_display, g_win_surface, EGL_HEIGHT, &sh) != EGL_TRUE ||
+        sw <= 0 || sh <= 0)
+        return false;
+    *w = (int)sw;
+    *h = (int)sh;
+    return true;
+}
+
 bool wl_ohos_egl_window_surface_create(struct NativeWindow *window)
 {
     if (g_display == EGL_NO_DISPLAY || g_context == EGL_NO_CONTEXT)
@@ -859,34 +877,50 @@ int wl_ohos_egl_window_present(struct wlr_buffer *frame,
         glEnableVertexAttribArray((GLuint)ploc);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, tex);
-        /* ── 游戏全屏适配 (2026-10-15): 桌面内容 → 画布 letterbox 适配 ──
-         * 游戏 CDS 后 wine 把桌面窗缩到游戏分辨率 (上游语义), 桌面内容在
-         * 帧里缩到左上角。口径 (用户拍板): 画布恒全屏, 桌面内容等比放大
-         * 居中, 剩余区域用纯黑 letterbox 填充。几何唯一实现 =
-         * WineHua_ComputeDesktopFit (compositor/frame/geometry.cpp, 与
-         * display_input.c 的逆映射同源)。桌面矩形无效 (链初/退场) 时恒等
-         * 直通 —— 与改动前逐像素一致。frame 尺寸 = canvas 逻辑尺寸 (buffer
-         * geometry, 见 wl_ohos_output_resize), 故分母直接用 frame->width/h。 */
+        /* ── 游戏全屏适配 (2026-10-15) + 画布实时 fit (任务 #172 尾随) ──
+         * 语义 (wayland EglRenderer 同款): 画布 = 当前窗口 surface 实时
+         * 尺寸, 桌面内容等比 fit 进 surface —— 最大化铺满、浮窗等比缩小,
+         * 宽高比不合黑边, 永不依赖 buffer 分辨率与窗口的巧合相等 (旧实现
+         * viewport 按 buffer 坐标算、buffer→surface 交系统拉伸, 非同比
+         * 窗口会变形)。游戏 CDS: wine 把桌面窗缩到游戏分辨率, u_uv 仍在
+         * 帧纹理内采样桌面矩形, viewport 落在 surface 坐标的 fit 矩形。
+         * 几何唯一实现 = WineHua_ComputeDesktopFit (与 display_input.c
+         * 的逆映射同源, 基准同为 wl_ohos_egl_canvas_size)。桌面矩形无效
+         * (链初/退场) 或 surface 查询失败时按帧尺寸恒等直通 —— 与改动前
+         * 逐像素一致 (Pad 路径 frame==surface, 数值不变)。 */
         GLint uloc = glGetUniformLocation(prog, "u_uv");
         int dx = 0, dy = 0, dw = 0, dh = 0;
         struct DesktopFitRect fit;
+        /* fit 基准 = eglQuerySurface (每帧活值): EGL 语义上它就是**当帧
+         * renderbuffer 的实际尺寸** —— viewport 必须与它一致, 任何静态
+         * 缓存都会错位。实测两连 (2026-10-18): ① 用链逻辑尺寸 (frame) 做
+         * viewport, 窗口 resize 后系统把 NativeWindow 默认几何重写为窗口
+         * 物理 (buffer 3120x2080), viewport(1560x1040) 渲进大 buffer 的
+         * 左下 1/4 且 1:1 不缩放 —— 表现「画面缩在左下角、元素没放大」;
+         * ② 反向滞后 (buffer 未跟上) 则超界裁剪。每帧 query 恒与渲染目标
+         * 同尺寸: viewport=fit.dst ⊆ query 恒合法, 桌面 rect (链逻辑系)
+         * 经 fit 拉进当帧 buffer, 窗口 resize 后首帧即恢复满幅。
+         * display_input 的逆映射同用本函数 (两臂同源同参, 触点归一化与
+         * 呈现严格互逆)。 */
+        int cw = frame->width, ch = frame->height;
+        wl_ohos_egl_canvas_size(&cw, &ch);
         if (uloc >= 0 && wl_ohos_output_desktop_rect(&dx, &dy, &dw, &dh) &&
-            WineHua_ComputeDesktopFit(frame->width, frame->height, dw, dh, &fit)) {
+            WineHua_ComputeDesktopFit(cw, ch, dw, dh, &fit)) {
             glUniform4f(uloc,
                         (float)dx / (float)frame->width,
                         (float)dy / (float)frame->height,
                         (float)(dx + dw) / (float)frame->width,
                         (float)(dy + dh) / (float)frame->height);
             /* GL viewport 原点在左下: offY 是内容上边距, 按底边折算 */
-            glViewport(fit.offX, frame->height - fit.offY - fit.dstH,
+            glViewport(fit.offX, ch - fit.offY - fit.dstH,
                        fit.dstW, fit.dstH);
-            if (fit.dstW < frame->width || fit.dstH < frame->height) {
+            if (fit.dstW < cw || fit.dstH < ch) {
                 glClearColor(0.0f, 0.0f, 0.0f, 1.0f); /* letterbox 纯黑 */
                 glClear(GL_COLOR_BUFFER_BIT);
             }
         } else {
             if (uloc >= 0) glUniform4f(uloc, 0.0f, 0.0f, 1.0f, 1.0f);
-            glViewport(0, 0, frame->width, frame->height);
+            glViewport(0, 0, cw, ch);
         }
         glDisable(GL_BLEND);
         glDisable(GL_DEPTH_TEST);

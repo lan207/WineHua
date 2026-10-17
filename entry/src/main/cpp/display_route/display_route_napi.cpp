@@ -44,6 +44,7 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
                                                       bool canvas_egl_present,
                                                       bool multiwindow);
 extern "C" void WineHua_DisplayRoute_Resize(int w, int h);
+extern "C" void WineHua_DisplayRoute_CanvasResized();
 extern "C" void wl_ohos_output_frame_size(int *w, int *h);
 extern "C" void wl_ohos_input_post_key(uint32_t keycode, bool press);
 extern "C" void wl_ohos_input_post_motion(float nx, float ny, int phase);
@@ -99,6 +100,20 @@ static napi_value StopDisplayRouteChain(napi_env env, napi_callback_info info) {
     (void)env;
     (void)info;
     WineHua_DisplayRoute_Stop();
+    napi_value ok;
+    napi_get_boolean(env, true, &ok);
+    return ok;
+}
+
+/* 画布 surface 尺寸变化通知 (VDA 承载统一, 2026-10-17): ArkTS XComponent
+ * onSurfaceChanged 携带的物理尺寸变化经此推给链 —— wayland 臂对应物 =
+ * resizeRenderer 事件链 (egl_renderer.h:156「实测 surface 尺寸」纪律)。
+ * x11 链的 present 由 output commit 驱动, 静态桌面 damage 断流, resize 后
+ * 必须显式强帧 (否则旧 buffer 被系统非等比拉伸)。 */
+static napi_value CanvasResized(napi_env env, napi_callback_info info) {
+    (void)env;
+    (void)info;
+    WineHua_DisplayRoute_CanvasResized();
     napi_value ok;
     napi_get_boolean(env, true, &ok);
     return ok;
@@ -278,6 +293,7 @@ static napi_value DisplayRouteNapiInit(napi_env env, napi_value exports) {
         {"displayRouteIsX11", nullptr, DisplayRouteIsX11, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"displayRouteFrameSize", nullptr, DisplayRouteFrameSize, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"resizeDisplayRouteOutput", nullptr, ResizeDisplayRouteOutput, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"displayRouteCanvasResized", nullptr, CanvasResized, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"injectDisplayRouteKey", nullptr, InjectDisplayRouteKey, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"injectDisplayRouteMotion", nullptr, InjectDisplayRouteMotion, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"injectDisplayRouteButton", nullptr, InjectDisplayRouteButton, nullptr, nullptr, nullptr, napi_default, nullptr},

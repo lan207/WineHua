@@ -468,6 +468,32 @@ static std::mutex g_late_window_mutex;
 static OHNativeWindow *g_late_window = nullptr;
 static bool g_late_canvas_egl = false; /* 挂载时补跑画布 EGL swap 建面 (M3a-T7) */
 
+/* 画布 surface resize 强制重绘槽 (VDA 承载统一 2026-10-17): wayland 臂的
+ * 对应物是 resizeRenderer 事件链 (ArkTS onSurfaceChanged → renderer 尺寸
+ * 单点更新 → 渲染循环用新值, egl_renderer.h:156「实测 surface 尺寸」纪律)
+ * —— x11 链的 present 由 output commit 事件驱动, 静态桌面无 damage 时
+ * commit 断流 (outCommits=0 实测), 窗口 resize (最大化/拖拽) 后系统重写
+ * buffer 而无新帧, 旧内容被非等比拉伸/黑边 (egl_renderer.h:84-92 记录的
+ * 2026-09-14 同款事故的 x11 形态)。ArkTS onSurfaceChanged 经 napi 置位
+ * 本槽 + 唤醒 Wake, loop 线程 damage 整屏 → 下一帧时钟拍真提交。 */
+static std::mutex g_canvas_damage_mutex;
+static bool g_canvas_damage = false;
+
+extern "C" void WineHua_DisplayRoute_CanvasResized()
+{
+    {
+        std::lock_guard<std::mutex> lk(g_canvas_damage_mutex);
+        g_canvas_damage = true;
+    }
+    if (g_retrigger_pipe[1] >= 0)
+    {
+        char b = 'r';
+        ssize_t rc = write(g_retrigger_pipe[1], &b, 1);
+        if (rc < 0 && errno != EAGAIN)
+            OH_LOG_ERROR(LOG_APP, "canvas resize wake write failed errno=%{public}d", errno);
+    }
+}
+
 // 画布 resize 交接槽 (D10): 折叠/旋转使画布尺寸变化 (实测 2800x1840 ↔
 // 1840x2800), ArkTS onSurfaceChanged 把逻辑尺寸投进槽 + retrigger 唤醒,
 // loop 线程消费 (output/背景/buffer geometry 同步)。w>0 = 待处理。
@@ -535,8 +561,14 @@ static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
              * attach 当拍的 present 建立窗。
              * g_present_window 同步记名: 收尾段只销毁它 (槽位/EGL 面先收),
              * 晚到画布此前在 stop 时无人销毁 —— 顺带闭合。attach 一次性
-             * (拒绝重复挂载), 探针至多武装一次。 */
+             * (拒绝重复挂载), 探针至多武装一次。
+             * VDA 重开换窗 (2026-10-17 承载统一): attach 现可替换失效旧窗
+             * (ohos_output attach_window), 此处销毁被换下的旧对象 (surface
+             * 已销毁, 原引用随覆盖丢失即泄漏)。首挂载 stale 为 NULL。 */
+            OHNativeWindow *stale = g_present_window;
             g_present_window = late;
+            if (stale)
+                OH_NativeWindow_DestroyNativeWindow(stale);
             const char *probe_env = getenv("WINEHUA_COMPOSITOR_PROBE");
             if (g_gles2_active &&
                 (probe_env == nullptr || strcmp(probe_env, "0") != 0))
@@ -567,6 +599,18 @@ static int DisplayRouteRetriggerWake(int fd, uint32_t mask, void *data)
         }
         if (rw > 0 && rh > 0)
             wl_ohos_output_resize(rw, rh);
+    }
+    /* 画布 surface resize 强制重绘 (VDA 承载统一, 见 g_canvas_damage 注释):
+     * 消费 ArkTS onSurfaceChanged 的尺寸变化通知, 整屏 damage 推一帧 */
+    {
+        bool damage = false;
+        {
+            std::lock_guard<std::mutex> lk(g_canvas_damage_mutex);
+            damage = g_canvas_damage;
+            g_canvas_damage = false;
+        }
+        if (damage)
+            wl_ohos_output_damage_whole();
     }
     /* 门被本次 retrigger 重开时, Xwayland ready 事件可能早已过去
      * (产品链先建 + ready 先到的竞态), 此处补拉测试窗。 */
