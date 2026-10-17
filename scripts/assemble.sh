@@ -296,12 +296,43 @@ assemble_pad() {
     log "  x86_64-windows → $(ls "$wine_data/bin/x86_64-windows" | wc -l) files"
 
     # strip PE 调试符号 (DWARF .debug_*, 缩减 ~50%)
+    # PE 归一化 (任务 #164): binutils strip 重写 PE 头时把 TimeDateStamp 戳成
+    # strip 当刻、重算 CheckSum —— 每轮 assemble 对已 strip 的文件再 strip
+    # 一遍, 这两处随构建时间漂移, x86_64 (642 个) 与 i386 (1386 个) PE 全部
+    # 内容抖动 (实测每文件仅差这两字段, 2026-10-17)。清零后内容不变则字节
+    # 不变; PE 加载器 (wine/Windows 用户态) 不校验 CheckSum。字段判据与
+    # automation/smoke.py pe_normalized 同源 (COFF 头 +0x08 TimeDateStamp,
+    # Optional 头 +0x40 CheckSum, 均相对 e_lfanew)。
+    normalize_pe_dir() {
+        python3 - "$1" <<'PY'
+import sys, os
+d = sys.argv[1]
+for name in os.listdir(d):
+    p = os.path.join(d, name)
+    with open(p, 'rb') as f:
+        data = bytearray(f.read())
+    if len(data) < 0x40 or data[:2] != b'MZ':
+        continue
+    e = int.from_bytes(data[0x3C:0x40], 'little')
+    if data[e:e+4] != b'PE\0\0':
+        continue
+    changed = False
+    for off in (e + 8, e + 24 + 64):
+        if off + 4 <= len(data) and data[off:off+4] != b'\0\0\0\0':
+            data[off:off+4] = b'\0\0\0\0'
+            changed = True
+    if changed:
+        with open(p, 'wb') as f:
+            f.write(data)
+PY
+    }
     log "  stripping debug symbols..."
     if command -v x86_64-w64-mingw32-strip &>/dev/null; then
         for f in "$wine_data/bin/x86_64-windows/"*.dll "$wine_data/bin/x86_64-windows/"*.drv "$wine_data/bin/x86_64-windows/"*.exe "$wine_data/bin/x86_64-windows/"*.sys; do
             [ -f "$f" ] && x86_64-w64-mingw32-strip "$f" 2>/dev/null
         done
-        log "  64-bit PE stripped"
+        normalize_pe_dir "$wine_data/bin/x86_64-windows"
+        log "  64-bit PE stripped + normalized"
     else
         warn "  x86_64-w64-mingw32-strip not found, skipping strip"
     fi
@@ -337,7 +368,8 @@ assemble_pad() {
         for f in "$wine_data/bin/i386-windows/"*.dll "$wine_data/bin/i386-windows/"*.drv "$wine_data/bin/i386-windows/"*.exe "$wine_data/bin/i386-windows/"*.sys; do
             [ -f "$f" ] && i686-w64-mingw32-strip "$f" 2>/dev/null
         done
-        log "  32-bit PE stripped"
+        normalize_pe_dir "$wine_data/bin/i386-windows"
+        log "  32-bit PE stripped + normalized"
     else
         warn "  i686-w64-mingw32-strip not found, skipping strip"
     fi
@@ -658,12 +690,23 @@ XKB_KEYMAP
     log "  xkm cache → wine-data/xkm/server-0.xkm ($(stat -c%s "$wine_data/xkm/server-0.xkm") B)"
 
     # -- 3. 打包 zip → rawfile (不带 wine-data/ 前缀) --
+    # 确定性打包 (任务 #164): 固定全部条目 mtime + 文件名 LC_ALL=C 排序 +
+    # -X 去 extra 字段, 内容不变则 zip 字节不变 → payloadSha256 稳定。
+    # 此前裸 `zip -r .` 的条目 mtime=打包时刻、目录遍历顺序不定, 每轮
+    # host-only 构建重打包都翻转 sha, 设备端据 manifest 比对误判「引擎
+    # 更新」—— 升级卡每次重装必弹, 无人值守自动化被打断 (2026-10-17)。
+    # epoch 取 2000-01-01 (SOURCE_DATE_EPOCH 惯例值); STAGING_DIR 是构建
+    # 产物目录, touch 它不碰 wine 源树, stamp 判定 (find -newer 以源树
+    # 与 build/.stamps 比) 不受影响。zip 版本更换会整体翻一次 sha, 属
+    # 一次性事件 (升级卡弹一次, 应用后恢复稳定)。
     local rawfile_dir="$WINEHUA/entry/src/main/resources/rawfile"
     mkdir -p "$rawfile_dir"
     local zip_name="wine-data.zip"
     cd "$wine_data"
     rm -f "$STAGING_DIR/$zip_name"
-    zip -r "$STAGING_DIR/$zip_name" . -x '*.git*'
+    find . -exec touch -h -d @946684800 {} +
+    find . -name '*.git*' -prune -o -type f -printf '%P\n' | LC_ALL=C sort \
+        | zip -q -X -@ "$STAGING_DIR/$zip_name"
     cp "$STAGING_DIR/$zip_name" "$rawfile_dir/"
     local payload_sha
     payload_sha="$(sha256sum "$rawfile_dir/$zip_name" | awk '{print $1}')"
