@@ -278,20 +278,26 @@ struct WineWindow {
   @State stripBtnPress: number = -1;  // 按压中的按钮 idx
   private static readonly STRIP_BTN_W: number = 46; // Win11 caption 按钮宽
 
-  // 10vp 图标在 46×stripVp 按钮内居中 (Win11 caption 字形规格: 10×10, 1px 描边)
+  // 10vp 图标在 46×stripVp 按钮内居中 (Win11 caption 字形规格: 10×10, 1vp 描边)。
+  // 坑: Path.commands 坐标单位是 px (物理像素), 与属性单位 (vp) 不同轨 ——
+  // 几何按 vp 设计, 拼命令串时统一 ×vp2px, 否则高密度屏上字形缩小 density 倍
+  // (实测 2.5x 屏上 10vp 字形只画出 ~10px, 2026-10-17)。
   private stripIconCmd(idx: number): string {
-    const cy = this.stripVp / 2;
-    const x0 = WineWindow.STRIP_BTN_W / 2 - 5;
-    const x1 = WineWindow.STRIP_BTN_W / 2 + 5;
+    const k = vp2px(1);
+    const cy = this.stripVp / 2 * k;
+    const c = WineWindow.STRIP_BTN_W / 2 * k;
+    const r = 5 * k; // 字形半宽 (10vp 方)
+    const x0 = c - r;
+    const x1 = c + r;
     if (idx === 0) { // 最小化: 中线横杠
       return `M${x0} ${cy} L${x1} ${cy}`;
     }
-    if (idx === 1) { // 最大化: 10x10 方框
-      return `M${x0} ${cy - 5} L${x1} ${cy - 5} L${x1} ${cy + 5} L${x0} ${cy + 5} Z`;
+    if (idx === 1) { // 最大化: 方框
+      return `M${x0} ${cy - r} L${x1} ${cy - r} L${x1} ${cy + r} L${x0} ${cy + r} Z`;
     }
-    const k = 0.5;   // 关闭: 9x9 叉 (叉角内缩 0.5, 48% 缩进即 Win 观感)
-    return `M${x0 + k} ${cy - 5 + k} L${x1 - k} ${cy + 5 - k} ` +
-      `M${x1 - k} ${cy - 5 + k} L${x0 + k} ${cy + 5 - k}`;
+    const i = 0.5 * k; // 关闭: 9vp 叉 (叉角内缩 0.5vp)
+    return `M${x0 + i} ${cy - r + i} L${x1 - i} ${cy + r - i} ` +
+      `M${x1 - i} ${cy - r + i} L${x0 + i} ${cy + r - i}`;
   }
 
   // 按钮底色: 悬停 #E5E5E5 / 按压 #CCCCCC; close 悬停 #C42B1C / 按压 #B3271A
