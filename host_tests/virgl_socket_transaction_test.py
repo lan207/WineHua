@@ -181,7 +181,34 @@ int main(int argc,char **argv) {
 '''
 
 
-def run(source, expect_corruption=False):
+def thread_backend_flags(directory, backend):
+    # Match Mesa's HAVE_THRD_CREATE feature selection instead of assuming the
+    # pthread emulation is compatible with every host libc's public typedefs.
+    probe = directory / 'threads_probe.c'
+    probe.write_text('''#include <threads.h>
+static int worker(void *arg) { return 0; }
+int main(void) {
+    mtx_t mutex; thrd_t thread; int result;
+    if (mtx_init(&mutex, mtx_recursive) != thrd_success) return 1;
+    mtx_lock(&mutex); mtx_unlock(&mutex); mtx_destroy(&mutex);
+    if (thrd_create(&thread, worker, 0) != thrd_success) return 1;
+    return thrd_join(thread, &result);
+}
+''')
+    native = subprocess.run(
+        ['cc', '-std=c11', '-D_GNU_SOURCE', '-pthread', str(probe),
+         '-o', str(directory / 'threads_probe')],
+        capture_output=True, text=True)
+    if backend == 'native' and native.returncode:
+        raise RuntimeError('Native C11 threads requested but unavailable: ' + native.stderr)
+    use_native = backend == 'native' or (backend == 'auto' and native.returncode == 0)
+    print('C11 thread backend:', 'native' if use_native else 'Mesa pthread emulation')
+    if use_native:
+        return ['-DHAVE_THRD_CREATE'], []
+    return [], [str(ROOT/'thirdparty/mesa/src/c11/impl/threads_posix.c')]
+
+
+def run(source, expect_corruption=False, backend='auto'):
     with tempfile.TemporaryDirectory(prefix='virgl-socket-') as tmp:
         p = Path(tmp)
         (p/'util/format').mkdir(parents=True)
@@ -194,9 +221,9 @@ def run(source, expect_corruption=False):
         winsys = SOCKET.with_name('virgl_vtest_winsys.c').read_text()
         init = re.search(r'mtx_init\(&vtws->socket_mutex,\s*([^)]*)\)',winsys).group(0)
         (p/'test.c').write_text(HARNESS.replace('INIT_SOCKET',init.replace('vtws->','ws.')))
+        flags, thread_sources = thread_backend_flags(p, backend)
         subprocess.run(['cc','-std=c11','-D_GNU_SOURCE','-DHAVE_PTHREAD','-DHAVE_STRUCT_TIMESPEC','-O2','-pthread','-I'+tmp,
-                        '-I'+str(ROOT/'thirdparty/mesa/src'),str(p/'test.c'),
-                        str(ROOT/'thirdparty/mesa/src/c11/impl/threads_posix.c'),
+                        '-I'+str(ROOT/'thirdparty/mesa/src'),str(p/'test.c')] + flags + thread_sources + [
                         str(ROOT/'thirdparty/mesa/src/c11/impl/time.c'),'-o',str(p/'test')],check=True)
         result = subprocess.run([str(p/'test')]+([] if expect_corruption else ['mixed']),timeout=15,capture_output=True,text=True)
         print(result.stdout+result.stderr,end='')
@@ -207,9 +234,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--old-source',type=Path)
     parser.add_argument('--verify-old',action='store_true',help='Reverse patch 0006 in a temporary source tree and require corruption')
+    parser.add_argument('--thread-backend', choices=['auto', 'native', 'emulated'], default='auto',
+                        help='Auto-probe native C11 threads; explicit backends support compiler regression tests')
     args = parser.parse_args()
     if args.old_source:
-        run(args.old_source,True)
+        run(args.old_source,True,args.thread_backend)
         print('Old production source reproduced packet corruption')
     if args.verify_old:
         with tempfile.TemporaryDirectory(prefix='virgl-old-') as tmp:
@@ -218,6 +247,6 @@ if __name__ == '__main__':
             for name in ['virgl_vtest_socket.c','virgl_vtest_winsys.c','virgl_vtest_winsys.h']:
                 shutil.copy2(SOCKET.with_name(name),directory/name)
             subprocess.run(['git','apply','--reverse',str(ROOT/'patches/mesa/0006-virgl-vtest-serialize-socket-transactions.patch')],cwd=tmp,check=True)
-            run(directory/'virgl_vtest_socket.c',True)
+            run(directory/'virgl_vtest_socket.c',True,args.thread_backend)
             print('Old production source reproduced packet corruption')
-    run(SOCKET)
+    run(SOCKET,backend=args.thread_backend)

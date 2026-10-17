@@ -325,7 +325,7 @@ jobs:
           make NATIVE_ARCH=arm64-v8a hap-unsigned
 
       - name: Run host regression suite with IPC and sanitizers
-        run: make NATIVE_ARCH=arm64-v8a test
+        run: make -k NATIVE_ARCH=arm64-v8a test
 
       - name: Locate artifacts
         id: art
