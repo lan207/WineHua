@@ -472,6 +472,33 @@ HDC_POLL_TIMEOUT_S = 20
 APP_START_TIMEOUT_S = 30
 
 
+def format_extra_ps(raw: str) -> str:
+    """--extra-ps 透传翻译成 aa start 的 '--ps <key> <value>' 序列。
+
+    接受两种写法（可混用，空白分隔）：
+      k=v 对（推荐，自然写法）      --extra-ps "winehua.displayRoute=x11"
+      裸 k v 对（旧契约）           --extra-ps "winehua.fusionHost ability"
+    值含空白时只能用裸对形式由调用方自行保证引号到达 aa；k=v 解析在 host 侧
+    完成后一律展开为独立的 --ps 键值对，设备端只见到标准语法。
+    """
+    parts = raw.split()
+    pairs = []
+    i = 0
+    while i < len(parts):
+        tok = parts[i]
+        if "=" in tok and tok.partition("=")[0]:
+            pairs.append((tok.partition("=")[0], tok.partition("=")[2]))
+            i += 1
+            continue
+        if i + 1 < len(parts):
+            pairs.append((tok, parts[i + 1]))
+            i += 2
+        else:
+            log(f"[smoke][WARN] extra-ps 末尾 token '{tok}' 缺值, 已跳过")
+            i += 1
+    return " ".join(f"--ps {k} {v}" for k, v in pairs)
+
+
 def hdc_shell(hdc: str, device: str, script: str,
               timeout: int = HDC_SHELL_TIMEOUT_S) -> tuple:
     """执行设备端 shell 命令；超时按失败返回 (-1, "")，不向上抛。"""
@@ -693,7 +720,7 @@ def cmd_push(args: argparse.Namespace) -> int:
     extra = " ".join(x for x in (
         f"--ps winehua.desktopMode {mode}" if mode else "",
         f"--ps winehua.displayRoute {route}" if route else "",
-        f"--ps {args.extra_ps}" if getattr(args, "extra_ps", "") else "",
+        format_extra_ps(args.extra_ps) if getattr(args, "extra_ps", "") else "",
     ) if x)
     ensure_app_running(hdc, device, extra)
     log(f"push {payload} → {device}")
@@ -923,10 +950,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     if pin_mode:
         start += f" --ps winehua.desktopMode {pin_mode}"
     if getattr(args, "extra_ps", ""):
-        # 附加调试键 (如 winehua.fusionHost)。publishLaunchRequest 在
+        # 附加调试键 (如 winehua.fusionHost, 或 k=v 写法的
+        # winehua.displayRoute=x11)。publishLaunchRequest 在
         # onCreate/onNewWant 双入口对显式 want 随时生效; 承载判定
         # (fusionUsesSubWindow) 在窗口创建时读, 冷启/二次 want 均可靠。
-        start += f" --ps {args.extra_ps}"
+        start += " " + format_extra_ps(args.extra_ps)
     if args.long_seconds:
         start += f" --ps winehua.long_seconds {args.long_seconds}"
     log(f"run {args.suite or 'job'} (runId={run_id}, prefix={args.prefix}, "
@@ -1554,9 +1582,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--long-seconds", type=int, default=0)
     run.add_argument("--skip-push", action="store_true")
     run.add_argument("--extra-ps", default="",
-                     help="附加 --ps 调试键 (值形如 'winehua.fusionHost ability'，"
-                          "不带 --ps 前缀)。随冷启与二次 want 下发, 例: 在 Pad 上"
-                          "强制 PC/2in1 的 ability 承载跑 fusion 套件")
+                     help="附加 --ps 调试键，随冷启与二次 want 下发。两种写法可混用"
+                          "(空白分隔): k=v 对 'winehua.displayRoute=x11' 或裸对 "
+                          "'winehua.fusionHost ability'。例: 在 Pad 上强制 PC/2in1 "
+                          "的 ability 承载跑 fusion 套件")
     run.add_argument("--tests", default="",
                      help="逗号分隔的 testId 选测（suite 子集）")
     run.add_argument("--inline", default="",
