@@ -675,10 +675,20 @@ export class WineWindowManager {
       }
       // limits/argb/surface/...: 模态子窗口不需要 (标题经 onTitle 走顶条,
       // 其余由 Wine 像素自带, 无独立 entry)。
-      // 已知局限 (评审 I2 记档): 对话框自身的 OR popup 菜单事件
-      // (popup_show 等, parent = 对话框 toplevelId) 也落入本分支被丢弃
-      // —— 对话框内右键菜单不出现。与 wayland PC incumbent 同款局限,
-      // 待 ModalWindowManager 提供 popup 定位承载后一并修。
+      // popup_* (parent = 对话框 toplevelId, #168): 原落本分支被丢弃
+      // —— 对话框内右键菜单不出现。路由给 PopupWindowManager, 锚窗 =
+      // modal 自身 (定位/移动都相对它), 与常规 popup 同一套定位与
+      // 装饰补偿判据 (systemDecorCarrying)。
+      if (event === 'popup_show' || event === 'popup_move' ||
+          event === 'popup_resize' || event === 'popup_hide') {
+        PopupWindowManager.getInstance().setParentSystemDecor(this.systemDecorCarrying());
+        PopupWindowManager.getInstance().onPopupEvent(
+          id, event, data,
+          ModalWindowManager.getInstance().stageOf(id) ?? this.mainWindowStage,
+          ModalWindowManager.getInstance().winOf(id),
+          this.getEffectiveScale());
+        return;
+      }
       return;
     }
 

@@ -492,6 +492,15 @@ export class ModalWindowManager {
     }
   }
 
+  // -- modal 自身窗口/宿主 stage 读取 (#168: 对话框自身 popup 的定位锚) --
+  winOf(modalId: number): window.Window | null {
+    return this.modals.get(modalId)?.subWin ?? null;
+  }
+
+  stageOf(modalId: number): window.WindowStage | null {
+    return this.modals.get(modalId)?.stage ?? null;
+  }
+
   // -- modal=0 / 窗口销毁: 关闭子窗口 --
   hide(modalId: number): void {
     this.pendingShows.delete(modalId);  // 暂存的 show 一并取消 (hide 晚于 show)
