@@ -74,9 +74,9 @@ static NTSTATUS NtFreeVirtualMemory(void *process,void **ptr,size_t *size,unsign
 '''
 
 MESA_STUBS = r'''
-typedef pthread_once_t once_flag;
-#define ONCE_FLAG_INIT PTHREAD_ONCE_INIT
-#define call_once(flag,fn) pthread_once(flag,fn)
+/* Use the host C11 implementation: recent glibc also exposes once_flag
+ * through stdlib.h, so a test-local pthread typedef conflicts with it. */
+#include <threads.h>
 #define RTLD_NOW 2
 #define RTLD_NOLOAD 4
 static unsigned lookups, dlopens, dlcloses, ordinary_unmaps, unrefs;
