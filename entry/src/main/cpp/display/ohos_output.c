@@ -521,6 +521,14 @@ static void HandleOutputCommit(struct wl_listener *listener, void *data)
         return;
     }
 
+    /* M2-T4 退位承诺的执行: egl 在册时不再走 CPU 拷贝兜底 —— 面瞬态不可用
+     * 一律丢帧 (D8: 无消费者不出屏), 下一帧正路自恢复。动态刷新率 + graphics
+     * 探针下 commit buffer 几何瞬变, mmap 拷贝对不上号 = memcpy 越界
+     * (2026-10-19 cppcrash, 本函数 memcpy; 60Hz 干净轮也命中过一次无害
+     * stride mismatch —— 兜底可达性实证)。兜底仅剩 pixman 形态。 */
+    if (wl_ohos_egl_active())
+        return;
+
     /* Region 无内嵌数组: rects 是独立指针, 必须指向外部 RegionRect。
      * 之前写 `region.rects = &region.rects[0]` 是对未初始化指针取下标
      * (= 自赋垃圾值), 随栈残留值偶发可写不崩、常则 SEGV——T8 真机三次
