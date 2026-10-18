@@ -42,6 +42,7 @@
 #include <cstdlib>
 #include <locale.h> /* setlocale: Xlib CT 转换按 locale (Task 4) */
 #include <cstring>
+#include <map>
 #include <fcntl.h>
 #include <sys/socket.h>
 #include <pthread.h>
@@ -103,6 +104,7 @@ std::atomic<bool> g_run{true};
 #define XIM_GET_IC_VALUES 56
 #define XIM_GET_IC_VALUES_REPLY 57
 #define XIM_SET_IC_FOCUS 58
+#define XIM_UNSET_IC_FOCUS 59
 #define XIM_FORWARD_EVENT 60
 #define XIM_SYNC 61
 #define XIM_SYNC_REPLY 62
@@ -117,6 +119,16 @@ std::atomic<bool> g_run{true};
 #define XIMTYPE_XIMSTYLES 10
 #define XIMTYPE_XPOINT 12
 #define XIMTYPE_XFONTSET 13
+
+/* GET_IM_VALUES 广告 / GET_IC_VALUES 回读共用的协商风格:
+ * XIMPreeditPosition | XIMStatusNothing = 0x0404。选 PreeditPosition 位
+ * 是唯一动机: wine X11DRV_SetIMECompositionRect 以该位为门 (xim.c:580),
+ * 开着它真文本框的 ImmSetCompositionWindow 才会带 XNSpotLocation 到达
+ * server —— 这是软键盘文本意图判据 (wayland 臂同判据: text_input.cpp
+ * 激活要非零 cursor rect, enter 本身不算)。wine 选风格按「无精确/无共享
+ * 位取数值最小 fallback」(xim.c:443-454), 单一广告即被选中。合成预览仍
+ * 由系统键盘侧完成, server 不按该位画 preedit —— 与此前 None|None 等效。 */
+#define XIM_STYLE_OFFERED 0x0404u
 
 /* XIM 包头 4 字节: [major:1][minor:1][length:2] (length 单位 4 字节, 网络序) */
 #define XIM_CM_DATA_SIZE 20
@@ -135,6 +147,10 @@ struct XimClient
     bool ic_focus = false;       /* XIM_SET_IC_FOCUS 实时维护 (commit 定位①) */
     Window ic_client_win = None; /* XICATTRIBUTE clientWindow (GET_IC_VALUES 回读) */
     bool active = false;
+    /* per-IC 文本意图 (XNSpotLocation 收到过非零值): 软键盘激活门。
+     * XSetICFocus 对所有顶层窗都发, 本身不是意图 (wayland enter 同理,
+     * 由非零 cursor rect 把门 —— text_input.cpp 同判据)。 */
+    std::map<uint16_t, bool> ic_spot_intent;
     std::string rx;              /* 入站分片重组 (per-client 流) */
 };
 /* XIM transport 每 client 一条流: client 的全部协议包发往 XCONNECT 应答
@@ -169,6 +185,24 @@ static void SendUpstreamActive(bool active)
         len -= (size_t)n;
     }
     fprintf(stderr, "[xim-server] upstream active=%d\n", active ? 1 : 0);
+}
+
+/* 上行状态去重: 焦点在无意图窗口间游走会反复算出 false, 不重发
+ * (ArkTS attach/detach 是重操作)。server 重启时标记归零, 与 xim_bridge
+ * 对 EOF 的失活通知时序一致 (新会话从 false 开始)。 */
+static bool g_up_active_sent = false;
+static void SendUpstreamActiveIfChanged(bool active)
+{
+    if (active == g_up_active_sent)
+        return;
+    g_up_active_sent = active;
+    SendUpstreamActive(active);
+}
+
+static bool IcIntent(const XimClient &c, uint16_t ic)
+{
+    auto it = c.ic_spot_intent.find(ic);
+    return it != c.ic_spot_intent.end() && it->second;
 }
 
 static XimClient *ClientBySrvWin(Window w)
@@ -419,7 +453,8 @@ static void HandlePacket(XimClient &c, const std::string &pkt)
     {
         c.im_id = (uint16_t)(c.im_id + 1);
         SendPacket(c, XIM_OPEN_REPLY, 0, BuildOpenReply(c, c.im_id));
-        /* on-spot None 风格不需要键事件转发 */
+        /* 键事件不转发 (forward mask=0): 输入由宿主注入直送 wine, 不经
+         * XIM 过滤 —— 与协商风格无关 */
         std::string b;
         Put16(b, c, c.im_id);
         Put16(b, c, 0); /* ic-id 0 = IM 级 */
@@ -460,7 +495,7 @@ static void HandlePacket(XimClient &c, const std::string &pkt)
             std::string val;
             Put16(val, c, 1); /* 1 组 style */
             Put16(val, c, 0); /* XIMSTYLES 头部的 pad (styles 第 4 字节起) */
-            Put32(val, c, 0x0808); /* PreeditNothing | StatusNothing */
+            Put32(val, c, XIM_STYLE_OFFERED);
             Put16(attr, c, 0); /* queryInputStyle 的 attr id */
             Put16(attr, c, (uint16_t)val.size());
             attr += val;
@@ -494,20 +529,54 @@ static void HandlePacket(XimClient &c, const std::string &pkt)
         c.ic_id = pkt.size() >= 8 ? Get16(c, p + 2) : c.ic_id;
         fprintf(stderr, "[xim-server] SET_IC_VALUES ic=%u payload=%zu\n",
                 c.ic_id, pkt.size());
-        /* XICATTRIBUTE 列表: [id:2][vlen:2][value][pad4] — 抓 clientWindow */
+        /* XICATTRIBUTE 列表: [id:2][vlen:2][value][pad4] — 抓 clientWindow
+         * (id 1) 与 preeditAttributes (id 3, NEST) 内层的 spotLocation
+         * (id 7, XPoint = 2×CARD16)。嵌套内层走同一张 ICATTR 表查名
+         * (imRmAttr.c:1196), 所以 id 同顶层。spot 非零 = 该 IC 有文本意图。 */
+        bool spot_seen = false;
+        bool spot_intent = false;
         size_t off = 4;
         while (off + 4 <= pkt.size())
         {
             uint16_t id = Get16(c, p + off);
             uint16_t vlen = Get16(c, p + off + 2);
-            if (id == 1 && vlen == sizeof(Window) &&
-                off + 4 + vlen <= pkt.size())
+            if (off + 4 + vlen > pkt.size())
+                break;
+            const uint8_t *vp = p + off + 4;
+            if (id == 1 && vlen == sizeof(Window))
             {
-                memcpy(&c.ic_client_win, p + off + 4, sizeof(Window));
+                memcpy(&c.ic_client_win, vp, sizeof(Window));
                 fprintf(stderr, "[xim-server] SET_IC_VALUES clientWindow=0x%lx\n",
                         (unsigned long)c.ic_client_win);
             }
+            else if (id == 3)
+            {
+                size_t in = 0;
+                while (in + 4 <= vlen)
+                {
+                    uint16_t nid = Get16(c, vp + in);
+                    uint16_t nvlen = Get16(c, vp + in + 2);
+                    if (in + 4 + nvlen > vlen)
+                        break;
+                    if (nid == 7 && nvlen == 4)
+                    {
+                        uint16_t sx = Get16(c, vp + in + 4);
+                        uint16_t sy = Get16(c, vp + in + 6);
+                        spot_seen = true;
+                        spot_intent = sx != 0 || sy != 0;
+                        fprintf(stderr, "[xim-server] SET_IC_VALUES spot=(%u,%u) intent=%d\n",
+                                sx, sy, spot_intent ? 1 : 0);
+                    }
+                    in += 4 + nvlen + ((4 - (nvlen % 4)) % 4);
+                }
+            }
             off += 4 + vlen + ((4 - (vlen % 4)) % 4);
+        }
+        if (spot_seen)
+        {
+            c.ic_spot_intent[c.ic_id] = spot_intent;
+            if (c.ic_focus)
+                SendUpstreamActiveIfChanged(spot_intent);
         }
         std::string b;
         Put16(b, c, c.im_id);
@@ -532,10 +601,10 @@ static void HandlePacket(XimClient &c, const std::string &pkt)
         {
             uint16_t id = Get16(c, p + 6 + (size_t)i * 2);
             if (id == 0)
-            { /* inputStyle CARD32 */
+            { /* inputStyle CARD32 = 广告的那个 (见 XIM_STYLE_OFFERED) */
                 Put16(vals, c, 0);
                 Put16(vals, c, 4);
-                Put32(vals, c, 0x0808);
+                Put32(vals, c, XIM_STYLE_OFFERED);
             }
             else if (id == 1)
             { /* clientWindow */
@@ -587,21 +656,33 @@ static void HandlePacket(XimClient &c, const std::string &pkt)
         if (c.ic_focus && (ic == c.ic_id || c.ic_id == 0))
         {
             c.ic_focus = false;
-            SendUpstreamActive(false);
+            SendUpstreamActiveIfChanged(false);
         }
         fprintf(stderr, "[xim-server] DESTROY_IC ic=%u\n", ic);
         break;
     }
     case XIM_SET_IC_FOCUS:
         /* 异步无应答 (xim.xml)。client 的 XSetICFocus 在窗口收键盘焦点时
-         * 调 (wine xim.c xim_set_focus) —— commit 目标定位的①优先级依据 */
+         * 调 (wine xim.c xim_set_focus) —— commit 目标定位的①优先级依据。
+         * 软键盘激活 = 焦点 ∧ 该 IC 有文本意图 (非零 spot); 焦点本身
+         * 不是意图, 否则游戏/资源管理器聚焦也弹键盘 (#166)。 */
         c.ic_id = pkt.size() >= 6 ? Get16(c, p + 2) : c.ic_id;
         for (XimClient &o : g_xims)
             o.ic_focus = false;
         c.ic_focus = true;
-        SendUpstreamActive(true);
-        fprintf(stderr, "[xim-server] SET_IC_FOCUS im=%u ic=%u win=0x%lx\n",
-                c.im_id, c.ic_id, (unsigned long)c.ic_client_win);
+        SendUpstreamActiveIfChanged(IcIntent(c, c.ic_id));
+        fprintf(stderr, "[xim-server] SET_IC_FOCUS im=%u ic=%u win=0x%lx intent=%d\n",
+                c.im_id, c.ic_id, (unsigned long)c.ic_client_win,
+                IcIntent(c, c.ic_id) ? 1 : 0);
+        break;
+    case XIM_UNSET_IC_FOCUS:
+        /* XUnsetICFocus (xim.c xim_set_focus FALSE)。焦点整体丢失时键盘
+         * 也要收 —— 否则软键盘悬到下一个焦点事件才撤。 */
+        for (XimClient &o : g_xims)
+            o.ic_focus = false;
+        SendUpstreamActiveIfChanged(false);
+        fprintf(stderr, "[xim-server] UNSET_IC_FOCUS im=%u ic=%u\n",
+                c.im_id, c.ic_id);
         break;
     case XIM_QUERY_EXTENSION:
     {
@@ -645,7 +726,7 @@ static void HandlePacket(XimClient &c, const std::string &pkt)
         if (c.ic_focus)
         {
             c.ic_focus = false;
-            SendUpstreamActive(false);
+            SendUpstreamActiveIfChanged(false);
         }
         fprintf(stderr, "[xim-server] DISCONNECT\n");
         break;
