@@ -427,7 +427,6 @@ DRIVE_C_ROOT_REL = ".wine/drive_c"
 DISPLAYROUTE_MARKERS = (
     "displayroute-egl-import-probe",   # M2-T2 导入链裁决
     "displayroute-present-probe",      # M2-T4 队列 buffer 直渲染裁决
-    "displayroute-preview-rect.json",  # D22 §2.4 预览框物理矩形 (视觉判定裁剪用)
 )
 # job 文件（host 生成）：debug 参数组合 / 选测 / 内联临时用例走它下发
 JOB_REL = "smoke-job.json"
@@ -903,7 +902,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # job 级 desktopMode: 纯 inline job (无 suite 键) 的钉档落点 —— 此前只存在
     # 于 _note 的运行命令文档里, 换人/漏带 CLI 参数即回退设备当前设置 (与套件级
     # pin 要治的漂移同类)。优先级 suite > job: suite 的 desktopMode 是其判定
-    # 契约的一部分 (如 preview-rect 裁剪只在 virtual 成立), job 不覆盖。
+    # 契约的一部分, job 不覆盖。
     job_mode = job.get("desktopMode", "")
     cli_mode = getattr(args, "desktop_mode", None)
     if suite_mode and cli_mode and cli_mode != suite_mode:

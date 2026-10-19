@@ -223,10 +223,10 @@ export class SmokeRunner {
           displayRouteNapi.startDisplayRouteChain(BigInt(canvas.surfaceId), xclientFlag,
             Math.round(canvas.w / s), Math.round(canvas.h / s), true);
         } else {
-          hilog.warn(DOMAIN, TAG, 'displayroute: canvas not ready in 5s, fallback to dr surface');
-          // T8: XComponent surface 就绪则带出图链 (AppStorage 桥, SmokeDevPanel 写)
-          const drSid = AppStorage.get<string>('smoke.drSurfaceId') ?? '';
-          displayRouteNapi.startDisplayRouteChain(drSid !== '' ? BigInt(drSid) : 0n, xclientFlag);
+          hilog.warn(DOMAIN, TAG, 'displayroute: canvas not ready in 5s, skip chain bind');
+          // 历史: 曾兜底到 SmokeDevPanel 预览窗 surface (AppStorage 桥),
+          // 2026-10-20 面板退役后无第二出图面 —— 画布未就绪即不绑链, 由
+          // displayroute-ready 超时暴露 (诚实失败优于绑错面)。
         }
         // 早退 = 本次运行确实没有测试要跑: 既无 inline, 也无套件/选测声明。
         // (M2-T3 实测: 只看 inline 会把「displayroute + 套件用例」的编排

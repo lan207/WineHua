@@ -13,7 +13,8 @@
 
 ### 1.4 800×600 独立写死（随 M2 分辨率参数化一起收敛）
 
-`ohos_output.c`（输出实际尺寸）、`SmokeDevPanel.ets`（4:3 aspectRatio）。
+`ohos_output.c`（输出实际尺寸）。（`SmokeDevPanel.ets` 的 4:3 aspectRatio
+已随面板 2026-10-20 退役删除。）
 （`display_input.c` 的注入脚本几何分母 + xclient_child 摆位耦合 2026-10-13
 随脚本退役整体删除，本层写死不复存在。）注释已互相点名但仍是漂移起点：
 改分辨率漏一处即出图/呈现比例失配，且两层分散难一次看全。**修法**：随 M2
@@ -26,7 +27,6 @@ PC 模式/多 output 的分辨率参数化设计单一来源（ohos_output 导�
 |---|---|---|
 | 输出（真相源） | `display/ohos_output.c` `wl_ohos_output_chain_start` | `wlr_headless_add_output` / `wlr_output_state_set_custom_mode` / 背景 `wlr_scene_rect_create` / `SET_BUFFER_GEOMETRY`，同一函数内 4~5 个 `800, 600` |
 | 注入 | `display/display_input.c` | 归一化分母**已**走查询（`wl_ohos_output_frame_size()`）；注入脚本（窗口摆位/点击按 800×600 实测的常量）已于 2026-10-13 退役删除，本层无分辨率写死 |
-| 界面 | `ets/smoke/SmokeDevPanel.ets` | 预览 XComponent `.aspectRatio(4 / 3)` |
 
 **触发条件（到点必做，不是"有空再说"）**：PC 模式 / 多 output / 要按真机
 分辨率出图时。**今天实测的代价面**：真机 3120×2080，我们只在 800×600 画布上
@@ -906,13 +906,11 @@ libGL 加载失败返回 `STATUS_NOT_SUPPORTED`(0xC00000BB) 并附 ERR 行——
 → XComponent 这一段一直是好的**（注入测试窗正常出图并动），缺口只在 GL 客户端
 出图这一跳。
 
-**~~残留判据债~~（D22 已还，2026-10-06）**：`visual:rgba-quadrants` 原对**全屏
-截图**做四象限，而 displayroute 的出图面是侧栏里的**预览小框**（`SmokeDevPanel`
-的 XComponent，4:3、约 500×390 物理像素）⇒ 该判定器在本场景结构性失效，X 路线
-只能 SKIP。现按区域裁剪判定：`SmokeDevPanel` 在 smoke 运行期间把预览框 on-screen
-物理矩形写成 `displayroute-preview-rect.json`（files 根，随 `DISPLAYROUTE_MARKERS`
-归档进 device-results/ —— 设备端只产数据），判定器读归档矩形先裁剪再四象限，
-X 路线同样出 PASS/FAIL。矩形未归档（老归档 / 面板未挂载）保持 SKIP 语义。
+**~~残留判据债~~（D22 已还 2026-10-06；裁剪机制 2026-10-20 随面板退役）**：
+`visual:rgba-quadrants` 曾因 displayroute 出图面是侧栏预览小框而对全屏截图
+结构性失效，D22 按归档矩形（`displayroute-preview-rect.json`）先裁剪再判定。
+冷启自动起链落地后出图面已是桌面画布（全屏面），预览窗渲染前提消失，
+SmokeDevPanel 连同裁剪机制退役 —— x11 与 wayland 同走全屏四象限。
 宿主显示序列门（§2.9）继续并行把关「帧是否还在推进」。
 
 ### 2.5 dxvk 套件的 `dxvk-legacy`（d3d11-smoke）既有失败（M2-T6 期间实锤）

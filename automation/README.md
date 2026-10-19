@@ -21,7 +21,7 @@ python3 automation/smoke.py run --suite core   # 4. 跑一个套件（自动推�
 | `smoke/suites/<name>.json` | 套件定义：引用用例、按 arch 展开、env / backend / seconds 等参数 |
 | `automation/smoke.py` | host 工具：build / push / run / check / install / devices |
 | `automation/checks/` | 判定器（纯函数）：`result-json`、`visual:<validator>`、`coverage` |
-| `entry/src/main/ets/smoke/` | 设备端编排：SmokeHook（请求消费 + 载荷播种）、SmokeRunner（执行）、SmokeDevPanel（侧边栏入口） |
+| `entry/src/main/ets/smoke/` | 设备端编排：SmokeHook（请求消费 + 载荷播种）、SmokeRunner（执行） |
 
 ## 载荷通道
 
@@ -37,7 +37,7 @@ smoke/tests + smoke/suites ──build──▶ build/smoke-payload/{x64,x86}/*.
 
 - 载荷有**两个来源**，seed 按优先级取：`files/smoke-payload`（host 推送，开发环境改测试
   只推几 MB、不重装 HAP）＞ `files/wine/smoke`（**随包分发**——assemble 打进 wine-data.zip，
-  发布环境无 host 也能播种，SmokeDevPanel 侧边栏入口可跑 core 自检）。`build/smoke-payload`
+  发布环境无 host 也能播种）。`build/smoke-payload`
   不进版本库。
 - `suites.json` 的 `suiteVersion` 是载荷内容哈希（定义 + 各 exe），任一处变化都会触发重新播种。
 - 冷启动（prefix 未创建）只更新推送源，`C:\smoke` 由设备端 seed 播种；prefix 已存在时
@@ -193,6 +193,6 @@ host 必须在这段时间内轮询到 `"fixed-frame"` 结果并截图。轮询�
 
 设备端 smoke 代码集中在 `entry/src/main/ets/smoke/`，产品文件里只有带
 `// [[SMOKE]]` 标记的钩子行（`WineEnvService.attach/onNewWant/enterReady`、
-`EntryAbility.applyWant`、`Index.<SmokeDevPanel/>`）。无 `winehua.mode=smoke`
+`EntryAbility.applyWant`）。无 `winehua.mode=smoke`
 请求时这些钩子是空操作。main-ui 合并时按
 `docs/archive/SMOKE_REBUILD_20260831.md §11` 摘除整个目录与标记行。

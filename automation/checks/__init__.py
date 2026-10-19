@@ -192,65 +192,27 @@ def fusion_popup_selection(ctx: dict) -> dict:
                        "fusion-popup 另判"}
 
 
-def _load_preview_rect(run_dir) -> dict | None:
-    """读归档的预览框物理矩形（D22 §2.4 判据债的设备端数据落盘）。
-
-    SmokeDevPanel 在 smoke 运行期间把 displayroute 预览 XComponent 的
-    on-screen 矩形写成 device-results/displayroute-preview-rect.json ——
-    设备端只产数据，裁剪与判定都在主机侧。文件缺失/损坏 = None（老归档
-    无此文件，保持 SKIP 语义，不装作能判）。"""
-    if not run_dir:
-        return None
-    path = Path(run_dir) / "device-results" / "displayroute-preview-rect.json"
-    if not path.is_file():
-        return None
-    try:
-        data = json.loads(path.read_text(errors="replace"))
-        rect = {"x": int(data["x"]), "y": int(data["y"]),
-                "width": int(data["width"]), "height": int(data["height"])}
-    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-        return None
-    if rect["width"] <= 0 or rect["height"] <= 0:
-        return None
-    return rect
-
-
 def visual(ctx: dict) -> dict:
     """对采集到的固定帧跑视觉校验。多帧任一通过即通过 —— 立方体/场景随
     动画相位波动（旋转角度不同颜色桶分布不同），单帧相位判不过，采集侧按序
     多截、判定取最好的一帧。
 
-    X 路线（§2.4，D22 已还债）：displayroute 的出图面是侧栏里的**预览小框**
-    （SmokeDevPanel 的 XComponent），整屏四象限对该场景结构性失效。现按归档
-    的预览框矩形（displayroute-preview-rect.json）先裁剪再判定，X 路线同
-    样出 PASS/FAIL；矩形未归档（老归档 / 面板未挂载）保持 SKIP —— SKIP 是
-    诚实答案：这一格没验，不是验过了。"""
-    result = ctx.get("result") or {}
-    region = None
-    validator = ctx.get("validator", "")
-    # M4a-T6: fusion 双窗判定器自带全屏定位 (独立 OHOS 窗, 屏幕位置由窗管
-    # 决定, host 无 preview-rect 可裁) —— 跳过 §2.4 的 region 门。M4c-T4
-    # popup 菜单判定同形态 (popup 子窗位置 = 父窗原点+off×scale, host 侧
-    # 同样无矩形可裁)。
-    fusion_locating = validator.startswith(("fusion-window", "fusion-popup",
-                                            "fusion-cube"))
-    if ((result.get("metrics") or {}).get("expectedRoute")) == "x11" and not fusion_locating:
-        region = _load_preview_rect(ctx.get("run_dir"))
-        if region is None:
-            return {"status": "SKIP", "stage": "visual:x11-preview-pane",
-                    "message": "X 路线预览框矩形未归档，无法做区域四象限判定（§2.4）"}
+    历史注：X 路线曾按侧栏预览小框（SmokeDevPanel 的 XComponent）的归档
+    矩形先裁剪再判定（D22 §2.4）。冷启自动起链落地后出图面已是桌面画布
+    （与 wayland 同类全屏面），预览窗渲染前提不复存在，面板于 2026-10-20
+    退役 —— x11 与 wayland 同走全屏四象限。fusion 判定器自带全屏定位。"""
     paths = ctx.get("frames") or []
     if not paths:
         # 固定帧只在 duration_ms >= 2500 且进入末 2 秒时渲染；结果里没有
         # fixedFrame 就说明程序根本没到那个阶段（时长不够），与"渲染失败"是
         # 两回事 —— 按现象给方向，别让人去查渲染 (review F12)。
-        detail = "" if (result.get("metrics") or {}).get("fixedFrame") else \
+        detail = "" if (ctx.get("result") or {}).get("metrics", {}).get("fixedFrame") else \
             "；结果里没有 fixedFrame —— 用例时长不足 2.5s 时固定帧不会渲染"
         return {"status": "FAIL", "stage": "missing-frame",
                 "message": f"未采集到固定帧截图（截图时机错过或测试未渲染）{detail}"}
     reports = []
     for path in paths:
-        report = frame.validate(ctx["validator"], path, region=region)
+        report = frame.validate(ctx["validator"], path, region=None)
         reports.append(report)
         if report["status"] == "PASS":
             return {
