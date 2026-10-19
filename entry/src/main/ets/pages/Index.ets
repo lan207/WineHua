@@ -673,6 +673,7 @@ struct Index {
         }
       }
       .width('100%')
+      .constraintSize({ minHeight: '100%' }) // 内容矮于视口时撑满顶对齐 (Scroll 默认居中)
       }
       .width(300).height('100%')
       .backgroundColor('#141414')
