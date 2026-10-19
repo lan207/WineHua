@@ -77,6 +77,7 @@ export struct DesktopLayer {
   private lastTapPx: number = 0;
   private lastTapPy: number = 0;
   private lastTapTl: number = 0;
+  private lastTapTargetId: number = 0; // 决策时点目标身份 (#139 双击同一性)
   private static readonly DOUBLE_TAP_MS: number = 400;
   private static readonly DOUBLE_TAP_DIST: number = 30;
   // 双指滚动
@@ -510,8 +511,12 @@ export struct DesktopLayer {
                 const btnLeft = mapMouseButton(1);
                 const now = Date.now();
                 const dist = Math.abs(this.pendingPx - this.lastTapPx) + Math.abs(this.pendingPy - this.lastTapPy);
+                // 双击同一性 (#139): 决策时点的目标身份 —— pendingTl 在 x11
+                // 恒 1 (sink 无桌面句柄概念), 旧判据被架空; 两 tap 落不同
+                // 窗时按两次单击处置 (与真 X 桌面语义一致)
+                const targetId = this.sink.targetIdentityAt(this.pendingPx, this.pendingPy);
                 const isDoubleTap = (this.lastTapTime > 0 && (now - this.lastTapTime) < DesktopLayer.DOUBLE_TAP_MS
-                                    && dist < DesktopLayer.DOUBLE_TAP_DIST && this.pendingTl === this.lastTapTl);
+                                    && dist < DesktopLayer.DOUBLE_TAP_DIST && targetId === this.lastTapTargetId);
 
                 if (isDoubleTap) {
                   // 双击: 第一次点击已由上一个单击路径发出, 这里只补发
@@ -530,6 +535,7 @@ export struct DesktopLayer {
                   this.lastTapPx = this.pendingPx;
                   this.lastTapPy = this.pendingPy;
                   this.lastTapTl = this.pendingTl;
+                  this.lastTapTargetId = targetId;
                   hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] TAP->LEFTCLICK tl=%{public}d px=(%{public}d,%{public}d)',
                     this.pendingTl, this.pendingPx, this.pendingPy);
                 }

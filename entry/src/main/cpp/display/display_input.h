@@ -43,6 +43,12 @@ void wl_ohos_input_post_key(uint32_t keycode, bool press);
 // 指针注入的任意线程安全版 (语义同 display_input_inject_motion)。
 void wl_ohos_input_post_motion(float nx, float ny, int phase);
 
+// 最近一次已 drain 的 motion 命中的 X window id (0 = 未命中/链路空)。
+// 双击目标同一性判据 (#139) 的活身份源: 值在 loop 线程随 motion 更新,
+// 读取线程看到的是「稍旧但单调前进」的快照 —— tap 决策时点距其 Down 的
+// motion 已隔一整个手势时长, drain 早完成, 读数即本 tap 的命中窗口。
+uint32_t wl_ohos_input_last_ptr_window_id(void);
+
 // 按钮注入的任意线程安全版 (M3a-T4)。button: evdev 按钮码 (BTN_LEFT 0x110
 // / BTN_RIGHT 0x111 / BTN_MIDDLE 0x112); wire 语义 = wl_pointer.button 原值,
 // Xwayland 按 X 按钮映射换算 (libinput 后端同款直传)。投递前提 = pointer

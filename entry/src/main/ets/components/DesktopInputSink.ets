@@ -54,6 +54,9 @@ export interface DesktopInputSink {
   beginStroke(px: number, py: number): number;
   /** 纯命中查询 (不激活; 触控板 hover/滚轮定位用; x11 恒 1) */
   hitTest(px: number, py: number): number;
+  /** 决策时点的目标身份 (#139 双击同一性)。wayland = 点位活命中;
+   *  x11 = 最近 drain motion 的 X window id (判据见 display_input.h) */
+  targetIdentityAt(px: number, py: number): number;
   /** PENDING 未过阈值的移动 (wayland 不发; x11 motion 直通 hover) */
   strokeHover(px: number, py: number): void;
   /** 拖拽随动移动 */
@@ -128,6 +131,10 @@ class WaylandSink implements DesktopInputSink {
   }
 
   hitTest(px: number, py: number): number {
+    return testNapi.findToplevelAt(px, py) as number;
+  }
+
+  targetIdentityAt(px: number, py: number): number {
     return testNapi.findToplevelAt(px, py) as number;
   }
 
@@ -283,6 +290,14 @@ class X11Sink implements DesktopInputSink {
 
   hitTest(_px: number, _py: number): number {
     return 1;
+  }
+
+  targetIdentityAt(_px: number, _py: number): number {
+    // 决策时点 (Up) 距本 tap Down 的 anchor motion 已隔整个手势时长,
+    // 队列 drain (ms 级) 早已完成 → 活槽 = 本 tap 命中的 X window id。
+    // 点位参数忽略: 槽随最后一次 motion 走 (PENDING 抖动 hover 与 Down
+    // 点同窗, 30px 阈值内跨窗属边缘情形, 与 wine ±2px 判据同量级)。
+    return displayRouteNapi.getLastPtrWindowId() as number;
   }
 
   strokeHover(px: number, py: number): void {

@@ -42,6 +42,7 @@
 #include <wayland-server-core.h>
 #include <wayland-server-protocol.h> /* WL_SEAT_CAPABILITY_* / WL_KEYBOARD_KEY_STATE_* */
 #include <wlr/types/wlr_seat.h>
+#include <wlr/types/wlr_relative_pointer_v1.h>
 #include <wlr/types/wlr_compositor.h> /* struct wlr_surface 完整定义 */
 #include <wlr/types/wlr_keyboard.h>
 #include <wlr/interfaces/wlr_keyboard.h>
@@ -57,6 +58,21 @@ static const struct wlr_keyboard_impl k_kb_impl = {
 };
 
 static struct wlr_seat *g_seat;
+/* zwp_relative_pointer_manager_v1 (#177): Xwayland 绑定后把相对增量译成
+ * XI2 raw motion (POINTER_RAWONLY + unaccelerated valuators) —— wine
+ * dinput 相对模式吃的正是这条流。此前无此 global, 绝对派发不带 NORAW,
+ * wine 的「相对」退化为帧空间坐标差 (letterbox 缩放错 + 边缘钳位跳变)
+ * = 鼠标飘。增量喂点在 inject_motion。 */
+static struct wlr_relative_pointer_manager_v1 *g_rel_manager;
+/* 相对增量状态: 仅同 surface 连续 motion 喂 (锚点跳变/跨面不喂 —— 触点
+ * 落屏是传送不是移动, 巨幅 raw delta 会让游戏镜头乱转); 幅度超 surface
+ * 短边 1/8 视为跳变重置。 */
+static struct wlr_surface *g_rel_surf;
+static double g_rel_lsx, g_rel_lsy;
+static bool g_rel_valid;
+/* 最近 motion 命中的 X window id (#139 双击同一性活身份): loop 线程写,
+ * 读取线程读 u32 快照 (良性竞争, 见 display_input.h 声明处判据) */
+static uint32_t g_last_motion_win;
 static struct wlr_keyboard g_kb;
 static struct wl_event_loop *g_loop;
 static struct wlr_xwayland *g_xwayland; /* GAP2 (#131): X 硬件焦点同步口
@@ -158,6 +174,13 @@ static uint32_t NowMsec(void)
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
+}
+
+static uint64_t NowUsec(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ull + (uint64_t)(ts.tv_nsec / 1000u);
 }
 
 /* keymap 编译: evdev 规则 + pc105 + us 布局, 数据树 = wine-data/xkb
@@ -339,6 +362,7 @@ void display_input_inject_motion(float nx, float ny, int phase)
             TrackPtrFocus(NULL);
         }
         g_ptr_focus_xs = NULL;
+        g_rel_valid = false; /* 相对增量流随指针离场断链 (下次 motion 重锚) */
         return;
     }
     /* 归一化 (XComponent 局部) → 画布坐标 → fit 逆映射 → 帧内桌面坐标 →
@@ -393,11 +417,13 @@ void display_input_inject_motion(float nx, float ny, int phase)
     bool sampled = (++hit_seq % 100 == 1);
     if (!wl_ohos_surface_has_content(xs ? xs->surface : NULL))
     {
+        g_last_motion_win = 0; /* 命中失效: 身份槽归零 (#139 读数不悬挂旧窗) */
         if (sampled)
             OHLOG("motion DROP at (%{public}d,%{public}d) canvas=%{public}dx%{public}d xs=%{public}p frame=%{public}dx%{public}d",
                   fx, fy, cw, ch, (void *)xs, fw, fh);
         return;
     }
+    g_last_motion_win = (uint32_t)xs->window_id;
     double sx = (double)(fx - xs->x);
     double sy = (double)(fy - xs->y);
     if (xs->surface != g_ptr_focus)
@@ -410,6 +436,22 @@ void display_input_inject_motion(float nx, float ny, int phase)
         TrackPtrFocus(xs->surface);
     }
     g_ptr_focus_xs = xs; /* D36: 点击置前的目标 (悬停不置前, 按下才置) */
+    /* 相对增量 (#177): 同 surface 连续且幅度不超阈才喂 —— 跨面换窗、点按
+     * 传送锚 (pressAt 重放/悬停激活) 一律断链重锚, 不产 delta。增量口径 =
+     * surface-local px, Xwayland 侧自行乘 global_surface_scale/viewport
+     * (xwayland-input.c dispatch_relative_motion)。 */
+    if (g_rel_manager && g_rel_valid && xs->surface == g_rel_surf &&
+        fabs(sx - g_rel_lsx) <= (double)(xs->width > 0 ? xs->width : 1) / 8.0 &&
+        fabs(sy - g_rel_lsy) <= (double)(xs->height > 0 ? xs->height : 1) / 8.0)
+    {
+        double rdx = sx - g_rel_lsx, rdy = sy - g_rel_lsy;
+        wlr_relative_pointer_manager_v1_send_relative_motion(
+            g_rel_manager, g_seat, NowUsec(), rdx, rdy, rdx, rdy);
+    }
+    g_rel_surf = xs->surface;
+    g_rel_lsx = sx;
+    g_rel_lsy = sy;
+    g_rel_valid = true;
     wlr_seat_pointer_notify_motion(g_seat, NowMsec(), sx, sy);
     /* wl_pointer.frame 必发 (D9, 2026-10-05 实测): Xwayland 的绝对指针输入
      * 按 frame 批量派发 —— motion 入队, frame 才译成 X MotionNotify。此前
@@ -746,6 +788,11 @@ void wl_ohos_input_post_motion(float nx, float ny, int phase)
     InjectQueuePush(&item);
 }
 
+uint32_t wl_ohos_input_last_ptr_window_id(void)
+{
+    return g_last_motion_win;
+}
+
 void wl_ohos_input_post_button(uint32_t button, bool press)
 {
     struct inject_item item;
@@ -903,6 +950,13 @@ int wl_ohos_input_seat_create(struct wl_display *wl, struct wl_event_loop *loop)
     wlr_seat_set_capabilities(g_seat,
                               WL_SEAT_CAPABILITY_POINTER | WL_SEAT_CAPABILITY_KEYBOARD);
     wlr_seat_set_keyboard(g_seat, &g_kb);
+
+    /* #177: Xwayland 检测到该 global 才 get_relative_pointer 并把增量译成
+     * XI2 raw motion (init_relative_pointer); 无绑定调用是 no-op, 创建失败
+     * 只回退旧行为 (绝对坐标差), 不挡链 */
+    g_rel_manager = wlr_relative_pointer_manager_v1_create(wl);
+    if (!g_rel_manager)
+        OH_LOG_ERROR(LOG_APP, "relative pointer manager create failed");
 
     /* 手动注入用的两个定时器 (队列键投递 + 脉冲释放)。真机门自动注入脚本
      * 已于 2026-10-13 退役 (职能被 smoke 编排 / 归档判定覆盖), 本处不再

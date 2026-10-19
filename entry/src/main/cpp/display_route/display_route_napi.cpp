@@ -52,6 +52,7 @@ extern "C" void wl_ohos_input_post_button(uint32_t button, bool press);
 extern "C" void wl_ohos_input_post_axis(int which, int steps);
 extern "C" void wl_ohos_input_post_text(const char* utf8);
 extern "C" void wl_ohos_input_post_clipboard(const char *utf8);
+extern "C" uint32_t wl_ohos_input_last_ptr_window_id(void);
 
 static napi_value StartDisplayRouteChain(napi_env env, napi_callback_info info) {
     size_t argc = 6;
@@ -206,6 +207,16 @@ static napi_value DisplayRouteIsX11(napi_env env, napi_callback_info info) {
     return result;
 }
 
+/* getLastPtrWindowId() — 最近 drain 的 motion 命中的 X window id (双击
+ * 同一性判据 #139 的活身份源, 判据见 display_input.h 声明处)。 */
+static napi_value GetLastPtrWindowId(napi_env env, napi_callback_info info) {
+    (void)info;
+    napi_value result;
+    napi_create_double(env,
+                       static_cast<double>(wl_ohos_input_last_ptr_window_id()), &result);
+    return result;
+}
+
 /* displayRouteFrameSize() — X 屏幕逻辑尺寸 (guest 桌面坐标系, 即 wine 桌面
  * 坐标 = 该坐标系)。C 型注入编排把 guest 坐标换算成 injectDisplayRouteMotion
  * 的 0..1 归一化坐标时作分母。链未起时返回 0x0, 调用方按失败处理。 */
@@ -292,6 +303,7 @@ static napi_value DisplayRouteNapiInit(napi_env env, napi_value exports) {
         {"setDisplayRoute", nullptr, SetDisplayRoute, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"displayRouteIsX11", nullptr, DisplayRouteIsX11, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"displayRouteFrameSize", nullptr, DisplayRouteFrameSize, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"getLastPtrWindowId", nullptr, GetLastPtrWindowId, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"resizeDisplayRouteOutput", nullptr, ResizeDisplayRouteOutput, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"displayRouteCanvasResized", nullptr, CanvasResized, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"injectDisplayRouteKey", nullptr, InjectDisplayRouteKey, nullptr, nullptr, nullptr, napi_default, nullptr},
