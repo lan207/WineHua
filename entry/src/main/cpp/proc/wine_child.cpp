@@ -1778,7 +1778,7 @@ extern "C" void Main(NativeChildProcess_Args args)
     // apply_entry_param_env_overrides() 里被拦下 (决策点收口到设备端的
     // select_winedebug_profile, 见该函数内注释)。
     {
-        const char* profile = select_winedebug_profile(argc, argv);
+        const char* profile = select_winedebug_profile(argc, argv, "");
         setenv("WINEDEBUG", profile, 1);
         OH_LOG_INFO(LOG_APP, "[WineChild] final WINEDEBUG=%{public}s (after entry env)", profile);
     }
@@ -1850,7 +1850,7 @@ extern "C" void Main(NativeChildProcess_Args args)
     if (is_audio_test_exe(argc, argv) || is_sdl_audio_test_exe(argc, argv) ||
         (is_steam_webhelper_exe(argc, argv) && steam_webhelper_diag_enabled()))
     {
-        const char *profile = select_winedebug_profile(argc, argv);
+        const char *profile = select_winedebug_profile(argc, argv, "");
         setenv("WINEDEBUG", profile, 1);
         OH_LOG_INFO(LOG_APP, "[WineChild] restored diagnostic WINEDEBUG=%{public}s", profile);
     }
