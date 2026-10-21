@@ -18,6 +18,24 @@ make NATIVE_ARCH=x86_64           # 模拟器 / x86_64 设备
 - Wine 构建用 stamp 文件 + `find -newer` 判断源码变更（stamp 在
   `build/.stamps/wine-arm64-v8a`）。
 - 构建目录按架构隔离，不要混用。
+- **构建依赖与产物一律限制在 `build/` 目录内**：下载的 tarball（`build/downloads/`）、
+  DESTDIR/staging、日志、探针源码等中间物不得写 `/tmp`、不得散落仓库根目录。
+  毁灭性重建时 `rm -rf build/` 下对应子目录即可恢复，不污染系统与他人环境。
+
+## 架构侧别纪律（guest vs host）
+
+每个组件**构建前必须先回答：它运行在 guest 还是 host？**两侧架构独立参数，不得互相假设。
+
+- **guest** = Wine 世界（Wine 本体、.drv、guest 依赖库）。目标 `GUEST_TARGET`
+  （`GUEST_ARCH` 参数，现 x86_64——arm64 真机经 box64 翻译）。产物进
+  `build/sysroot-ext/`。
+- **host** = 鸿蒙侧进程（app / 合成器 / 适配层 / NCP 子进程、Xwayland、wlroots）。
+  目标 `NATIVE_TARGET`（`NATIVE_ARCH` 参数）。新增 host 交叉依赖进
+  `build/host-ext/<NATIVE_ARCH>/`（`env.sh` 的 `HOST_EXT_*` + `meson_host_build`）。
+- 组合共三种：x86_64+arm64、x86_64+x86_64、arm64+arm64。任何一侧都可能是任一架构，
+  判断依据是**组件运行在哪个进程**，不是当前构建机或目标设备。
+- 无架构数据（协议 XML、XKB 数据）放 sysroot-ext，两侧共享。
+- host 组件只允许链接 host 架构的 `.so`；跨侧通信只经 socket/fd/IPC，**不跨侧链接**。
 
 ### Wine stamp 机制
 
@@ -61,8 +79,8 @@ bash scripts/package.sh deploy <设备IP>      # 卸载 + 推送 + 安装
    hdc -t <IP> shell "setsid sh -c 'hilog > /data/local/tmp/capture.log 2>&1' < /dev/null > /dev/null 2>&1 &"
    ```
 
-   **落盘时不要加任何过滤**——全量收、事后离线过滤。过滤是按假设掐日志，恰恰会漏掉
-   假设之外的原因；详见 `docs/debugging/observability.md` 的「采集纪律」。
+   **落盘时不要加任何过滤**，全量收、事后离线过滤；详见
+   `docs/debugging/observability.md` 的「采集纪律」。
 
 2. **`hilog -t app` 不是按包名过滤**，它是"应用类日志"这个大类型，会把设备上所有应用的
    日志一起打出来，而且**漏掉 core 类**。实时查看时用 `-e winehua` 或 `-T <标签列表>`
@@ -99,8 +117,6 @@ bash scripts/package.sh deploy <设备IP>      # 卸载 + 推送 + 安装
 
 3. 在设备上操作，复现问题。
 4. 停止采集，按链路分段过滤分析（链路划分见 `docs/architecture/input.md`）。
-
-**死锁类问题：卡死前的最后一条日志就是最后一跳，问题在它后面那一步。**
 
 ## 相关文档
 

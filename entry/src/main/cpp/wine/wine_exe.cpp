@@ -370,12 +370,16 @@ napi_value RunWineProgram(napi_env env, napi_callback_info info)
     options.windowsExePath = GetString(env, args[0], "windowsExePath");
     options.workingDirectory = GetString(env, args[0], "workingDirectory");
     options.containerId = GetString(env, args[0], "containerId");
-    options.d3dBackend = GetString(env, args[0], "d3dBackend", "dxvk_legacy");
+    options.d3dBackend = GetString(env, args[0], "d3dBackend", "dxvk_modern_2_6");
     if (options.d3dBackend != "dxvk_legacy" && options.d3dBackend != "dxvk_modern_2_6" &&
         options.d3dBackend != "wined3d")
-        options.d3dBackend = "dxvk_legacy";
-    options.dxvkBackend = options.d3dBackend == "dxvk_modern_2_6" ?
-        "dxvk_modern_2_6" : "dxvk_legacy";
+        options.d3dBackend = "dxvk_modern_2_6";
+    const std::string impliedDxvkBackend = options.d3dBackend == "dxvk_modern_2_6"
+        ? "dxvk_modern_2_6" : "dxvk_legacy";
+    options.dxvkBackend = GetString(env, args[0], "dxvkBackend", impliedDxvkBackend.c_str());
+    if (options.dxvkBackend != "dxvk_legacy" &&
+        options.dxvkBackend != "dxvk_modern_2_6")
+        options.dxvkBackend = impliedDxvkBackend;
     options.presentBackend = GetString(env, args[0], "presentBackend");
     if (options.presentBackend.empty())
         options.presentBackend = DerivePresentBackend(options.d3dBackend);
@@ -392,9 +396,10 @@ napi_value RunWineProgram(napi_env env, napi_callback_info info)
         return joined;
     }();
     OH_LOG_INFO(LOG_APP,
-                "[WineProgram] parsed options exe=%{public}s argc=%{public}zu env=%{public}zu [%{public}s]",
+                "[WineProgram] parsed options exe=%{public}s argc=%{public}zu env=%{public}zu [%{public}s] "
+                "d3d=%{public}s dxvk=%{public}s",
                 options.windowsExePath.c_str(), options.argv.size(), options.environment.size(),
-                envFallback.c_str());
+                envFallback.c_str(), options.d3dBackend.c_str(), options.dxvkBackend.c_str());
 
     const pid_t pid = SpawnWineProgram(options);
     WineProcessEntry entry;

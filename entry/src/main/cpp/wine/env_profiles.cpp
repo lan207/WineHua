@@ -140,18 +140,26 @@ std::vector<std::string> BuildSessionEnv(const SessionEnvPolicy& p)
     if (FindEnvValue(p.extraEnv, "WINEHUA_VULKAN_RUNTIME") == "1" &&
         d3dBackend != "dxvk_legacy" && d3dBackend != "dxvk_modern_2_6")
         AppendVulkanRuntimeEnv(env, p.binDir);
-    // per-app 覆盖最后写入, 优先级最高
+    // per-app 覆盖最后写入, 优先级最高。两个契约:
+    // 1) 值为空 ("KEY=") = 删除该键而非置空 —— 驱动选择分支 (win32u driver.c)
+    //    按键存在性判路, X 档位的互斥语义 ("只设 DISPLAY 不设
+    //    WAYLAND_DISPLAY", M1-T4) 只能靠删除实现; 置空仍非 NULL, 会被当作
+    //    wayland 路线。
+    // 2) 后端归一化键由上方 policy 独占: caller 覆盖不得在 policy 选定
+    //    runtime overlay 后复活已归档的 VKD3D 路线。
     for (const std::string& line : p.extraEnv) {
-        // These keys are owned by the normalized backend policy above. A
-        // caller-provided environment must not reactivate an archived VKD3D
-        // route after the policy has selected the runtime overlay.
         if (line.rfind("WINEHUA_D3D_BACKEND=", 0) == 0 ||
             line.rfind("WINEHUA_DXVK_ROOT=", 0) == 0 ||
             line.rfind("WINEHUA_DXVK_PROFILE=", 0) == 0 ||
             line.rfind("WINEHUA_DXVK_VERSION=", 0) == 0 ||
             line.rfind("WINEHUA_VKD3D_", 0) == 0)
             continue;
-        UpsertEnvLine(env, line);
+        size_t eq = line.find('=');
+        if (eq != std::string::npos && eq + 1 == line.size()) {
+            RemoveEnvLine(env, line.substr(0, eq));
+        } else {
+            UpsertEnvLine(env, line);
+        }
     }
     return env;
 }
