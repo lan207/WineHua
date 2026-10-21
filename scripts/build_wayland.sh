@@ -102,7 +102,7 @@ cp "$WL_SRC/src/wayland-client.h" \
 # server 头 (wlroots 消费; R-REPRO: 固化于此, 不再依赖 guest-gfx 伪造路径)
 cp "$WL_SRC/src/wayland-server.h" \
    "$WL_SRC/src/wayland-server-core.h" \
-   "$WL_BUILD/x86_64/src/wayland-server-protocol.h" \
+   "$WL_BUILD/$WINE_ARCH/src/wayland-server-protocol.h" \
    "$SYSROOT_EXT_INC/"
 cp "$WL_SRC/egl/wayland-egl.h" "$SYSROOT_EXT_INC/" 2>/dev/null || true
 cp "$WL_SRC/egl/wayland-egl-core.h" "$SYSROOT_EXT_INC/" 2>/dev/null || true
