@@ -348,6 +348,13 @@ void WaylandServer::viewport_set_destination(wl_client*, wl_resource* vpRes, int
     if (!surf) return;
     auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(surf));
     if (!sd) return;
+    // 显示尺寸变化的诊断点 (与 set_source 对称): viewport 目标直接决定合成
+    // 是否缩放, 排查画面尺寸问题时它是第一手证据。只在值变化时打 —
+    // 该入口每次 surface reconfigure 都会走。
+    if (sd->vpDstW != w || sd->vpDstH != h) {
+        OH_LOG_INFO(LOG_APP, "[MW-VP] set_destination surf=%{public}p tl=%{public}u dst=%{public}dx%{public}d",
+                    surf, sd->toplevelId, w, h);
+    }
     sd->vpDstW = w;
     sd->vpDstH = h;
 }
@@ -832,7 +839,7 @@ void WaylandServer::UpdateSubsurfaceLayerOnCommit(SurfaceData* sd, wl_resource* 
     // 每帧 ~7ms), 堵 wl 事件循环线程, 输入派发被延迟 (WL-T 实测)
     bool opaque = fi.shmFormat != 0;
     auto lk = toplevelMgr_.Lock();
-    const auto* pst = toplevelMgr_.FindToplevelLocked(parentId);
+    auto* pst = toplevelMgr_.FindToplevelLocked(parentId);
     SubsurfaceLayer layer;
     layer.surface = surfRes;  // 用 subsurface 自己的 surface 做 key
     layer.surfaceKey = sd->surfaceKey;
@@ -882,6 +889,12 @@ void WaylandServer::UpdateSubsurfaceLayerOnCommit(SurfaceData* sd, wl_resource* 
     MarkDesktopRootDirtyLocked();
     OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] stored layer %{public}dx%{public}d at (%{public}d,%{public}d) parent=#%{public}u",
                 layer.w, layer.h, layer.x, layer.y, parentId);
+    // 全屏窗口的帧尺寸跟随客户区内容: client subsurface 承载画面时父表面只有
+    // 一次占位提交, 帧停在占位尺寸会让画面贴在帧左上角 (见 ToplevelManager)
+    toplevelMgr_.SyncFullscreenContentSizeLocked(parentId, sd->w, sd->h);
+    // 父表面可能一次都不提交 (画面全在 client subsurface 上), 帧基底须在此补建
+    // — 否则 HasFrame() 恒假, toplevel 被判不可见, 一帧都不合成 (见 ToplevelManager)
+    toplevelMgr_.EnsureFrameBaseLocked(parentId, sd->w, sd->h);
 }
 
 // 多窗口模式 — 内嵌客户区 (wine client surface) 合入父窗口帧。
@@ -897,7 +910,7 @@ void WaylandServer::UpdateInlineSubsurfaceOnCommit(SurfaceData* sd, wl_resource*
     const bool opaque = fi.shmFormat != 0;
     const uint32_t parentId = parentSd->toplevelId;
     auto lk = toplevelMgr_.Lock();
-    const auto* pst = toplevelMgr_.FindToplevelLocked(parentId);
+    auto* pst = toplevelMgr_.FindToplevelLocked(parentId);
     SubsurfaceLayer layer;
     layer.surface = surfRes;
     layer.surfaceKey = sd->surfaceKey;
@@ -932,6 +945,12 @@ void WaylandServer::UpdateInlineSubsurfaceOnCommit(SurfaceData* sd, wl_resource*
     toplevelMgr_.MarkToplevelDirtyLocked(parentId);
     OH_LOG_INFO(LOG_APP, "[MW-SUBSURF] inline client layer %{public}dx%{public}d at (%{public}d,%{public}d) parent=#%{public}u",
                 sd->w, sd->h, sx, sy, parentId);
+    // 全屏窗口的帧尺寸跟随客户区内容: client subsurface 承载画面时父表面只有
+    // 一次占位提交, 帧停在占位尺寸会让画面贴在帧左上角 (见 ToplevelManager)
+    toplevelMgr_.SyncFullscreenContentSizeLocked(parentId, sd->w, sd->h);
+    // 父表面可能一次都不提交 (画面全在 client subsurface 上), 帧基底须在此补建
+    // — 否则 HasFrame() 恒假, toplevel 被判不可见, 一帧都不合成 (见 ToplevelManager)
+    toplevelMgr_.EnsureFrameBaseLocked(parentId, sd->w, sd->h);
 }
 
 // PC 多窗口模式 popup 状态段已迁至 PopupManager (compositor/popup_manager.cpp

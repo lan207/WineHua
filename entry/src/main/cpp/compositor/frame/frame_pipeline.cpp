@@ -859,10 +859,15 @@ void FrameBlitter::BlitWindowSubsurface(const CompositorLayer& layer, int winW, 
     const auto& sl = *layer.sub;
     size_t expectSz = (size_t)sl.w * sl.h * 4;
     if (sl.pixels.size() < expectSz) return;
-    int srcX = 0, srcY = 0, dstX = 0, dstY = 0, copyW = 0, copyH = 0;
-    if (!ClipBlitToTarget(layer.x, layer.y, sl.w, sl.h, winW, winH,
-                          srcX, srcY, dstX, dstY, copyW, copyH))
-        return;
+    /*
+     * wp_viewport: Wine 用它表达"这个 buffer 该显示成多大"。GL/Vulkan 客户区
+     * 出的是交换链尺寸 (全屏游戏如 800x600), 窗口客户区更大时 Wine 靠 viewport
+     * 让合成端放大。toplevel 路径由 CopyToplevelContent 应用, desktop 路径由
+     * BlitSubsurface 的全屏分支应用; 本路径 (inline client) 此前 1:1 上屏,
+     * viewport 被丢掉, 画面缩在窗口左上角。
+     */
+    const int dispW = DisplaySizeAfterViewport(sl.vpDstW, sl.w);
+    const int dispH = DisplaySizeAfterViewport(sl.vpDstH, sl.h);
     // ARGB 的透明性按像素精确判定 (IsFullyOpaqueArgb, 与 desktop 快照路径
     // 同一语义): GL readback 客户区常为 ARGB 格式但 alpha 全 255, 只按格式判
     // 会走 alpha 混合 → 画面发暗/透底。窗口路径无快照阶段, 直接按内容序列号
@@ -871,12 +876,29 @@ void FrameBlitter::BlitWindowSubsurface(const CompositorLayer& layer, int winW, 
     if (sl.shmFormat == 0) {
         auto* mut = const_cast<SubsurfaceLayer*>(layer.sub);
         if (mut->opaqueCheckedSerial != sl.shmCommitSerial) {
-            mut->opaque = IsFullyOpaqueArgb(sl.pixels.data(), sl.w, sl.w, sl.h);
+            bool now = IsFullyOpaqueArgb(sl.pixels.data(), sl.w, sl.w, sl.h);
+            // 首次判定与结果翻转必打: ARGB 层 alpha 位语义未定义 (D3D 交换链
+            // 的 X 位 readback 原样带出, 可为 0), 全透明时画面整层不可见
+            if (mut->opaqueCheckedSerial == 0 || now != mut->opaque)
+                OH_LOG_INFO(LOG_APP, "[MW-BLIT] inline argb opaque=%{public}d %{public}dx%{public}d",
+                            now ? 1 : 0, sl.w, sl.h);
+            mut->opaque = now;
             mut->opaqueCheckedSerial = sl.shmCommitSerial;
         }
         opaque = mut->opaque;
     }
     const bool needsAlphaBlend = sl.shmFormat == 0 && !opaque;
+    if (dispW != sl.w || dispH != sl.h) {
+        // 缩放路径: 采样相位由整矩形决定, 目标裁剪交给 BlitScaled 的 clip
+        // 参数 (与 BlitSubsurface 全屏分支同一原语)。
+        BlitScaled(out.data(), winW, winH, sl.pixels.data(), sl.w, sl.w, sl.h,
+                   layer.x, layer.y, dispW, dispH, needsAlphaBlend);
+        return;
+    }
+    int srcX = 0, srcY = 0, dstX = 0, dstY = 0, copyW = 0, copyH = 0;
+    if (!ClipBlitToTarget(layer.x, layer.y, sl.w, sl.h, winW, winH,
+                          srcX, srcY, dstX, dstY, copyW, copyH))
+        return;
     for (int y = 0; y < copyH; y++) {
         const uint8_t* srcRow = sl.pixels.data() + ((srcY + y) * sl.w + srcX) * 4;
         uint8_t* dstRow = out.data() + ((dstY + y) * winW + dstX) * 4;
