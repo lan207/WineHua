@@ -10,7 +10,7 @@
 
 #define PAYLOAD_SIZE (64 * 1024)
 
-static DWORD WINAPI named_server(LPVOID arg)
+static unsigned WINAPI named_server(void *arg)  /* _beginthreadex_proc_type 精确签名 (llvm-mingw 严格) */
 {
     char name_pipe[] = "\\\\.\\pipe\\winehua_t_pipe_srv";
     char buffer[4096];
