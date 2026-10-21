@@ -113,6 +113,11 @@ HOST_TRIPLE="${HOST_TRIPLE:-${WINE_ARCH}-unknown-linux-ohos}"  # wine configure 
 GNU_HOST="${GNU_HOST:-${WINE_ARCH}-linux-gnu}"              # autoconf 系 deps --host
 OHOS_ARCH="${OHOS_ARCH:-$( [ "$WINE_ARCH" = aarch64 ] && echo arm64-v8a || echo x86_64 )}"
 export TARGET HOST_TRIPLE GNU_HOST OHOS_ARCH
+# x11 链脚本的 guest 侧别名 (build_xcb_stack.sh / build_x11_client.sh):
+# guest = Wine 世界 = WINE_ARCH 侧; GUEST_ARCH 值域对齐 OHOS_ARCH 枚举。
+GUEST_TARGET="$TARGET"
+GUEST_ARCH="${GUEST_ARCH:-$OHOS_ARCH}"
+export GUEST_TARGET GUEST_ARCH
 
 # 根据 NATIVE_ARCH 推导 Native 层 LLVM target / meson cpu
 case "$NATIVE_ARCH" in
