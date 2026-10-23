@@ -395,14 +395,24 @@ extern "C" bool wlr_ohos_spawn_xwayland(struct wlr_xwayland_server *server,
     // 的 argc=16, T7 实测)。fd 哨兵 (@XFD0@ 等) 由 shim 按名替换为实际 fd。
     // xdgRuntimeDir: NCP 子进程不继承 app 环境, 显式下发——Xwayland 的
     // OutputDirectory (xkb/ddxLoad.c:65) 依赖它定位 xkm 缓存目录。
-    // stderrPath: Xwayland stdout/stderr 落盘文件 (沙箱内, 供排障)
+    // stderrPath: Xwayland stdout/stderr 落盘文件 (沙箱内, 供排障)。
+    // 钉到 prefix 区 (.wine/) 而非 xdg: x11 会话的 xdg (.x11-rt) 落 Xwayland
+    // NCP 的私有 mount 视图, 宿主 hdc file recv 读不到 (D29 已知坑);
+    // .wine/ 在宿主视角可见 (files/.wine/xwayland_stderr.log, 实测可 cat)。
     std::string xdg = getenv("XDG_RUNTIME_DIR") ? getenv("XDG_RUNTIME_DIR") : "";
+    std::string stderrPath;
+    if (!xdg.empty())
+    {
+        size_t slash = xdg.rfind('/');
+        stderrPath = (slash != std::string::npos ? xdg.substr(0, slash) : xdg)
+                     + "/.wine/xwayland_stderr.log";
+    }
     std::string params = std::string(server->display_name) + "|" +
         std::to_string(server->options.terminate_delay) + "|" +
         BoolStr(server->options.no_touch_pointer_emulation) + "|" +
         BoolStr(server->options.force_xrandr_emulation) + "|" +
         BoolStr(server->options.enable_wm) + "|" +
-        (xdg.empty() ? "" : xdg + "/xwayland_stderr.log") + "|" +
+        stderrPath + "|" +
         std::to_string(getpid()) + "|" + xdg;
     for (size_t i = 0; argv[i]; ++i)
         params += std::string("|") + argv[i];

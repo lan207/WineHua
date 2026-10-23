@@ -179,6 +179,7 @@ if [ ! -f "$HOST_EXT_LIB/libxwayland_ohos.so" ] \
         -Dglamor=false -Dglx=false \
         -Dsecure-rpc=false -Dxdm-auth-1=false \
         -Dsha1=libsha1 \
+        -Ddefault_font_path=built-ins \
         -Dxkb_dir="$SYSROOT_EXT/usr/share/X11/xkb" \
         -Dxkb_output_dir="$BUILD_DIR/xkb_output_$XS_VER" \
         -Dxkb_bin_dir="$HOST_EXT_USR/bin" \
