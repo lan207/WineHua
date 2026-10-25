@@ -19,10 +19,10 @@ index b699b8f4..aaf4d5ae 100644
 +
  #endif
 diff --git a/xwayland/server.c b/xwayland/server.c
-index 8401c9e6..b49838f5 100644
+index 8401c9e6..d6e22233 100644
 --- a/xwayland/server.c
 +++ b/xwayland/server.c
-@@ -24,31 +24,53 @@ static void safe_close(int fd) {
+@@ -24,31 +24,47 @@ static void safe_close(int fd) {
  	}
  }
  
@@ -62,12 +62,6 @@ index 8401c9e6..b49838f5 100644
 +	// (T9-10 字节级 setup 探针拿到 reason 串; 本地 peercred 豁免在 OHOS
 +	// 沙箱未生效)。连接全部来自同 uid 的沙箱内进程, -ac 无越权面。
 +	argv[i++] = "-ac";
-+	// OHOS (WineHua): 运行时字体路径 = built-ins (libXfont2 内置 fixed/cursor,
-+	// 无字体文件依赖)。设备上不存在任何 X 字体目录, 编译期 DFP 指向的路径
-+	// 全部缺失 → SetDefaultFont("fixed") FatalError ("could not open default
-+	// font")。运行时 -fp 覆盖编译期 DFP, 双保险。
-+	argv[i++] = "-fp";
-+	argv[i++] = "built-ins";
 +	// OHOS (WineHua): stderr 是唯一可观测面 (NCP 子进程, 落盘重定向), 强制详细日志。
 +	// 注意是 -verbose (Xwayland 支持), 不是 Xorg 的 -logverbose (实测 Fatal:
 +	// Unrecognized option)
@@ -95,7 +89,7 @@ index 8401c9e6..b49838f5 100644
  
  	argv[i++] = "-terminate";
  #if HAVE_XWAYLAND_TERMINATE_DELAY
-@@ -62,23 +84,21 @@ noreturn static void exec_xwayland(struct wlr_xwayland_server *server,
+@@ -62,23 +67,21 @@ noreturn static void exec_xwayland(struct wlr_xwayland_server *server,
  
  #if HAVE_XWAYLAND_LISTENFD
  	argv[i++] = "-listenfd";
@@ -125,7 +119,7 @@ index 8401c9e6..b49838f5 100644
  	}
  
  #if HAVE_XWAYLAND_NO_TOUCH_POINTER_EMULATION
-@@ -97,44 +117,11 @@ noreturn static void exec_xwayland(struct wlr_xwayland_server *server,
+@@ -97,44 +100,11 @@ noreturn static void exec_xwayland(struct wlr_xwayland_server *server,
  	server->options.force_xrandr_emulation = false;
  #endif
  
@@ -174,7 +168,7 @@ index 8401c9e6..b49838f5 100644
  }
  
  static void server_finish_process(struct wlr_xwayland_server *server) {
-@@ -254,24 +241,8 @@ static int xserver_handle_ready(int fd, uint32_t mask, void *data) {
+@@ -254,24 +224,8 @@ static int xserver_handle_ready(int fd, uint32_t mask, void *data) {
  		}
  	}
  
@@ -201,7 +195,7 @@ index 8401c9e6..b49838f5 100644
  	/* Xwayland will only write on the fd once it has finished its
  	 * initial setup. Getting an event here without READABLE means
  	 * the server end failed.
-@@ -281,7 +252,7 @@ static int xserver_handle_ready(int fd, uint32_t mask, void *data) {
+@@ -281,7 +235,7 @@ static int xserver_handle_ready(int fd, uint32_t mask, void *data) {
  		wlr_log(WLR_ERROR, "Xwayland startup failed, not setting up xwm");
  		goto error;
  	}
@@ -210,7 +204,7 @@ index 8401c9e6..b49838f5 100644
  
  	close(fd);
  	wl_event_source_remove(server->pipe_source);
-@@ -321,6 +292,14 @@ static bool server_start_display(struct wlr_xwayland_server *server,
+@@ -321,6 +275,14 @@ static bool server_start_display(struct wlr_xwayland_server *server,
  	return true;
  }
  
@@ -225,7 +219,7 @@ index 8401c9e6..b49838f5 100644
  static bool server_start(struct wlr_xwayland_server *server) {
  	if (socketpair(AF_UNIX, SOCK_STREAM, 0, server->wl_fd) != 0) {
  		wlr_log_errno(WLR_ERROR, "socketpair failed");
-@@ -349,18 +328,6 @@ static bool server_start(struct wlr_xwayland_server *server) {
+@@ -349,18 +311,6 @@ static bool server_start(struct wlr_xwayland_server *server) {
  
  	server->server_start = time(NULL);
  
@@ -244,7 +238,7 @@ index 8401c9e6..b49838f5 100644
  	int notify_fd[2];
  	if (pipe(notify_fd) == -1) {
  		wlr_log_errno(WLR_ERROR, "pipe failed");
-@@ -379,34 +346,42 @@ static bool server_start(struct wlr_xwayland_server *server) {
+@@ -379,34 +329,42 @@ static bool server_start(struct wlr_xwayland_server *server) {
  	server->pipe_source = wl_event_loop_add_fd(loop, notify_fd[0],
  		WL_EVENT_READABLE, xserver_handle_ready, server);
  
@@ -306,7 +300,7 @@ index 8401c9e6..b49838f5 100644
  	return true;
  }
  
-@@ -469,11 +444,9 @@ void wlr_xwayland_server_destroy(struct wlr_xwayland_server *server) {
+@@ -469,11 +427,9 @@ void wlr_xwayland_server_destroy(struct wlr_xwayland_server *server) {
  struct wlr_xwayland_server *wlr_xwayland_server_create(
  		struct wl_display *wl_display,
  		struct wlr_xwayland_server_options *options) {
