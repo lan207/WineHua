@@ -333,6 +333,12 @@ def validate_media_dependency_closure(payload: Archive, hap: Archive, wine_arch:
     hap_libraries = [name for name in hap.names if "/libs/" in f"/{name}" and is_shared_object(name)]
     provided = {name.rsplit("/", 1)[-1] for name in payload_libraries + hap_libraries}
 
+    # OHOS 系统提供集合: 设备系统自带、NCP/wine 子进程命名空间可解析 (实证:
+    # m0 hap 不打包 libz, Xwayland/libXfont2 解析系统 zlib 正常)。SDK sysroot
+    # 的同名 .so 是链接桩 (函数体为空), 不可作为运行时实现 —— 因此这里放行
+    # + assemble 不打包, 双向保证桩不进包 (2026-10-25 字体 Fatal 教训)。
+    system_provided = {"libz.so", "libc.so", "libm.so"}
+
     media_consumers = payload_libraries + [
         name for name in hap_libraries if name.rsplit("/", 1)[-1] == REQUIRED_WINE_MEDIA_UNIX_LIBRARY
     ]
@@ -342,7 +348,7 @@ def validate_media_dependency_closure(payload: Archive, hap: Archive, wine_arch:
     missing: dict[str, list[str]] = {}
     for name in media_consumers:
         source = payload if name in payload.name_set else hap
-        unresolved = sorted(set(elf_needed(name, source.read(name))) - provided)
+        unresolved = sorted(set(elf_needed(name, source.read(name))) - provided - system_provided)
         if unresolved:
             missing[name] = unresolved
     if missing:

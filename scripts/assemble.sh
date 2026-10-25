@@ -489,7 +489,18 @@ EOF
             fi
         }
         _pick_lib_pad "libfreetype.so.6.20.2"       "libfreetype.so.6"   "libfreetype.so"
-        _pick_lib_pad "libz.so"                      "libz.so"
+        # libz.so 不打包: SDK sysroot 的 libz.so 是链接桩 (8.9KB, 函数体为空, 仅
+        # 供链接期符号解析), 打包后会在 NCP 子进程遮蔽设备系统 zlib —— Xwayland
+        # 的 libXfont2 gunzip 内置字体走 inflate, 桩使解压静默失败 → "could not
+        # open default font" Fatal → x11 桌面永不映射 (2026-10-25 实测, m0 hap
+        # 无 libz 用系统库正常)。系统库由设备提供, 运行时命名空间可解析。
+        if [ -f "$NATIVE_LIBS/libz.so" ]; then
+            _libz_bytes=$(stat -c%s "$NATIVE_LIBS/libz.so")
+            if [ "$_libz_bytes" -lt 20000 ]; then
+                err "libs/libz.so 仅 ${_libz_bytes}B —— SDK 链接桩混入 (真实 zlib ≥100KB), 拒绝打包"
+            fi
+            rm -f "$NATIVE_LIBS/libz.so"
+        fi
         _pick_lib_pad "libwayland-client.so.0.22.0"  "libwayland-client.so.0"
         _pick_lib_pad "libwayland-egl.so.1.22.0"     "libwayland-egl.so.1"
         _pick_lib_pad "libxkbcommon.so.0.0.0"        "libxkbcommon.so.0"
