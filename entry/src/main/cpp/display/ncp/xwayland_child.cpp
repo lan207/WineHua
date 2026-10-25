@@ -124,6 +124,12 @@ extern "C" __attribute__((visibility("default"))) void Main(NativeChildProcess_A
             dup2(logFd, STDOUT_FILENO);
             dup2(logFd, STDERR_FILENO);
             if (logFd > STDERR_FILENO) close(logFd);
+            /* stderr 重定向到文件后 C 库自动切全缓冲 (4KB): Xwayland 的启动
+             * 日志 (~900B) 不足一屏永远滞留内存, 长跑进程不退出则永不落盘
+             * (Fatal 退出会 flush, 实测 fatal 会话可见 999B 而正常会话 0B)。
+             * 行缓冲逐行落盘, 边跑边可取证。 */
+            setvbuf(stdout, NULL, _IOLBF, 0);
+            setvbuf(stderr, NULL, _IOLBF, 0);
         }
         else
         {
