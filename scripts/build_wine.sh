@@ -4,6 +4,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/env.sh"
 
+# Preserve complete keyboard messages when the builtin IME passes keys through.
+# Force the reverse probe direction: patch may otherwise ignore -R and report
+# success for a patch that has not been applied yet.
+ime_key_patch="$SCRIPT_DIR/patches/wine-ime-key-scancode.patch"
+if ! patch -d "$WINE_SRC" -p1 --reverse --dry-run --batch --force --silent < "$ime_key_patch" >/dev/null 2>&1; then
+    patch -d "$WINE_SRC" -p1 --forward --batch < "$ime_key_patch"
+fi
+
 # Wine 编译标志 (Unix .so + wineserver)
 WINE_CFLAGS="-g -O2 -D__MUSL__ -D_GNU_SOURCE -D__ANDROID__ -D__OHOS__ -DWINE_UNIX_LIB \
     -D_NTSYSTEM_ -D__WINESRC__ -DFAR= -D_ACRTIMP= -DWINBASEAPI= -DZ_SOLO \
