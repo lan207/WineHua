@@ -28,6 +28,16 @@ extern "C" {
  */
 struct wlr_renderer *wl_ohos_egl_renderer_create(void);
 
+/*
+ * 链 teardown 销毁 renderer 之后必须调用: 作废本模块全部缓存
+ * (renderer/egl/context/display)。缓存指向的对象已随 wlr_renderer_destroy
+ * 的销毁链释放, 不作废则下次 chain_start 的 create 命中单例返回野指针
+ * (2026-10-31 真机 wayland→x11 二次起链 SEGV 实测)。只作废不销毁;
+ * 须在本链最后一个 EGL 使用者 (如 wl_ohos_egl_window_surface_destroy)
+ * 之后调用。GPU 同步计数 (wl_ohos_egl_sync_count) 不随本调用复位。
+ */
+void wl_ohos_egl_renderer_shutdown(void);
+
 /* gles2 是否已激活 (是否需要在读源 buffer 像素前做 GPU 同步的判据) */
 bool wl_ohos_egl_active(void);
 
