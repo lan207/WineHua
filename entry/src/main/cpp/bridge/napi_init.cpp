@@ -19,6 +19,7 @@
 #include "input/controller/controller_napi.h"
 #include "display/x11_toplevel.h" /* M4a-T5: 多窗输入路由分叉 */
 #include "display/xim_bridge.h" /* x11 IME 上行激活 (2026-10-17) */
+#include "display/display_input.h" /* x11 IME 退格: wl_ohos_input_post_key */
 
 #include <unistd.h>
 #include <signal.h>
@@ -639,6 +640,17 @@ static napi_value ImeBackspace(napi_env env, napi_callback_info info) {
     (void)env;
     (void)info;
     constexpr uint32_t KEY_BACKSPACE = 14;
+    // x11 路线: 按键面在 Xwayland, wayland seat 注入对 wine 不可达 (事件
+    // 静默丢失 —— SendScrollEvent 处 2026-10-11 同款真机实证; 本处 2026-10-31
+    // 真机症状 = x11 桌面软键盘退格删不掉字, 文字上屏走 SendCommitString
+    // 的 x11 分支所以无恙)。退格目标 = XIM IC 焦点窗 = X 键盘焦点窗, 走
+    // display_input 投递队列按 X 焦点分发 (injectDisplayRouteKey 同路径,
+    // VD/多窗通用 —— 多窗点选已经 FocusClient 把 seat 键盘焦点建好)。
+    if (WineHua_DisplayRouteIsX11()) {
+        wl_ohos_input_post_key(KEY_BACKSPACE, true);
+        wl_ohos_input_post_key(KEY_BACKSPACE, false);
+        return nullptr;
+    }
     auto* im = InputManager::GetInstance();
     im->InjectKeyboardKey(KEY_BACKSPACE, WL_KEYBOARD_KEY_STATE_PRESSED);
     im->InjectKeyboardKey(KEY_BACKSPACE, WL_KEYBOARD_KEY_STATE_RELEASED);
