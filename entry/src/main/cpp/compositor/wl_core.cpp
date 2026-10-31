@@ -384,6 +384,8 @@ void WaylandServer::surface_destroy(wl_client*, wl_resource* r) {
     auto* sd = static_cast<SurfaceData*>(wl_resource_get_user_data(r));
     OH_LOG_INFO(LOG_APP, "[MW-Life] surface_destroy surf=%{public}p hasToplevel=%{public}d toplevelId=%{public}u isSubsurface=%{public}d",
                 r, sd ? sd->hasToplevel : 0, sd ? sd->toplevelId : 0, sd ? sd->isSubsurface : 0);
+    // IME per-surface 矩形记忆随 surface 生命周期清除 (悬指针键防护)
+    TextInput::GetInstance()->ForgetSurface(r);
     if (sd && sd->hasToplevel) {
         // 清理 surface 映射
         auto* self = GetInstance();

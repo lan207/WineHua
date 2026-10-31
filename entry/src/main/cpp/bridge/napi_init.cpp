@@ -634,6 +634,17 @@ static napi_value SendImePreedit(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+// -- NAPI: imeRearm -- (软键盘被用户手动收起后重新武装激活边沿。同窗内
+//    文本框重聚焦不产生 seat 级 text-input 事件, 合成器 activated 恒真则
+//    永不重新 ACTIVATE; ArkTS 在 sendKeyboardStatus HIDE 时调本口重新武装,
+//    此后 wine 的下一条矩形+commit 即重弹。见 text_input.cpp commit 注释)
+static napi_value ImeRearm(napi_env env, napi_callback_info info) {
+    (void)env;
+    (void)info;
+    TextInput::GetInstance()->RearmActivation();
+    return nullptr;
+}
+
 // -- NAPI: imeBackspace -- (软键盘退格 → Wine KEY_BACKSPACE 按键注入;
 //    Wine 的 delete_surrounding_text 是空实现, 退格走现有 key 注入链路)
 static napi_value ImeBackspace(napi_env env, napi_callback_info info) {
@@ -1217,6 +1228,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"sendImeCommit", nullptr, SendImeCommit, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"sendImePreedit", nullptr, SendImePreedit, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"imeBackspace", nullptr, ImeBackspace, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"imeRearm", nullptr, ImeRearm, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"getCurrentToplevelId", nullptr, GetCurrentToplevelId, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setPendingToplevel", nullptr, SetPendingToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"cancelPendingToplevel", nullptr, CancelPendingToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},

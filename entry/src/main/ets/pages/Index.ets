@@ -119,6 +119,12 @@ struct Index {
         });
         controller.on('sendKeyboardStatus', (status: inputMethod.KeyboardStatus) => {
           hilog.info(DOMAIN, 'IME-TEST', '[keyboardStatus] %{public}d (NONE=0 HIDE=1 SHOW=2)', status);
+          // 面板被收起 (用户手动/系统) → 重新武装激活边沿: 同窗内文本框重聚焦
+          // 无 seat 级 text-input 事件, 不重新武装则合成器 activated 恒真,
+          // 此后的矩形+commit 永不重弹 (见 text_input.cpp commit 注释)
+          if (status === inputMethod.KeyboardStatus.HIDE) {
+            testNapi.imeRearm();
+          }
         });
         controller.on('setPreviewText', (text: string, range: inputMethod.Range) => {
           hilog.info(DOMAIN, 'IME-TEST', '[previewText] "%{public}s" range=[%{public}d,%{public}d]', text, range.start, range.end);
@@ -151,6 +157,7 @@ struct Index {
         c.off('sendFunctionKey');
         c.hideTextInput();
         c.detach();
+        testNapi.imeRearm();  // 面板随 detach 收起 → 重新武装激活边沿 (同 HIDE 分支)
       } catch (e) {
         hilog.error(DOMAIN, 'IME-TEST', '[detach] EXCEPTION: %{public}s', JSON.stringify(e));
       }

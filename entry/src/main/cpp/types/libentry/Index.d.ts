@@ -13,6 +13,7 @@ export const setPointerLockCallback: (cb: (locked: boolean, toplevelId: number) 
 export const sendImeCommit: (text: string) => void;
 export const sendImePreedit: (text: string, start: number, end: number) => void;
 export const imeBackspace: () => void;
+export const imeRearm: () => void;
 export const setPendingToplevel: (id: number) => void;
 export const cancelPendingToplevel: (id: number) => void;
 export const getCurrentToplevelId: () => number;
