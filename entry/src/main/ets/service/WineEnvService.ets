@@ -11,7 +11,7 @@ import { DisplaySettingsService } from './DisplaySettingsService';
 import { normalizeCompatMode } from './Box64Dynarec';
 
 const DOMAIN = 0x0000;
-const FILES_BASE = '/data/storage/el2/base/files';
+export const FILES_BASE = '/data/storage/el2/base/files';
 // 默认渲染策略 = DXVK 1.10 (legacy 档; 设置页可选 2.6 / WineD3D)。
 // 所有"未持久化/未显式覆盖"的默认值统一引用此处, 不要散落字面量。
 export const DEFAULT_D3D_BACKEND = 'dxvk_legacy';
@@ -19,7 +19,7 @@ export const DEFAULT_D3D_BACKEND = 'dxvk_legacy';
 export const SOCK = '/data/storage/el2/base/files/.wine/wine-wayland';
 
 // Wine 运行时从 rawfile 解压到 files/
-const WINE_ROOT = `${FILES_BASE}/wine`;
+export const WINE_ROOT = `${FILES_BASE}/wine`;
 export const WINE_BIN = `${WINE_ROOT}/bin`;
 export const WINE_LIB = `${WINE_BIN}/x86_64-unix`;
 const BIN_DIR = WINE_BIN;
@@ -1288,6 +1288,42 @@ export class WineEnvService {
       }
     })();
     // 编排启动后才返回 (同步置 opBusy 防重入): 返回 false = busy 拦截
+    return true;
+  }
+
+  // 只清 prefix (C 盘 + prefix 元数据), 不删运行时 — 与 doReset (删 WINE_ROOT +
+  // 重解压 249MB) 的区别。必须先 stopSession: 活 wineserver/explorer 脚下删
+  // prefix 是数据损坏。编排: 停 → 清 → 延迟 startSession (与 doReset 同款 500ms
+  // 隔离)。返回 false = busy 拦截 (调用方走常规启动分支)。当前调用方:
+  // SmokeHook (smoke --prefix clean 基线) — 引擎级通用能力, 非 smoke 专属。
+  cleanPrefixAndRestart(): boolean {
+    if (this.isBusy()) {
+      hilog.warn(DOMAIN, 'wine', 'cleanPrefixAndRestart blocked (busy)');
+      return false;
+    }
+    this.opBusy = true;
+    (async (): Promise<void> => {
+      try {
+        await this.stopSession(true);
+        this.setInitStatus('正在清空...', true);
+        testNapi.resetWinePrefix();
+        this.engineState = 'idle';
+        this.engineStage = '';
+        this.prefixReady = false;
+        ProcessService.getInstance().clear();
+        this.setInitStatus('prefix 已清空', false);
+        // opBusy 在自己手上: 不先清, 延迟 startSession 会被自身 re-entry 守卫
+        // 拦截 (startSession 前两次调用在 clean 编排里, 而守卫检查 opBusy)
+        setTimeout(() => {
+          this.opBusy = false;
+          this.startSession(true);
+        }, 500);
+      } catch (e) {
+        hilog.error(DOMAIN, 'wine', 'cleanPrefixAndRestart error: %{public}s', JSON.stringify(e));
+        this.opBusy = false;
+        this.notify();
+      }
+    })();
     return true;
   }
 

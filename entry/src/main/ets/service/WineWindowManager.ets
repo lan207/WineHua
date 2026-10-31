@@ -106,13 +106,6 @@ export class WineWindowManager {
   private desktopWinStarting: boolean = false;
   private desktopWindowActive: boolean = false;
   private desktopWinCtx: common.UIAbilityContext | null = null;
-  private desktopRootId: number = 0;
-  // 单 Ability 三层页面: 桌面已激活 → Index 挂载 DesktopLayer 盖住启动器。
-  // root 销毁时翻回 false (等效旧双 Ability 时代"root 销毁即关窗回主页面"
-  // 的语义), 新 desktop_root 事件再置 true
-  desktopActive: boolean = false;
-  // 桌面 root 的 XComponent surface 校准完成（renderer 就绪）才置 true。
-  desktopSurfaceReady: boolean = false;
   // 启动器可见性镜像 (Index @Watch 同步): 非桌面态时窗口退出全屏,
   // XComponent surface 高度随系统栏波动 — DesktopLayer.onSurfaceChanged
   // 据此跳过 root resize, 避免把中间态高度发给 Wine 桌面 (热重启残留 bug)
@@ -269,15 +262,25 @@ export class WineWindowManager {
   //   桌面模式   → 悬浮窗形态禁止; 完整桌面形态仅"非桌面 root surface"允许。
   //                PC: 悬浮 = Index 小窗预览 (VDA 未存活 desktopWindowActive=false);
   //                    完整桌面 = VDA 独立窗口存活 (desktopWindowActive=true)
-  //                Pad: 悬浮 = launcherVisible; 完整 = !launcherVisible
+  //                Pad 内嵌 (main-ui 语义): 悬浮 = launcherVisible; 完整 =
+  //                    !launcherVisible。desktopActive 门 (x11 Pad 修复:
+  //                    桌面 root 未出现禁止隐藏 — 旧实现读恒 true 死字段的
+  //                    问题在本树不存在, launcherVisible 有 Index 写入方,
+  //                    两门并查覆盖两世界)。
   //               完整桌面下 toplevelId == desktopRootId → 桌面 shell 自身藏
   //               光标 (启动瞬时) → 禁止; 子窗口 (真实游戏/程序) → 允许。
   private canHideCursor(fromToplevel: number): boolean {
     if (!this.isDesktopMode) return true;
     if (this.desktopSeparateWindow) {
       if (!this.desktopWindowActive) return false;
-    } else if (this.desktopLauncherVisible) {
-      return false;
+    } else {
+      if (this.desktopLauncherVisible) {
+        return false;
+      }
+      if (!this.desktopActive) {
+        // x11 Pad 门禁: 桌面 root 未出现 (desktopActive=false) 禁止隐藏
+        return false;
+      }
     }
     return fromToplevel !== this.desktopRootId;
   }
@@ -291,11 +294,12 @@ export class WineWindowManager {
     // 每次调用都打决策 (含 no-op), 实测才能确认门禁走向 (锁定/解锁、
     // 悬浮↔完整切换均会触发, 频率低不刷屏)
     hilog.info(DOMAIN, TAG,
-      '[MW]PtrVis → %{public}s (locked=%{public}s canHide=%{public}s tl=%{public}d mode=%{public}s sep=%{public}s vda=%{public}s launcher=%{public}s)',
+      '[MW]PtrVis → %{public}s (locked=%{public}s canHide=%{public}s tl=%{public}d mode=%{public}s sep=%{public}s vda=%{public}s launcher=%{public}s da=%{public}s)',
       shouldHide ? 'HIDE' : 'SHOW',
       String(this.pointerLocked), String(canHide), this.pointerLockToplevel,
       String(this.isDesktopMode), String(this.desktopSeparateWindow),
-      String(this.desktopWindowActive), String(this.desktopLauncherVisible));
+      String(this.desktopWindowActive), String(this.desktopLauncherVisible),
+      String(this.desktopActive));
     if (shouldHide === this.effectiveHidden) return;
     this.effectiveHidden = shouldHide;
     pointer.setPointerVisible(!shouldHide).catch((e: BusinessError) => {
@@ -1694,25 +1698,6 @@ export class WineWindowManager {
     });
   }
 
-  // 沉浸全屏还原: 经 VDA ctx 取主窗口 recover() 回普通窗口 (唯一还原入口
-  // 是 VirtualDesktop 页面的悬浮「退出全屏」按钮 — DISABLE_HOVER 禁用了
-  // 系统 hover 还原)
-  async recoverDesktopWindow(): Promise<void> {
-    if (!this.desktopWinCtx) {
-      hilog.warn(DOMAIN, TAG, '[MW] recoverDesktopWindow: no desktop ctx');
-      return;
-    }
-    try {
-      const win = await window.getLastWindow(this.desktopWinCtx);
-      if (win) {
-        await win.recover();
-        hilog.info(DOMAIN, TAG, '[MW] recoverDesktopWindow OK');
-      }
-    } catch (e) {
-      hilog.warn(DOMAIN, TAG, '[MW] recoverDesktopWindow failed: %{public}s', JSON.stringify(e));
-    }
-  }
-
   // 游戏全屏适配 (2026-10-15): 桌面内容矩形变化 → PC/2in1 承载窗跟随
   // (ProcessService 转发 native evt:desktop-content-resize)。w/h = wine 桌面
   // 逻辑尺寸 (游戏 CDS 后 = 游戏分辨率; 退出恢复后再发一次原尺寸)。
@@ -1746,60 +1731,6 @@ export class WineWindowManager {
       });
     }).catch((e: Error) => {
       hilog.warn(DOMAIN, TAG, '[MW-DESKTOP] getLastWindow failed: %{public}s', JSON.stringify(e));
-    });
-  }
-
-  // 启动器可见性写回 (Index 调用; PC 虚拟桌面模式 Index 不挂 DesktopLayer,
-  // 该值归独立窗口所有 — VirtualDesktop 页面保持默认 true 跳过 root resize)
-  setDesktopLauncherVisible(visible: boolean): void {
-    this.desktopLauncherVisible = visible;
-    // Pad 悬浮↔完整桌面切换: 光标隐藏意图可能因形态翻转而改变 (悬浮=禁止,
-    // 完整=允许), 但 wine 的相对指针对象未必销毁 (无新锁定回调) → 重算一次
-    this.applyPointerVisibility();
-  }
-
-  // 光标隐藏门禁判据 (fromToplevel = 触发相对模式的约束 surface 所属 toplevel):
-  //   融合模式   → 允许 (每个 app 独立窗口, setPointerVisible 按"当前窗口"
-  //                作用, 只有发起相对模式的应用窗口隐藏, 天然满足"其它窗口
-  //                不隐藏") — 不拦。
-  //   桌面模式   → 悬浮窗形态禁止; 完整桌面形态仅"非桌面 root surface"允许。
-  //                PC: 悬浮 = Index 小窗预览 (VDA 未存活 desktopWindowActive=false);
-  //                    完整桌面 = VDA 独立窗口存活 (desktopWindowActive=true)
-  //                Pad: 未激活 = desktopActive=false (desktop root 未出现);
-  //                    完整桌面 = desktopActive=true (desktop_root 事件)
-  //               完整桌面下 fromToplevel == desktopRootId → 桌面 shell 自身藏
-  //               光标 (启动瞬时) → 禁止; 子窗口 (真实游戏/程序) → 允许。
-  private canHideCursor(fromToplevel: number): boolean {
-    if (!this.isDesktopMode) return true;
-    if (this.desktopSeparateWindow) {
-      if (!this.desktopWindowActive) return false;
-    } else if (!this.desktopActive) {
-      // Pad 门禁: 桌面未激活 (desktop root 未出现) 禁止隐藏。旧实现读
-      // desktopLauncherVisible (恒 true 死字段 — 全局无写入方), 致 Pad 上
-      // "光标锁定但未隐藏" (C++ 冻结生效、ArkTS 恒拒绝) — 已改。
-      return false;
-    }
-    return fromToplevel !== this.desktopRootId;
-  }
-
-  // 统一重算并应用光标显隐: shouldHide = pointerLocked × canHideCursor()。
-  // 与 effectiveHidden 比对, 变了才调 setPointerVisible — 保持"相对模式 ×
-  // 展示形态"始终一致, 悬浮时被抑制的隐藏不会因切换失同步 (要么漏藏要么残留)。
-  private applyPointerVisibility(): void {
-    const canHide = this.canHideCursor(this.pointerLockToplevel);
-    const shouldHide = this.pointerLocked && canHide;
-    // 每次调用都打决策 (含 no-op), 实测才能确认门禁走向 (锁定/解锁、
-    // 悬浮↔完整切换均会触发, 频率低不刷屏)
-    hilog.info(DOMAIN, TAG,
-      '[MW]PtrVis → %{public}s (locked=%{public}s canHide=%{public}s tl=%{public}d mode=%{public}s sep=%{public}s vda=%{public}s da=%{public}s)',
-      shouldHide ? 'HIDE' : 'SHOW',
-      String(this.pointerLocked), String(canHide), this.pointerLockToplevel,
-      String(this.isDesktopMode), String(this.desktopSeparateWindow),
-      String(this.desktopWindowActive), String(this.desktopActive));
-    if (shouldHide === this.effectiveHidden) return;
-    this.effectiveHidden = shouldHide;
-    pointer.setPointerVisible(!shouldHide).catch((e: BusinessError) => {
-      hilog.warn(DOMAIN, TAG, '[MW] setPointerVisible failed: %{public}s', JSON.stringify(e));
     });
   }
 
