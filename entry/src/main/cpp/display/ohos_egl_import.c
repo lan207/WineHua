@@ -253,6 +253,27 @@ struct wlr_renderer *wl_ohos_egl_renderer_create(void)
     return g_renderer;
 }
 
+void wl_ohos_egl_renderer_shutdown(void)
+{
+    /* 链 teardown 的 wlr_renderer_destroy 按本文件 create 处注释的销毁链
+     * 连带释放了 g_egl 与其 adopt 的 g_context。这里只作废缓存, 不销毁
+     * 对象。g_display 一并清: wlr_egl_destroy 在 KHR_display_reference 下
+     * 会 eglTerminate, 残留句柄是否有效随 wlroots 版本漂移, 不赌
+     * (re-init 侧 eglGetDisplay+eglInitialize 幂等, 代价毫秒级)。
+     * g_eglSyncCount 是跨链单调 GPU 同步计数 (known-issues §2.6 不变量),
+     * 不复位。g_create_image 是 eglGetProcAddress 结果, 进程级有效, 保留。
+     * 不作废的后果: 下次 chain_start 的 create 命中 `if (g_renderer)`
+     * 返回野指针, wlr_compositor_set_renderer 在已释放内存上
+     * wl_signal_add → wl_list_insert(NULL) SEGV (真机 cppcrash
+     * 20261031222019: wayland→x11→wayland→x11 同进程二次起链,
+     * "compositor renderer=gles2" 打出后 2ms 崩, 栈顶
+     * wl_list_insert@0x8)。 */
+    g_renderer = NULL;
+    g_egl = NULL;
+    g_context = EGL_NO_CONTEXT;
+    g_display = EGL_NO_DISPLAY;
+}
+
 /* ── M2-T4 present 前置探针 ────────────────────────────────────────────
    零拷贝 present 的两个前提 host 侧验不了, 必须真机验一遍:
      ① window 队列 buffer (RequestBuffer 借来的一格) 能经**生产导入器**成

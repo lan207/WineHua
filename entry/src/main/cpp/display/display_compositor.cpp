@@ -985,6 +985,10 @@ extern "C" void WineHua_DisplayRoute_StartWithSurface(uint64_t surface_id,
             g_started = false;
             g_stop = false;
         }
+        // renderer 销毁后作废 ohos_egl_import 单例缓存 (详见
+        // wl_ohos_egl_renderer_shutdown 注释)。必须在本链最后一个 EGL
+        // 使用者 (上方 wl_ohos_egl_window_surface_destroy) 之后。
+        wl_ohos_egl_renderer_shutdown();
         OH_LOG_INFO(LOG_APP, "displayroute stopped or failed; cleaned up (retry possible)");
     }).detach();
 }
