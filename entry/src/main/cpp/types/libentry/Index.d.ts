@@ -13,6 +13,7 @@ export const setPointerLockCallback: (cb: (locked: boolean, toplevelId: number) 
 export const sendImeCommit: (text: string) => void;
 export const sendImePreedit: (text: string, start: number, end: number) => void;
 export const imeBackspace: () => void;
+export const imeRearm: () => void;
 export const setPendingToplevel: (id: number) => void;
 export const cancelPendingToplevel: (id: number) => void;
 export const getCurrentToplevelId: () => number;
@@ -56,6 +57,9 @@ export const sendKeyEvent: (toplevelId: number, evdevCode: number, pressed: bool
 export const sendScrollEvent: (toplevelId: number, axis: number, value: number, scrollStep: number, px: number, py: number) => void;
 export const notifyToplevelResize: (toplevelId: number, w: number, h: number, resizing?: boolean) => void;
 export const notifyToplevelResizeEnd: (toplevelId: number) => void;
+// 任务 #135: 承载窗全局位置上报 (guest 逻辑坐标 = windowRect 原点 / effectiveScale)。
+// 仅 x11 路线生效 (wayland 无绝对位置语义, 静默 no-op)。
+export const notifyToplevelMove: (toplevelId: number, x: number, y: number) => void;
 export const setToplevelVisible: (toplevelId: number, visible: boolean) => void;
 export const getProcessList: () => Array<{pid: number, name: string, path: string, state: string, desktopShell: boolean}>;
 export const killProcess: (pid: number) => boolean;

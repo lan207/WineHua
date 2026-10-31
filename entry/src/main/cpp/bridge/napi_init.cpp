@@ -17,6 +17,9 @@
 #include "input/text_input.h"
 #include "input/game_controller_bridge.h"
 #include "input/controller/controller_napi.h"
+#include "display/x11_toplevel.h" /* M4a-T5: 多窗输入路由分叉 */
+#include "display/xim_bridge.h" /* x11 IME 上行激活 (2026-10-17) */
+#include "display/display_input.h" /* x11 IME 退格: wl_ohos_input_post_key */
 
 #include <unistd.h>
 #include <signal.h>
@@ -585,6 +588,20 @@ static napi_value SetImeCallback(napi_env env, napi_callback_info info) {
         }
     });
 
+    /* x11 IME 上行链 (2026-10-17): server 侧 IC 焦点 → 桥读线程 → 本回调 →
+     * tsfn → ArkTS attach/detach (wayland TextInput::SetActivateCallback 的
+     * x11 对位)。 */
+    xim_bridge_set_activation_callback([](int active, int x, int y, int w, int h, void*) {
+        if (!gImeTsfn) {
+            OH_LOG_WARN(LOG_APP, "[IME-X11-UP] cb dropped (tsfn not ready) active=%{public}d", active);
+            return;
+        }
+        OH_LOG_INFO(LOG_APP, "[IME-X11-UP] enqueue active=%{public}d rect=[%{public}d,%{public}d %{public}dx%{public}d]",
+                    active, x, y, w, h);
+        auto* ev = new ImeEvent{active, x, y, w, h};
+        napi_call_threadsafe_function(gImeTsfn, ev, napi_tsfn_blocking);
+    }, nullptr);
+
     return nullptr;
 }
 
@@ -617,12 +634,34 @@ static napi_value SendImePreedit(napi_env env, napi_callback_info info) {
     return nullptr;
 }
 
+// -- NAPI: imeRearm -- (软键盘被用户手动收起后重新武装激活边沿。同窗内
+//    文本框重聚焦不产生 seat 级 text-input 事件, 合成器 activated 恒真则
+//    永不重新 ACTIVATE; ArkTS 在 sendKeyboardStatus HIDE 时调本口重新武装,
+//    此后 wine 的下一条矩形+commit 即重弹。见 text_input.cpp commit 注释)
+static napi_value ImeRearm(napi_env env, napi_callback_info info) {
+    (void)env;
+    (void)info;
+    TextInput::GetInstance()->RearmActivation();
+    return nullptr;
+}
+
 // -- NAPI: imeBackspace -- (软键盘退格 → Wine KEY_BACKSPACE 按键注入;
 //    Wine 的 delete_surrounding_text 是空实现, 退格走现有 key 注入链路)
 static napi_value ImeBackspace(napi_env env, napi_callback_info info) {
     (void)env;
     (void)info;
     constexpr uint32_t KEY_BACKSPACE = 14;
+    // x11 路线: 按键面在 Xwayland, wayland seat 注入对 wine 不可达 (事件
+    // 静默丢失 —— SendScrollEvent 处 2026-10-11 同款真机实证; 本处 2026-10-31
+    // 真机症状 = x11 桌面软键盘退格删不掉字, 文字上屏走 SendCommitString
+    // 的 x11 分支所以无恙)。退格目标 = XIM IC 焦点窗 = X 键盘焦点窗, 走
+    // display_input 投递队列按 X 焦点分发 (injectDisplayRouteKey 同路径,
+    // VD/多窗通用 —— 多窗点选已经 FocusClient 把 seat 键盘焦点建好)。
+    if (WineHua_DisplayRouteIsX11()) {
+        wl_ohos_input_post_key(KEY_BACKSPACE, true);
+        wl_ohos_input_post_key(KEY_BACKSPACE, false);
+        return nullptr;
+    }
     auto* im = InputManager::GetInstance();
     im->InjectKeyboardKey(KEY_BACKSPACE, WL_KEYBOARD_KEY_STATE_PRESSED);
     im->InjectKeyboardKey(KEY_BACKSPACE, WL_KEYBOARD_KEY_STATE_RELEASED);
@@ -686,6 +725,14 @@ static napi_value SendToplevelClose(napi_env env, napi_callback_info info) {
     uint32_t id = 0;
     napi_get_value_uint32(env, args[0], &id);
     OH_LOG_INFO(LOG_APP, "[MW-NAPI] sendToplevelClose id=%{public}u", id);
+    // 任务 #129 RF#3: x11 路线的关闭通道 —— xdg_toplevel resource 在 x11
+    // 路线不存在 (wine 走 X11), SendToplevelClose 恒 "NOT found" no-op;
+    // 补 x11 分支 = WM_DELETE_WINDOW (wlr_xwayland_surface_close), 与
+    // pointer/key/axis 的 x11 分流同款 (SendScrollEvent I1 先例)。
+    if (x11_toplevel_active()) {
+        x11_toplevel_close(id);
+        return nullptr;
+    }
     WaylandServer::GetInstance()->SendToplevelClose(id);
     return nullptr;
 }
@@ -833,6 +880,13 @@ static napi_value SendPointerEvent(napi_env env, napi_callback_info info) {
                     "px=(%{public}.0f,%{public}.0f) raw=(%{public}.1f,%{public}.1f) fromMouse=%{public}d",
                     tl, action, button, px, py, rawDx, rawDy, fromMouse ? 1 : 0);
     }
+    // M4a-T5: x11 多窗模式按窗直达 (px/py 是承载窗局部坐标, 越界即缝隙
+    // 由映射层丢弃), 不进 wayland 的 InputManager seat 面
+    if (x11_toplevel_active()) {
+        x11_toplevel_input_pointer(tl, (int)px, (int)py, action,
+                                   (uint32_t)button);
+        return nullptr;
+    }
     InputManager::GetInstance()->SendPointerEvent(tl, action, px, py, button, rawDx, rawDy, fromMouse);
     return nullptr;
 }
@@ -943,6 +997,11 @@ static napi_value SendKeyEvent(napi_env env, napi_callback_info info) {
     napi_get_value_bool(env, args[2], &pressed);
     OH_LOG_INFO(LOG_APP, "[PIPE] key tl=%{public}u evdev=%{public}d down=%{public}s",
                 tl, evdevCode, pressed ? "true" : "false");
+    // M4a-T5: x11 多窗模式按窗直达 (FocusClient + settle 纪律在映射层)
+    if (x11_toplevel_active()) {
+        x11_toplevel_input_key(tl, (uint32_t)evdevCode, pressed);
+        return nullptr;
+    }
     InputManager::GetInstance()->SendKeyEvent(tl, evdevCode, pressed);
     return nullptr;
 }
@@ -961,6 +1020,22 @@ static napi_value SendScrollEvent(napi_env env, napi_callback_info info) {
     napi_get_value_double(env, args[5], &py);
     OH_LOG_INFO(LOG_APP, "[PIPE] scroll tl=%{public}u axis=%{public}s val=%{public}.1f step=%{public}d px=(%{public}.0f,%{public}.0f)",
                 tl, axis == 0 ? "VERT" : "HORIZ", value, scrollStep, px, py);
+    // M4d-review I1: x11 多窗模式按窗直达 —— scroll 与 pointer/key 同款分流,
+    // 不进 wayland 的 InputManager seat 面 (那是 winewayland.drv 路线的
+    // CoordTransform/seat 语义, x11 多窗下 wine 不在该 seat 上, 事件只会
+    // 静默丢失 —— 2026-10-11 真机实证: [PIPE] scroll 不出现、wine +event
+    // 全程零 Button4/5)。axis 不携带位置: 落点语义由映射层补 (motion 先行,
+    // 8a1e975 同类处理)。steps 归一化为 ±1 格 —— x11 桥的 discrete 是
+    // v120 格语义 (见 display_input_inject_axis 注释), 双指平滑量已在
+    // ArkTS 层按 SCROLL_STEP_PX 折算为单步事件, DesktopWindow.ets
+    // onAxisEvent 的 x11 分支同款归一化。
+    if (x11_toplevel_active()) {
+        const int steps = value > 0 ? 1 : (value < 0 ? -1 : 0);
+        if (steps != 0) {
+            x11_toplevel_input_axis(tl, (int)px, (int)py, axis, steps);
+        }
+        return nullptr;
+    }
     InputManager::GetInstance()->SendScrollEvent(tl, axis, value, scrollStep, px, py);
     return nullptr;
 }
@@ -979,6 +1054,27 @@ static napi_value NotifyToplevelResize(napi_env env, napi_callback_info info) {
     OH_LOG_INFO(LOG_APP, "[NAPI] notifyToplevelResize tl=%{public}u %{public}dx%{public}d resize=%{public}s",
                 tl, w, h, resizing ? "yes" : "no");
     WaylandServer::GetInstance()->NotifyToplevelResize(tl, w, h, resizing);
+    return nullptr;
+}
+
+// 任务 #135: 承载窗全局位置上报 (host→wine 几何回写的位置半边)。
+// ArkTS 在 windowRectChange 里调 (FWM 子窗 / WWA 主窗两承载路径), 值 =
+// guest 逻辑坐标 (windowRect 原点 / effectiveScale, 与创建摆放同式)。
+// 仅 x11 路线有绝对位置语义 —— wayland toplevel 位置归合成器布局器管,
+// 静默 no-op (native 侧 x11_toplevel_active 是权威门; 序列化/去重都在
+// 映射层: 值未变跳过、拖拽拍频只打应用日志)。
+static napi_value NotifyToplevelMove(napi_env env, napi_callback_info info) {
+    size_t argc = 3;
+    napi_value args[3];
+    napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
+    if (argc < 3) return nullptr;
+    uint32_t tl; int32_t x, y;
+    napi_get_value_uint32(env, args[0], &tl);
+    napi_get_value_int32(env, args[1], &x);
+    napi_get_value_int32(env, args[2], &y);
+    if (x11_toplevel_active()) {
+        x11_toplevel_geometry_move(tl, (int)x, (int)y);
+    }
     return nullptr;
 }
 
@@ -1132,6 +1228,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"sendImeCommit", nullptr, SendImeCommit, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"sendImePreedit", nullptr, SendImePreedit, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"imeBackspace", nullptr, ImeBackspace, nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"imeRearm", nullptr, ImeRearm, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"getCurrentToplevelId", nullptr, GetCurrentToplevelId, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setPendingToplevel", nullptr, SetPendingToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"cancelPendingToplevel", nullptr, CancelPendingToplevel, nullptr, nullptr, nullptr, napi_default, nullptr},
@@ -1161,6 +1258,7 @@ static napi_value Init(napi_env env, napi_value exports) {
         {"setPointerLockCallback", nullptr, SetPointerLockCallback, nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyToplevelResize",nullptr,NotifyToplevelResize,nullptr, nullptr, nullptr, napi_default, nullptr},
         {"notifyToplevelResizeEnd",nullptr,NotifyToplevelResizeEnd,nullptr, nullptr, nullptr, napi_default, nullptr},
+        {"notifyToplevelMove",nullptr,NotifyToplevelMove,nullptr, nullptr, nullptr, napi_default, nullptr},
         {"findToplevelAt",   nullptr, FindToplevelAt,   nullptr, nullptr, nullptr, napi_default, nullptr},
         {"raiseToplevel",    nullptr, RaiseToplevel,    nullptr, nullptr, nullptr, napi_default, nullptr},
         {"setToplevelVisible", nullptr, SetToplevelVisible, nullptr, nullptr, nullptr, napi_default, nullptr},

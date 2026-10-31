@@ -257,7 +257,7 @@
 
 1. **新增文件先行**：48 个新增文件（ohos 层、smoke、单头库）与上游无冲突，直接合入即可，是全部工作量的主体
 2. **修改文件 107 个**：33 个含删除行的按本清单逐条 review；30 个文本纯追加的低风险（其中 `__OHOS__` 守卫型可在合并时评估是否保留）；44 个 bmp 二进制随 aero.msstyles 主题整体取
-3. **可能已上游化的点**：`hlsl_codegen.c` half 支持与上游 vkd3d 演进可能重复（上游 vkd3d 后续版本有 half 处理）；`opengl32/unix_wgl.c` extensions 索引修复上游可能已修——合并前先 diff 上游对应文件
+3. **可能已上游化的点**：`hlsl_codegen.c` half 支持与上游 vkd3d 演进可能重复（上游 vkd3d 后续版本有 half 处理）——合并 11.17 时 diff 核对；`opengl32/unix_wgl.c` extensions 索引修复**已核实**（2026-10-14 对照 upstream/master）：上游未含对应修复，本地修改保留
 4. **`__OHOS__` 守卫覆盖**：ntdll（env/file/loader/process/server/virtual）、win32u（driver/freetype/winstation）、winewayland（wayland_surface）、mountmgr、server/directory；PE 目标文件（mmdevapi/client.c、setupapi/queue.c）无宏守卫、按驱动名或无条件生效，review 时注意
 
-[待确认]：tools/makedep.c 两处修改（install 命令去重/断言放宽）的触发场景——`scripts/` 下打包脚本没有任何 `make install`/`DESTDIR` 调用，仓库内无对应证据；推测是打包期对接 `make install DESTDIR=` 布局时遇到多文件 install 条目。wine.inf.in 增加 mmdevapi.dll 的意图已确认：加在 `[RegisterDllsSection]`（flag 1 = self-register），wineboot 处理 inf 时调 `DllRegisterServer` 注册 MMDeviceEnumerator 等 COM 类，否则 WASAPI 的 `CoCreateInstance` 落空。
+[已核实 2026-10-14]：tools/makedep.c 两处修改为 ①`find_install_command` 跳过带 dest 条目的去重 ②`output_install_commands` 断言失败前打印安装命令上下文（断言本身保留）；引入于 2026-06-26 的打包适配（`32bc70a04e7`），动机为打包期 install 规则冲突。当前构建脚本不调用 `make install`，但删除有打包期回归风险且改动仅 12 行，**保留**；合并上游时按普通 hunk 处理。wine.inf.in 增加 mmdevapi.dll 的意图已确认：加在 `[RegisterDllsSection]`（flag 1 = self-register），wineboot 处理 inf 时调 `DllRegisterServer` 注册 MMDeviceEnumerator 等 COM 类，否则 WASAPI 的 `CoCreateInstance` 落空。

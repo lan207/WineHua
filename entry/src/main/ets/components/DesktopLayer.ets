@@ -1,100 +1,42 @@
 import { display } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
-import testNapi from 'libentry.so';
 import { WineWindowManager } from '../service/WineWindowManager';
 import { InputSettingsService } from '../service/InputSettingsService';
-import { InputDeviceMapper } from '../service/InputDeviceMapper';
 import { EVDEV_KEY_ENTER, OH2EVDEV } from '../common/KeyMap';
 import { mapMouseButton } from '../common/MouseMap';
+import { DesktopInputSink, createDesktopInputSink } from './DesktopInputSink';
 
 const DOMAIN = 0x0000;
 
+// XComponent 三拍全部经 sink 分发 (承载统一 seam): wayland = 合成器 renderer
+// (rootId 缓存配对销毁, 见 WaylandSink); x11 = 出图链晚到挂载/停机 + 画布
+// 登记。本控制器零路线分支 — 路线差异全部在 DesktopInputSink 两实现里。
 class DesktopController extends XComponentController {
-  // 缓存创建时的 rootId: onSurfaceDestroyed 回调时 WineWindowManager 的
-  // desktopRootId 可能已被清零 (桌面退出流程先清 rootId 再卸载本组件),
-  // 用缓存值才能配对销毁 renderer — 否则旧 root 的 renderer 泄漏, 热重启
-  // 后新旧两个 renderer 抢同一 root 的合成帧, 表现为画面「滞后一拍」
-  private lastRootId: number = 0;
-  // 悬浮窗放大期间 root resize 节流: onSurfaceChanged 连续波动 (沉浸生效
-  // 前后两拍中间值, 如 2584x1644→2584x1828) 只记最终值, 停止 150ms 后再
-  // 一次性 notifyToplevelResize — 见 deferRootResize 注释
-  private pendingRootW: number = 0;
-  private pendingRootH: number = 0;
-  private rootResizeTimer: number = -1;
-  private static readonly ROOT_RESIZE_DEBOUNCE_MS: number = 150;
+  private sink: DesktopInputSink;
+
+  constructor(sink: DesktopInputSink) {
+    super();
+    this.sink = sink;
+  }
 
   onSurfaceCreated(surfaceId: string): void {
     const rootId = WineWindowManager.getInstance().getDesktopRootId();
-    this.lastRootId = rootId;
     hilog.info(DOMAIN, 'LIFE', '[XComp] onSurfaceCreated rootId=%{public}d surfaceId=%{public}s', rootId, surfaceId);
-    if (rootId > 0) {
-      try { testNapi.createRenderer(rootId, BigInt(surfaceId)); } catch (_) {}
-    }
+    this.sink.surfaceCreated(surfaceId);
   }
   onSurfaceChanged(surfaceId: string, rect: SurfaceRect): void {
     const rootId = WineWindowManager.getInstance().getDesktopRootId();
     hilog.info(DOMAIN, 'LIFE', '[XComp] onSurfaceChanged rootId=%{public}d %{public}dx%{public}d', rootId, rect.surfaceWidth, rect.surfaceHeight);
-    if (rootId > 0) {
-      try {
-        testNapi.resizeRenderer(rootId, rect.surfaceWidth, rect.surfaceHeight);
-        // 启动器可见 (窗口退出全屏) 时 surface 高度随系统栏波动 (1840→1683):
-        // 跳过 root resize, 否则中间态高度会缩小 Wine 桌面, 且退出后残留
-        // 进 output, 热重启桌面高度出错 (上下被裁)
-        if (WineWindowManager.getInstance().desktopLauncherVisible) {
-          this.cancelDeferredRootResize();
-          return;
-        }
-        // 悬浮窗放大期间 XComponent 尺寸带中间波动 (沉浸生效前后两拍,
-        // 如 2584x1644→2584x1828): 逐拍下发会让 Wine 桌面被中间值 resize,
-        // Wine 静止不重绘时画面停在中间值黑边 (旧帧 vs 中间 surface)。
-        // 节流: 连续变化只记最新值, 停止 150ms 后一次性下发 — Wine 桌面
-        // 只被最终尺寸改一次, 不经过中间值。
-        this.deferRootResize(rect.surfaceWidth, rect.surfaceHeight);
-      } catch (_) {}
-    }
-  }
-
-  // root (Wine 桌面) resize 节流: onSurfaceChanged 连续触发期间记最新尺寸,
-  // 停止 ROOT_RESIZE_DEBOUNCE_MS 后才真正 notifyToplevelResize 一次。中间值
-  // 不进 Wine 桌面, 避免 Wine 帧尺寸与 surface 中间值不匹配的左右黑边。
-  private deferRootResize(w: number, h: number): void {
-    this.pendingRootW = w;
-    this.pendingRootH = h;
-    if (this.rootResizeTimer >= 0) {
-      clearTimeout(this.rootResizeTimer);
-    }
-    this.rootResizeTimer = setTimeout(() => {
-      this.rootResizeTimer = -1;
-      // 节流期间 root 可能重启重建 (getDesktopRootId 变化), 用当前 root 下单
-      const rootIdNow = WineWindowManager.getInstance().getDesktopRootId();
-      // 统一经 getEffectiveScale, 不再硬编码 2.0
-      const s = WineWindowManager.getInstance().getEffectiveScale();
-      if (rootIdNow > 0) {
-        hilog.info(DOMAIN, 'LIFE', '[XComp] root resize flush rootId=%{public}d %{public}dx%{public}d',
-          rootIdNow, Math.round(this.pendingRootW / s), Math.round(this.pendingRootH / s));
-        testNapi.notifyToplevelResize(rootIdNow,
-          Math.round(this.pendingRootW / s), Math.round(this.pendingRootH / s));
-      }
-    }, DesktopController.ROOT_RESIZE_DEBOUNCE_MS);
-  }
-
-  private cancelDeferredRootResize(): void {
-    if (this.rootResizeTimer >= 0) {
-      clearTimeout(this.rootResizeTimer);
-      this.rootResizeTimer = -1;
-    }
+    // 逻辑尺寸 = 物理 / 呈现倍率 (统一经 getEffectiveScale, 不再硬编码 2.0)
+    const s = WineWindowManager.getInstance().getEffectiveScale();
+    this.sink.surfaceChanged(surfaceId,
+      Math.round(rect.surfaceWidth / s), Math.round(rect.surfaceHeight / s),
+      rect.surfaceWidth, rect.surfaceHeight);
   }
 
   onSurfaceDestroyed(_s: string): void {
-    // surface 销毁 = 挂起 root resize 永不 flush (不卸 timer 会迟到补发
-    // 或挂在失效 root 上)
-    this.cancelDeferredRootResize();
-    const cached = this.lastRootId;
-    this.lastRootId = 0;
-    hilog.warn(DOMAIN, 'LIFE', '[XComp] onSurfaceDestroyed lastRootId=%{public}d', cached);
-    if (cached > 0) {
-      try { testNapi.destroyRenderer(cached); } catch (_) {}
-    }
+    hilog.warn(DOMAIN, 'LIFE', '[XComp] onSurfaceDestroyed');
+    this.sink.surfaceDestroyed();
   }
 }
 
@@ -110,7 +52,10 @@ export struct DesktopLayer {
   // 本组件实例不重建) floating 停留在旧值 true, 全屏态输入被持续旁路 —
   // 表现为"桌面在更新但点不动"。
   @Prop floating: boolean = false;
-  controller: DesktopController = new DesktopController();
+  // 路线注入 seam (构造期定线, 会话内不换): wayland/x11 差异见
+  // DesktopInputSink.ets 头注释; 手势状态机 (共性) 保留在本组件
+  private sink: DesktopInputSink = createDesktopInputSink();
+  controller: DesktopController = new DesktopController(this.sink);
   // 触控状态机: IDLE → PENDING → (DRAGGING | 长按 | 点击)
   // 双指进入 SCROLLING 模式, 覆盖单指状态
   private touchPending: boolean = false;
@@ -133,6 +78,7 @@ export struct DesktopLayer {
   private lastTapPx: number = 0;
   private lastTapPy: number = 0;
   private lastTapTl: number = 0;
+  private lastTapTargetId: number = 0; // 决策时点目标身份 (#139 双击同一性)
   private static readonly DOUBLE_TAP_MS: number = 400;
   private static readonly DOUBLE_TAP_DIST: number = 30;
   // 双指滚动
@@ -234,22 +180,22 @@ export struct DesktopLayer {
   }
 
   private tlAtCursor(): number {
-    return (testNapi.findToplevelAt(Math.round(this.vcX), Math.round(this.vcY)) as number) ?? 0;
+    return this.sink.hitTest(Math.round(this.vcX), Math.round(this.vcY));
   }
 
   private clickAtCursor(btn: number): void {
-    const tl = this.tlAtCursor();
+    // beginStroke = 命中 + 激活 (wayland raise / x11 motion 锚定)
+    const tl = this.sink.beginStroke(Math.round(this.vcX), Math.round(this.vcY));
     if (tl <= 0) return;
-    testNapi.raiseToplevel(tl);
     const x = Math.round(this.vcX);
     const y = Math.round(this.vcY);
-    testNapi.sendPointerEvent(tl, MouseAction.Press, x, y, btn);
-    testNapi.sendPointerEvent(tl, MouseAction.Release, x, y, btn);
+    this.sink.pressAt(tl, x, y, btn, false);
+    this.sink.releaseAt(tl, x, y, btn);
   }
 
   private resetTouchpadState(): void {
     if (this.tpDragging && this.tpDragTl > 0) {
-      testNapi.sendPointerEvent(this.tpDragTl, MouseAction.Release,
+      this.sink.releaseAt(this.tpDragTl,
         Math.round(this.vcX), Math.round(this.vcY), mapMouseButton(1));
     }
     this.tpDown = false;
@@ -280,7 +226,7 @@ export struct DesktopLayer {
       midY /= ev.touches.length;
       if (!this.tpTwoFinger) {
         if (this.tpDragging && this.tpDragTl > 0) {
-          testNapi.sendPointerEvent(this.tpDragTl, MouseAction.Release,
+          this.sink.releaseAt(this.tpDragTl,
             Math.round(this.vcX), Math.round(this.vcY), mapMouseButton(1));
         }
         this.tpDown = false;
@@ -308,13 +254,13 @@ export struct DesktopLayer {
         if (tl > 0) {
           while (Math.abs(this.tpScrollAccumY) >= DesktopLayer.SCROLL_STEP_PX) {
             const sign = this.tpScrollAccumY > 0 ? 1 : -1;
-            testNapi.sendScrollEvent(tl, 0, sign, DesktopLayer.SCROLL_STEP_PX,
+            this.sink.scrollAt(tl, 0, sign, DesktopLayer.SCROLL_STEP_PX,
               Math.round(this.vcX), Math.round(this.vcY));
             this.tpScrollAccumY -= sign * DesktopLayer.SCROLL_STEP_PX;
           }
           while (Math.abs(this.tpScrollAccumX) >= DesktopLayer.SCROLL_STEP_PX) {
             const sign = this.tpScrollAccumX > 0 ? 1 : -1;
-            testNapi.sendScrollEvent(tl, 1, sign, DesktopLayer.SCROLL_STEP_PX,
+            this.sink.scrollAt(tl, 1, sign, DesktopLayer.SCROLL_STEP_PX,
               Math.round(this.vcX), Math.round(this.vcY));
             this.tpScrollAccumX -= sign * DesktopLayer.SCROLL_STEP_PX;
           }
@@ -369,26 +315,26 @@ export struct DesktopLayer {
       this.vcY = Math.min(Math.max(this.vcY + dyPx, 0), this.scrHPx);
       this.syncCursorIndicator();
       if (this.tpDragArmed && !this.tpDragging && this.tpMoved) {
-        // 拖拽开始: 在光标处按下左键
+        // 拖拽开始: 在光标处按下左键 (beginStroke = 命中 + 激活)
         this.tpDragging = true;
-        this.tpDragTl = this.tlAtCursor();
+        this.tpDragTl = this.sink.beginStroke(
+          Math.round(this.vcX), Math.round(this.vcY));
         if (this.tpDragTl > 0) {
-          testNapi.raiseToplevel(this.tpDragTl);
-          testNapi.sendPointerEvent(this.tpDragTl, MouseAction.Press,
-            Math.round(this.vcX), Math.round(this.vcY), mapMouseButton(1));
+          this.sink.pressAt(this.tpDragTl,
+            Math.round(this.vcX), Math.round(this.vcY), mapMouseButton(1), false);
         }
       }
       const moveTl = this.tpDragging ? this.tpDragTl : this.tlAtCursor();
       if (moveTl > 0) {
-        testNapi.sendPointerEvent(moveTl, MouseAction.Move,
-          Math.round(this.vcX), Math.round(this.vcY), 0);
+        this.sink.strokeMove(moveTl,
+          Math.round(this.vcX), Math.round(this.vcY));
       }
     } else if (ev.type === TouchType.Up) {
       if (!this.tpDown) return;
       this.tpDown = false;
       if (this.tpDragging) {
         if (this.tpDragTl > 0) {
-          testNapi.sendPointerEvent(this.tpDragTl, MouseAction.Release,
+          this.sink.releaseAt(this.tpDragTl,
             Math.round(this.vcX), Math.round(this.vcY), mapMouseButton(1));
         }
         this.tpDragging = false;
@@ -441,7 +387,7 @@ export struct DesktopLayer {
             if (this.touchPending || this.isDragging) {
               if (this.isDragging) {
                 const btnLeft = mapMouseButton(1);
-                testNapi.sendPointerEvent(this.pendingTl, MouseAction.Release, this.pendingPx, this.pendingPy, btnLeft);
+                this.sink.releaseAt(this.pendingTl, this.pendingPx, this.pendingPy, btnLeft);
               }
               this.touchPending = false;
               this.isDragging = false;
@@ -463,7 +409,7 @@ export struct DesktopLayer {
               this.twoFingerLastMidY = midY;
               this.twoFingerAccumY = 0;
               this.twoFingerAccumX = 0;
-              this.twoFingerTl = testNapi.findToplevelAt(midX, midY) as number ?? 0;
+              this.twoFingerTl = this.sink.beginScroll(midX, midY);
               this.scrollLogCounter = 0;
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] SCROLL-START tl=%{public}d fingers=%{public}d',
                 this.twoFingerTl, ev.touches.length);
@@ -478,7 +424,7 @@ export struct DesktopLayer {
                 // 垂直滚动
                 while (Math.abs(this.twoFingerAccumY) >= DesktopLayer.SCROLL_STEP_PX) {
                   const sign = this.twoFingerAccumY > 0 ? 1 : -1;
-                  testNapi.sendScrollEvent(this.twoFingerTl, 0, sign, DesktopLayer.SCROLL_STEP_PX, midX, midY);
+                  this.sink.scrollAt(this.twoFingerTl, 0, sign, DesktopLayer.SCROLL_STEP_PX, midX, midY);
                   this.twoFingerAccumY -= sign * DesktopLayer.SCROLL_STEP_PX;
                   if (++this.scrollLogCounter % 5 === 0) {
                     hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] SCROLL-V tl=%{public}d',
@@ -488,7 +434,7 @@ export struct DesktopLayer {
                 // 水平滚动
                 while (Math.abs(this.twoFingerAccumX) >= DesktopLayer.SCROLL_STEP_PX) {
                   const sign = this.twoFingerAccumX > 0 ? 1 : -1;
-                  testNapi.sendScrollEvent(this.twoFingerTl, 1, sign, DesktopLayer.SCROLL_STEP_PX, midX, midY);
+                  this.sink.scrollAt(this.twoFingerTl, 1, sign, DesktopLayer.SCROLL_STEP_PX, midX, midY);
                   this.twoFingerAccumX -= sign * DesktopLayer.SCROLL_STEP_PX;
                 }
               }
@@ -513,14 +459,14 @@ export struct DesktopLayer {
           const py = Math.round(vp2px(t.y));
 
           if (ev.type === TouchType.Down) {
-            // 查找目标 toplevel (px,py 为物理坐标, findToplevelAt 内部通过 viewport 转逻辑坐标)
-            const tl: number = testNapi.findToplevelAt(px, py) as number;
+            // 命中 + 激活经 sink (px,py 为物理坐标; wayland 命中失败 = 桌外丢弃,
+            // x11 恒命中 — 无「桌外」概念, motion 锚定即悬停激活)
+            const tl: number = this.sink.beginStroke(px, py);
             if (tl <= 0) {
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] TOUCH skipped (no toplevel at %{public}d,%{public}d)', px, py);
               return;
             }
             hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] TOUCH tl=%{public}d px=(%{public}d,%{public}d)', tl, px, py);
-            testNapi.raiseToplevel(tl);
             // 进入 PENDING 状态: 暂不发送事件, 等判定长按/拖拽/点击
             this.touchPending = true;
             this.isDragging = false;
@@ -546,17 +492,20 @@ export struct DesktopLayer {
               this.lastTapTime = 0;
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] DRAG-START tl=%{public}d px=(%{public}d,%{public}d) dist=%{public}d',
                 this.pendingTl, px, py, dist);
-              testNapi.sendPointerEvent(this.pendingTl, MouseAction.Press, this.pendingPx, this.pendingPy, btnLeft);
-              testNapi.sendPointerEvent(this.pendingTl, MouseAction.Move, px, py, btnLeft);
+              this.sink.pressAt(this.pendingTl, this.pendingPx, this.pendingPy, btnLeft, false);
+              this.sink.strokeMove(this.pendingTl, px, py);
             } else if (this.isDragging) {
               // 拖拽移动: 持续发送 Motion
-              testNapi.sendPointerEvent(this.pendingTl, MouseAction.Move, px, py, 0);
+              this.sink.strokeMove(this.pendingTl, px, py);
               if (++this.motionLogCounter % 10 === 0) {
                 hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] DRAG-MOVE tl=%{public}d px=(%{public}d,%{public}d) frame=%{public}d',
                   this.pendingTl, px, py, this.motionLogCounter);
               }
+            } else if (this.touchPending) {
+              // PENDING 未过阈值: wayland 不发 (等 Up 判定); x11 motion 直通
+              // (hover 菜单/高亮) — 差异在 sink 实现内
+              this.sink.strokeHover(px, py);
             }
-            // PENDING 且未超过阈值: 不做任何事 (等 Up 判定长按/点击)
 
           } else if (ev.type === TouchType.Up) {
             if (this.isDragging) {
@@ -564,7 +513,7 @@ export struct DesktopLayer {
               const btnLeft = mapMouseButton(1);
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] DRAG-END tl=%{public}d px=(%{public}d,%{public}d)',
                 this.pendingTl, px, py);
-              testNapi.sendPointerEvent(this.pendingTl, MouseAction.Release, px, py, btnLeft);
+              this.sink.releaseAt(this.pendingTl, px, py, btnLeft);
               this.isDragging = false;
 
             } else if (this.touchPending) {
@@ -578,33 +527,38 @@ export struct DesktopLayer {
                 this.lastTapTime = 0; // 长按打断双击序列
                 hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] LONGPRESS->RIGHTCLICK tl=%{public}d elapsed=%{public}dms px=(%{public}d,%{public}d)',
                   this.pendingTl, elapsed, this.pendingPx, this.pendingPy);
-                testNapi.sendPointerEvent(this.pendingTl, MouseAction.Press, this.pendingPx, this.pendingPy, btnRight);
-                testNapi.sendPointerEvent(this.pendingTl, MouseAction.Release, this.pendingPx, this.pendingPy, btnRight);
+                this.sink.pressAt(this.pendingTl, this.pendingPx, this.pendingPy, btnRight, false);
+                this.sink.releaseAt(this.pendingTl, this.pendingPx, this.pendingPy, btnRight);
               } else {
                 // 短按 → 左键 或 双击
                 const btnLeft = mapMouseButton(1);
                 const now = Date.now();
                 const dist = Math.abs(this.pendingPx - this.lastTapPx) + Math.abs(this.pendingPy - this.lastTapPy);
+                // 双击同一性 (#139): 决策时点的目标身份 —— pendingTl 在 x11
+                // 恒 1 (sink 无桌面句柄概念), 旧判据被架空; 两 tap 落不同
+                // 窗时按两次单击处置 (与真 X 桌面语义一致)
+                const targetId = this.sink.targetIdentityAt(this.pendingPx, this.pendingPy);
                 const isDoubleTap = (this.lastTapTime > 0 && (now - this.lastTapTime) < DesktopLayer.DOUBLE_TAP_MS
-                                    && dist < DesktopLayer.DOUBLE_TAP_DIST && this.pendingTl === this.lastTapTl);
+                                    && dist < DesktopLayer.DOUBLE_TAP_DIST && targetId === this.lastTapTargetId);
 
                 if (isDoubleTap) {
                   // 双击: 第一次点击已由上一个单击路径发出, 这里只补发
-                  // 第二次点击 (Press+Release) 构成完整的双击序列,
-                  // 避免总共 3 次点击导致 explorer 同时触发"打开"和"重命名"
+                  // 第二次点击 (按首击坐标重放 — wine 双击判据 ±1px, #137;
+                  // x11 侧由 sink 前置 motion 锚定首击坐标)
                   this.lastTapTime = 0;
-                  testNapi.sendPointerEvent(this.pendingTl, MouseAction.Press, this.lastTapPx, this.lastTapPy, btnLeft);
-                  testNapi.sendPointerEvent(this.pendingTl, MouseAction.Release, this.lastTapPx, this.lastTapPy, btnLeft);
+                  this.sink.pressAt(this.pendingTl, this.lastTapPx, this.lastTapPy, btnLeft, false);
+                  this.sink.releaseAt(this.pendingTl, this.lastTapPx, this.lastTapPy, btnLeft);
                   hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] DOUBLE-TAP tl=%{public}d px=(%{public}d,%{public}d)',
                     this.pendingTl, this.lastTapPx, this.lastTapPy);
                 } else {
                   // 单击
-                  testNapi.sendPointerEvent(this.pendingTl, MouseAction.Press, this.pendingPx, this.pendingPy, btnLeft);
-                  testNapi.sendPointerEvent(this.pendingTl, MouseAction.Release, this.pendingPx, this.pendingPy, btnLeft);
+                  this.sink.pressAt(this.pendingTl, this.pendingPx, this.pendingPy, btnLeft, false);
+                  this.sink.releaseAt(this.pendingTl, this.pendingPx, this.pendingPy, btnLeft);
                   this.lastTapTime = now;
                   this.lastTapPx = this.pendingPx;
                   this.lastTapPy = this.pendingPy;
                   this.lastTapTl = this.pendingTl;
+                  this.lastTapTargetId = targetId;
                   hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] TAP->LEFTCLICK tl=%{public}d px=(%{public}d,%{public}d)',
                     this.pendingTl, this.pendingPx, this.pendingPy);
                 }
@@ -616,7 +570,7 @@ export struct DesktopLayer {
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] CANCEL-DRAG tl=%{public}d px=(%{public}d,%{public}d)',
                 this.pendingTl, px, py);
               const btnLeft = mapMouseButton(1);
-              testNapi.sendPointerEvent(this.pendingTl, MouseAction.Release, px, py, btnLeft);
+              this.sink.releaseAt(this.pendingTl, px, py, btnLeft);
             } else {
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] CANCEL tl=%{public}d (no event sent)', this.pendingTl);
             }
@@ -653,30 +607,15 @@ export struct DesktopLayer {
             if (this.touchPending || this.isDragging || this.twoFingerActive) return;
             const px = Math.round(vp2px(ev.x));
             const py = Math.round(vp2px(ev.y));
-            // 按键按住拖动: 发给按下捕获的 tl; 否则按当前位置找目标
-            // (跨窗口 enter/leave 由注入层 ACT_MOVE 的焦点判定处理)
-            let tl = this.leftBtnTl || this.rightBtnTl || this.midBtnTl;
-            if (tl <= 0) {
-              tl = testNapi.findToplevelAt(px, py) as number;
-              if (tl <= 0) return;
-            }
             if (++this.hoverLogCounter % 120 === 0) {
-              hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-MOVE tl=%{public}d px=(%{public}d,%{public}d) n=%{public}d',
-                tl, px, py, this.hoverLogCounter);
+              hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-MOVE px=(%{public}d,%{public}d) n=%{public}d',
+                px, py, this.hoverLogCounter);
             }
-            // rawDelta 按设备校准 (与 WineWindow 同规则: 鼠标 2.5 / 触控板 0.75)
-            // — 收口 ArkTS 时此处漏乘, 桌面模式相对模式增量只有融合窗口的
-            // 1/2.5, 同一鼠标两种手感; 绝对模式有差分自标定, 不受影响
-            let rawDx = ev.rawDeltaX ?? 0;
-            let rawDy = ev.rawDeltaY ?? 0;
-            const devId = ev.deviceId ?? 0;
-            if (devId > 0) {
-              // 设备校准 × 用户倍率 (relMouseSpeed) 均在 getScale 内乘入
-              const s = InputDeviceMapper.getInstance().getScale(devId);
-              rawDx *= s;
-              rawDy *= s;
-            }
-            testNapi.sendPointerEvent(tl, MouseAction.Move, px, py, 0, rawDx, rawDy);
+            // 按键按住拖动: 发给按下捕获的句柄; 否则按当前位置找目标
+            // (跨窗口 enter/leave 由注入层焦点判定处理; rawDelta 设备校准
+            // 在 sink 内 — wayland 才有 rawDelta 概念)
+            this.sink.hoverMove(this.leftBtnTl || this.rightBtnTl || this.midBtnTl,
+              px, py, ev.rawDeltaX ?? 0, ev.rawDeltaY ?? 0, ev.deviceId ?? 0);
             return;
           }
           if (ev.action !== MouseAction.Press && ev.action !== MouseAction.Release) return;
@@ -697,23 +636,22 @@ export struct DesktopLayer {
               this.touchPending = false;
               this.isDragging = false;
               this.resetTouchpadState();
-              const tl: number = testNapi.findToplevelAt(px, py) as number;
+              const tl: number = this.sink.beginStroke(px, py);
               if (tl <= 0) {
                 this.leftBtnTl = 0;
                 hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-LEFT skipped (no toplevel at %{public}d,%{public}d)', px, py);
                 return;
               }
               this.leftBtnTl = tl;
-              testNapi.raiseToplevel(tl);
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-LEFT press tl=%{public}d px=(%{public}d,%{public}d)', tl, px, py);
-              testNapi.sendPointerEvent(tl, MouseAction.Press, px, py, btnLeft, 0, 0, true);
+              this.sink.pressAt(tl, px, py, btnLeft, true);
             } else {
               if (this.leftBtnTl <= 0) {
                 this.mouseLeftActive = false;
                 return;
               }
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-LEFT release tl=%{public}d px=(%{public}d,%{public}d)', this.leftBtnTl, px, py);
-              testNapi.sendPointerEvent(this.leftBtnTl, MouseAction.Release, px, py, btnLeft);
+              this.sink.releaseAt(this.leftBtnTl, px, py, btnLeft);
               this.leftBtnTl = 0;
               this.mouseLeftActive = false;
             }
@@ -721,27 +659,26 @@ export struct DesktopLayer {
           }
           // ── 右键 / 中键: 共用按下捕获-释放配对 ──
           // OHOS 只对左键合成 touch, 右/中键在 onTouch 无对应事件, 不会双发;
-          // 两键各自独立捕获 tl, 同按 (罕见) 也互不串扰
+          // 两键各自独立捕获句柄, 同按 (罕见) 也互不串扰
           if (ev.button !== MouseButton.Right && ev.button !== MouseButton.Middle) return;
           const isRight = ev.button === MouseButton.Right;
           const btnCode = mapMouseButton(isRight ? 2 : 4);
           const btnName = isRight ? 'RIGHT' : 'MIDDLE';
           if (ev.action === MouseAction.Press) {
-            const tl: number = testNapi.findToplevelAt(px, py) as number;
+            const tl: number = this.sink.beginStroke(px, py);
             if (tl <= 0) {
               if (isRight) this.rightBtnTl = 0; else this.midBtnTl = 0;
               hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-%{public}s skipped (no toplevel at %{public}d,%{public}d)', btnName, px, py);
               return;
             }
             if (isRight) this.rightBtnTl = tl; else this.midBtnTl = tl;
-            testNapi.raiseToplevel(tl);
             hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-%{public}s press tl=%{public}d px=(%{public}d,%{public}d)', btnName, tl, px, py);
-            testNapi.sendPointerEvent(tl, MouseAction.Press, px, py, btnCode, 0, 0, true);
+            this.sink.pressAt(tl, px, py, btnCode, true);
           } else {
             const btnTl = isRight ? this.rightBtnTl : this.midBtnTl;
             if (btnTl <= 0) return;
             hilog.info(DOMAIN, 'CLICK-PIPE', '[ArkTS] MOUSE-%{public}s release tl=%{public}d px=(%{public}d,%{public}d)', btnName, btnTl, px, py);
-            testNapi.sendPointerEvent(btnTl, MouseAction.Release, px, py, btnCode);
+            this.sink.releaseAt(btnTl, px, py, btnCode);
             if (isRight) this.rightBtnTl = 0; else this.midBtnTl = 0;
           }
         } catch (e) {
@@ -752,8 +689,8 @@ export struct DesktopLayer {
       // ── 键盘事件 ──
       .onKeyEvent((ev: KeyEvent) => {
         if (this.floating) return;  // 悬浮窗态: 输入旁路
-        const rootId = WineWindowManager.getInstance().getDesktopRootId();
-        if (rootId <= 0) return;
+        // 门经 sink (wayland = root 已映射; x11 = 链已绑定)
+        if (!this.sink.inputReady()) return;
         ev.stopPropagation();
         const code = OH2EVDEV[ev.keyCode] ?? 0;
         if (code <= 0) return;
@@ -765,25 +702,24 @@ export struct DesktopLayer {
             this.lastEnterDownTs = Date.now();
           } else if (Date.now() - this.lastEnterDownTs > DesktopLayer.ENTER_SYNTH_WINDOW_MS) {
             hilog.info(DOMAIN, 'KBD-PIPE', '[ArkTS] ENTER SYNTH down (missing down)');
-            testNapi.sendKeyEvent(rootId, EVDEV_KEY_ENTER, true);
+            this.sink.keyEvent(EVDEV_KEY_ENTER, true);
           }
         }
-        testNapi.sendKeyEvent(rootId, code, pressed);
+        this.sink.keyEvent(code, pressed);
       })
 
       // ── 滚轮事件 ──
       .onAxisEvent((ev?: AxisEvent) => {
         if (this.floating) return;  // 悬浮窗态: 输入旁路
-        const rootId = WineWindowManager.getInstance().getDesktopRootId();
-        if (rootId <= 0 || !ev) return;
+        if (!ev || !this.sink.inputReady()) return;
         const wpx = Math.round(vp2px(ev.x));
         const wpy = Math.round(vp2px(ev.y));
         const vert = ev.getVerticalAxisValue();
         const horiz = ev.getHorizontalAxisValue();
         const step = ev.scrollStep ?? 0;
-        const tl: number = testNapi.findToplevelAt(wpx, wpy) as number;
-        if (vert !== 0) testNapi.sendScrollEvent(tl, 0, vert, step, wpx, wpy);
-        if (horiz !== 0) testNapi.sendScrollEvent(tl, 1, horiz, step, wpx, wpy);
+        const tl: number = this.sink.beginScroll(wpx, wpy);
+        if (vert !== 0) this.sink.scrollAt(tl, 0, vert, step, wpx, wpy);
+        if (horiz !== 0) this.sink.scrollAt(tl, 1, horiz, step, wpx, wpy);
       })
 
       // ── 触控板虚拟光标指示 (不响应触摸, 纯展示) ──

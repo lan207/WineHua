@@ -32,11 +32,17 @@ public:
     // InputManager keyboard enter/leave → 同步 text-input enter/leave
     void OnKeyboardEnter(wl_resource* surface);
     void OnKeyboardLeave(wl_resource* surface);
+    // surface 销毁 (wl_core surface_destroy 调): 清该 surface 的矩形记忆
+    void ForgetSurface(wl_resource* surface);
 
     // ArkTS 桥接: 输入法文本注入 → Wine (UTF-8)
     void SendCommitString(const char* utf8);
     void SendPreeditString(const char* utf8, int32_t cursorBegin, int32_t cursorEnd);
     void SendDeleteSurrounding(uint32_t before, uint32_t after);
+
+    // 软键盘被用户手动收起后重新武装激活边沿 (同窗内文本框重聚焦无 seat
+    // 事件, activated 恒真则永不重弹; 见 text_input.cpp commit 注释)
+    void RearmActivation();
 
     // -- 协议 impl (wayland dispatcher 调用) --
     static void manager_bind(wl_client* client, void* data, uint32_t version, uint32_t id);
@@ -72,6 +78,14 @@ private:
     // 最后一个会导致 keyboard enter 发错对象 → 目标进程收不到 enter 不 enable。
     // OnKeyboardEnter 按 surface 所属 client 路由到对应对象。
     std::unordered_map<wl_client*, wl_resource*> textInputs_;
+
+    // per-surface 最后一次非零光标矩形 (激活门回退用, 见 text_input.cpp
+    // text_input_commit 注释)。wine enter 批次恒发 0,0,0,0, 重聚焦后不保证
+    // 重发非零矩形; 记忆它使重聚焦激活不依赖应用 IME 链路。
+    struct RectMemo {
+        int32_t x = 0, y = 0, w = 0, h = 0;
+    };
+    std::unordered_map<wl_resource*, RectMemo> surfaceRects_;
 
     wl_global* global_ = nullptr;
     wl_display* display_ = nullptr;

@@ -8,6 +8,8 @@ import { DisplaySettingsService } from '../service/DisplaySettingsService';
 import { ThemeService, THEME_SYSTEM, THEME_LIGHT, THEME_DARK } from '../service/ThemeService';
 import { InputSettingsService } from '../service/InputSettingsService';
 import { DesktopModeService, MODE_VIRTUAL, MODE_FUSION, isSubWindowFormFactor } from '../service/DesktopModeService';
+import { DisplayRouteService, ROUTE_WAYLAND, ROUTE_X11 } from '../service/DisplayRouteService';
+import { WineWindowManager } from '../service/WineWindowManager';
 import { compatIndexOfMode, compatModeFromIndex } from '../service/Box64Dynarec';
 
 // 设置页 (设计 4.6, 环境已并入): 显示 (置顶) / 环境管理 (Wine 引擎 · Windows 字体 ·
@@ -48,6 +50,10 @@ export struct SettingsView {
   @State desktopModeSel: number[] = [0];
   @State desktopMode: string = MODE_FUSION;
   @State desktopModeRestartHint: boolean = false;
+  // -- 显示路线 (实验, Pad/PC): x11 主线 / wayland 对照 (镜像 DisplayRouteService) --
+  @State routeSel: number[] = [0];   // 0=X11, 1=Wayland
+  @State route: string = ROUTE_X11;
+  @State routeRestartHint: boolean = false;
   // 字体导入进行中 (镜像 WineEnvService.fontImporting): 按钮使能 + 文案
   @State fontImporting: boolean = false;
   // -- 显示 --
@@ -99,6 +105,15 @@ export struct SettingsView {
       if (this.desktopModeSel[0] != modeSel) {
         this.desktopModeSel = [modeSel];
       }
+    }
+    // 显示路线镜像: 以持久化选择值 (preferredRoute) 为准 — 本会话已应用值
+    // (routeName) 在「已选待重启」窗口内落后于选择, 用它回翻高亮会把刚选
+    // 的项跳回旧值 (选 Wayland 后高亮弹回 X11, 复核 #136); 运行中/待生效
+    // 的差异由 routeRestartHint 表达, 与 selectRoute 的选中语义同源
+    const route = DisplayRouteService.getInstance().preferredRoute();
+    if (route != this.route) {
+      this.route = route;
+      this.routeSel = [route === ROUTE_X11 ? 0 : 1];
     }
     this.fontImporting = FontImportService.getInstance().fontImporting;
   }
@@ -183,6 +198,36 @@ export struct SettingsView {
     DesktopModeService.getInstance().setMode(mode);
     this.desktopMode = mode;
     this.desktopModeRestartHint = true;
+  }
+
+  // 显示路线切换 (实验对照): 即改即生效 (#172) —— 单点应用 (盖 env 章 +
+  // 拆/起 x11 链) 后重启引擎会话, 新 wine 进程 spawn 现读新章; 不再要求
+  // 完全退出应用。引擎忙时显式拒绝 (quickReset 的 F2 同款: 忙态是瞬态,
+  // 是否重来由用户决定) —— 先应用后拒绝会出现旧会话 display 已被拆而
+  // 重启未发生的破窗态
+  private selectRoute(route: string): void {
+    // 早退判据必须是持久化选择值 (preferredRoute) 而非已应用值 (routeName):
+    // x11 会话里选 Wayland 后 routeName 仍是 x11, 用 routeName 判「已选中」
+    // 会把「选回 X11」的一击吞掉 (复核 #136)
+    if (route == DisplayRouteService.getInstance().preferredRoute()) {
+      return;
+    }
+    if (this.env.isBusy()) {
+      promptAction.showToast({ message: '引擎操作进行中，请稍后再试' });
+      this.routeSel = [DisplayRouteService.getInstance().preferredRoute() === ROUTE_X11 ? 0 : 1];
+      return;
+    }
+    DisplayRouteService.getInstance().setPreferred(route);
+    // x11 链起尺寸 = 桌面分辨率 (屏幕/scale, 同 entry 路径判据)
+    const outSize = WineWindowManager.getInstance().desktopOutputSize();
+    DisplayRouteService.getInstance().applyRoute(route, 'settings',
+      WineWindowManager.getInstance().shouldUseMultiwindow(route), outSize[0], outSize[1]);
+    this.route = route;
+    this.routeSel = [route == ROUTE_X11 ? 0 : 1];
+    // 提示只在应用值落后于选择时成立 (重启被打断时可见, 正常路径重启完成
+    // 即随镜像刷新消失)
+    this.routeRestartHint = (route != DisplayRouteService.getInstance().routeName());
+    this.env.restartEngine();
   }
 
   // 外观档位 → 分段索引 (0=跟随系统 1=浅色 2=深色)
@@ -416,6 +461,37 @@ export struct SettingsView {
               .width('100%')
             if (this.desktopModeRestartHint) {
               Text('桌面模式已更改, 重启 Wine 引擎后生效')
+                .fontSize(12)
+                .fontColor($r('app.color.state_warn'))
+                .width('100%')
+            }
+          }
+          .width('100%')
+
+          // 显示路线 (实验): x11 主线 / wayland 对照。即改即生效 (#172):
+          // applyRoute 单点应用后重启引擎会话, 不要求退出应用
+          Column({ space: 4 }) {
+            Text('显示路线（实验）')
+              .fontColor($r('app.color.text_primary'))
+              .width('100%')
+            SegmentButton({
+              options: SegmentButtonOptions.capsule({
+                buttons: [{ text: 'X11' }, { text: 'Wayland' }],
+                multiply: false
+              }),
+              selectedIndexes: $routeSel,
+              onItemClicked: (index: number) => {
+                this.selectRoute(index == 0 ? ROUTE_X11 : ROUTE_WAYLAND);
+              }
+            })
+            .width('100%')
+            // 说明文字: 主线/对照定位与生效方式
+            Text('X11: 主线路线; Wayland: 对照路线。切换后自动重启引擎会话生效')
+              .fontSize(12)
+              .fontColor($r('app.color.text_tertiary'))
+              .width('100%')
+            if (this.routeRestartHint) {
+              Text('显示路线已更改, 重启 Wine 引擎后生效')
                 .fontSize(12)
                 .fontColor($r('app.color.state_warn'))
                 .width('100%')

@@ -1,7 +1,11 @@
 #include "text_input.h"
 #include "text-input-unstable-v3-server-protocol.h"
+#include "display/display_input.h"
 #include <algorithm>
 #include <cstring>
+
+// 进程内显示路线镜像 (wine_env.cpp 唯一写点) — x11 分叉判据
+extern "C" bool WineHua_DisplayRouteIsX11();
 
 #undef LOG_TAG
 #undef LOG_DOMAIN
@@ -56,6 +60,7 @@ void TextInput::Unregister() {
     state_.cursorX = state_.cursorY = 0;
     state_.cursorW = state_.cursorH = 0;
     textInputs_.clear();
+    surfaceRects_.clear();
     display_ = nullptr;
     OH_LOG_INFO(LOG_APP, "[TextInput] unregistered OK");
 }
@@ -151,6 +156,10 @@ void TextInput::text_input_set_cursor_rectangle(wl_client*, wl_resource* res,
     self->state_.cursorY = y;
     self->state_.cursorW = w;
     self->state_.cursorH = h;
+    // 记忆非零矩形 (commit 激活门回退用, 见 text_input_commit 注释);
+    // wine enter 批次的 0,0,0,0 不清记忆
+    if (w > 0 && h > 0 && self->state_.surface)
+        self->surfaceRects_[self->state_.surface] = {x, y, w, h};
     OH_LOG_INFO(LOG_APP, "[TextInput] cursor_rect=%{public}d,%{public}d %{public}dx%{public}d",
                 x, y, w, h);
 }
@@ -158,11 +167,33 @@ void TextInput::text_input_set_cursor_rectangle(wl_client*, wl_resource* res,
 void TextInput::text_input_commit(wl_client*, wl_resource* res) {
     auto* self = static_cast<TextInput*>(wl_resource_get_user_data(res));
     bool shouldActivate = false;
+    int32_t ax = 0, ay = 0, aw = 0, ah = 0;
     {
         std::lock_guard<std::mutex> lk(self->mutex_);
         // 激活判定: enabled + 非零光标矩形 (enter 时 Wine 发 0,0,0,0;
-        // 文本框聚焦后应用调 SetIMECompositionRect → 非零矩形 → 真文本框)
-        if (self->state_.enabled && self->state_.cursorW > 0 && self->state_.cursorH > 0) {
+        // 文本框聚焦后应用调 SetIMECompositionRect → 非零矩形 → 真文本框)。
+        // 矩形回退 per-surface 记忆: wine enter 批次恒发 0,0,0,0 (上游语义
+        // enable 即激活, 无义务重发矩形), 重聚焦后是否重发非零矩形取决于
+        // 应用 IME 链路、不可依赖 —— 真机 2026-10-31: 失败循环 enable+0 矩形
+        // 后零 cursor_rect, 永不 ACTIVATE → 软键盘重聚焦不再弹出。记忆上一
+        // 次非零矩形使激活在 enter 批次内闭环; 游戏面从未产生非零矩形,
+        // 门控语义 (文本框弹/游戏不弹) 不变。
+        int32_t gateW = self->state_.cursorW;
+        int32_t gateH = self->state_.cursorH;
+        auto memoIt = self->surfaceRects_.find(self->state_.surface);
+        if (memoIt != self->surfaceRects_.end() && memoIt->second.w > 0 &&
+            memoIt->second.h > 0) {
+            gateW = memoIt->second.w;
+            gateH = memoIt->second.h;
+            ax = memoIt->second.x;
+            ay = memoIt->second.y;
+        } else {
+            ax = self->state_.cursorX;
+            ay = self->state_.cursorY;
+        }
+        aw = gateW;
+        ah = gateH;
+        if (self->state_.enabled && gateW > 0 && gateH > 0) {
             if (!self->state_.activated) {
                 self->state_.activated = true;
                 shouldActivate = true;
@@ -171,8 +202,21 @@ void TextInput::text_input_commit(wl_client*, wl_resource* res) {
     }
     if (shouldActivate) {
         OH_LOG_INFO(LOG_APP, "[TextInput] ACTIVATE rect=%{public}d,%{public}d %{public}dx%{public}d",
-                    self->state_.cursorX, self->state_.cursorY, self->state_.cursorW, self->state_.cursorH);
+                    ax, ay, aw, ah);
         self->NotifyActivated(true);
+    }
+}
+
+void TextInput::ForgetSurface(wl_resource* surface) {
+    std::lock_guard<std::mutex> lk(mutex_);
+    surfaceRects_.erase(surface);
+}
+
+void TextInput::RearmActivation() {
+    std::lock_guard<std::mutex> lk(mutex_);
+    if (state_.activated) {
+        state_.activated = false;
+        OH_LOG_INFO(LOG_APP, "[TextInput] rearm (panel hidden)");
     }
 }
 
@@ -223,6 +267,13 @@ void TextInput::OnKeyboardLeave(wl_resource* surface) {
 // ========================================================================
 
 void TextInput::SendCommitString(const char* utf8) {
+    // x11 路线: zwp_text_input 无资源绑定, 文本走 display_input 投递队列 →
+    // xim_bridge_send_text (XIM server 以 XIM_COMMIT 投给 wine) —— 两路线
+    // 文本通道在 drain 分支互斥 (display_input.h 注)。
+    if (WineHua_DisplayRouteIsX11()) {
+        wl_ohos_input_post_text(utf8);
+        return;
+    }
     std::lock_guard<std::mutex> lk(mutex_);
     if (!state_.res || !state_.surface || !state_.enabled) {
         OH_LOG_WARN(LOG_APP, "[TextInput] SendCommitString DROP (res=%{public}p enabled=%{public}d)",
@@ -235,6 +286,11 @@ void TextInput::SendCommitString(const char* utf8) {
 }
 
 void TextInput::SendPreeditString(const char* utf8, int32_t cursorBegin, int32_t cursorEnd) {
+    // x11 v1 边界: 桥下行只有 commit 一种帧, 组字预览无处投递 — 丢弃
+    // (预览只见于系统键盘条; 选字后的汉字走 SendCommitString 正常上屏)。
+    if (WineHua_DisplayRouteIsX11()) {
+        return;
+    }
     std::lock_guard<std::mutex> lk(mutex_);
     if (!state_.res || !state_.surface || !state_.enabled) return;
     zwp_text_input_v3_send_preedit_string(state_.res, utf8, cursorBegin, cursorEnd);

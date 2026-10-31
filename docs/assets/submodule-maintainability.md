@@ -2,6 +2,7 @@
 
 > 更新：2026-08-01（重新梳理，同步当前落地状态）
 > 复核：2026-09-24（D/E 落地状态、符号名与行号引用按当前代码重新核对；基线 commit 数与文件级改动量按当前 submodule 重算）
+> 审计：2026-10-14（新增 §七 定制必要性审计：221 笔定制判定、loader/图形平台层改动的场景归因、可删除面与收口顺序）
 > 初版：2026-07-31，评审时基于 `feature/render-element-completeness`（已合入 master，PR #47）
 > 目的：作为分支评审（长期可维护性维度）的依据文档。记录各 submodule 与上游的合并风险现状、改进路线图与验收标准。
 > 关联文档：[PHASE2_DXVK_STATUS_MEMO.md](../archive/PHASE2_DXVK_STATUS_MEMO.md) / [0002-d3d-backend-profiles.md](../decisions/0002-d3d-backend-profiles.md) / [CODE_IMPROVEMENT_PLAN.md](../archive/CODE_IMPROVEMENT_PLAN.md)
@@ -240,3 +241,102 @@ scripts/qa/known-regressions.sh
 - `.gitmodules` — branch 约定：wine=master, box64=main, virglrenderer=master, libepoxy=master, mesa=main, libdrm=OpenHarmony-6.0-Beta1, dxvk=dxvk-legacy-1.10.3, dxvk-modern=dxvk-modern-2.6
 - `.github/workflows/build.yml` — 已含 PR 触发 + gitlink 校验 step（`2c0d219`）
 - `docs/decisions/0002-d3d-backend-profiles.md` — 设备能力矩阵（920 phone Vulkan 1.3.309 vs 910 tablet 1.2.275）
+
+---
+
+## 七、定制必要性审计（2026-10-14）
+
+> 范围：master 当前引用的 7 个 fork（共 221 笔定制提交）与 17 个上游直接引用。
+> 与 §2.4 补丁清单互补：补丁清单回答「改了什么、为什么」，本节回答「是否仍然必要、哪里可以收口、删除的边界在哪」。
+
+### 7.1 底数
+
+| 模块 | 定制提交 | 基线 | 说明 |
+|---|---|---|---|
+| wine | 115 | wine-11.10（merge-base `13289668fd1`，2026-06-07） | 上游已 11.17 |
+| virglrenderer | 38 | upstream/main（2026-06-10） | |
+| dxvk（legacy） | 33 | v1.10.3（上游死线） | |
+| mesa | 16 | OpenHarmony-v6.0-Beta1 | 跟随 OH 发布节奏 |
+| box64 | 15 | v0.4.3 | 另有一笔注释提交未进 master 指针（见 7.5 #2） |
+| dxvk-modern | 3 | v2.6.2 | |
+| libepoxy | 1 | 1.5.10 | |
+| 17 个直接引用 | 0 | 全部上游 tag 原样 | 逐条 `tag@HEAD` 核验 |
+
+- 全部 fork 的定制提交均已推送各自远程仓库。
+- glib / gstreamer / pcre2 工作区的「未提交修改」为构建脚本补丁与自动生成副产物的正常应用态，非失控改动。
+
+### 7.2 判定一：图形档位（profile）系统——临时措施长期化
+
+**现状事实**：
+
+- `entry/src/main/ets/service/WineEnvService.ets:322-328` 写死档位 `shadow-precise-dirty-ring-inline-upload-coverage-sort` 并忽略持久化值；注释自述为「[实验-设备验证]」，成因是 vkd3d（D3D12）缺提交前发布路径下的黑屏规避（上传堆常驻映射无 flush 时机），并给出恢复方法与治本方向「补提交前发布」。
+- 宿主侧 `entry/src/main/cpp/bridge/napi_init.cpp:121-317`（`SetHostShadowProfile`）以约 200 行字符串匹配翻译 40 余个档位名；除生产写死使用的 1 个外，其余在仓库内无任何注入入口（ArkTS 与 cpp 全量检索核实）。
+- guest 侧 `entry/src/main/cpp/wine/wine_env.cpp:186` 注入 `WINEHUA_PERF_PROFILE=shadow-precise` 契约；`env_profiles.cpp` 另有一层默认值逻辑；`DXVK_WINEHUA_PRECISE_SHADOW=1`、`VN_WINEHUA_STRONG_RING_BARRIER=1` 恒定注入。
+- guest / host 两侧档位由不同代码生成、无一致性握手（§3.2 已记录）。
+
+**判定**：一次标注规范的止血长期化——治本（vkd3d 提交前发布）悬空，临时写死成为常态；40 余个档位变体中仅 1 个有产品入口。此为当前维护成本最集中的单点（合并冲突面、阅读负担、字符串错位静默降级三类成本叠加）。
+
+**收口顺序（顺序敏感）**：① 治本（vkd3d 补提交前发布）→ ② 恢复 .ets 的产品语义（其注释已写明恢复方法）→ ③ 删除无入口变体、档位选择结构化为表驱动 → ④ 恒定注入的开关逐个定性（A/B 结论已出者固化实现、删开关与另一分支）。
+
+### 7.3 判定二：诊断/埋点框架存量（约 46 笔 / 约 9000 行插入）
+
+**分布**：virglrenderer 17 笔（约 5000 行）、dxvk-legacy 15 笔（约 2300 行）、mesa 6 笔（约 1000 行）、wine 若干（Heaven 追踪 / Gate C / 探针类）。
+
+**形态核实（两个事实）**：
+
+- 抽查发现「diagnostic」提交中混有默认关闭的 opt-in 行为实验（如 `c0df6b51` 的「每 submit 代至多等一次」等待节流、`39344384` 的影子代际加锁序列化）——**删除前必须逐笔剥离行为部分**，不能按标题整批删。
+- 代码体量主要来自打点支撑结构（计数、哈希、环形记录），删除复杂度在于拆共享框架。
+
+**使用频率**：重型框架集中建于 2026-07 下旬～08 上旬（Heaven / Instancing 调试期）；此后无新增诊断提交，新问题排查（红警 2、企业微信黑窗）采用轻量打点方式。**判定为疑似休眠**，是否删除取决于 Heaven / Instancing 调试线是否仍在计划内（待决，见 7.8）。
+
+### 7.4 loader 及图形平台层改动审查（场景归因）
+
+对 `dlls/ntdll/loader.c`（+154）、`dlls/winevulkan/loader.c`（+38）、`dlls/win32u/opengl.c`（+39）等平台层改动逐一审查（相对 merge-base `13289668fd1`），结论按性质分四类：
+
+| 改动 | 性质 | 结论 |
+|---|---|---|
+| DXVK/vkd3d overlay 搜索（`search_winehua_dxvk_overlay`，3 个 dll 名 + env 门控 + 失败回落） | 产品架构差异 | 上游/Proton 生态惯例是「装进 prefix」（Proton 借 per-game prefix 实现按游戏切版）；本项目为「共享 prefix + 按程序档位 + 应用内运行时」架构，装 prefix 不成立，进程级 overlay 是唯一解；实现已是最小形态 |
+| overlay 位于 exe 目录**之前** | 有意语义覆盖 | 保证运行经验证的渲染链路（游戏自带 d3d11/dxgi 时仍用我们的版本）；打破 Windows「exe 目录第一」规则，**应确认为设计决定并补「游戏自带 DLL」场景验证** |
+| exe 目录搜索恢复（`build_module` / `loader_init` 各一处从 NT 名反推） | 本项目移植偏差 | 「exe 目录优先」是上游完整维护的核心语义；本项目 OHOS 启动链（broker spawn、跳过 reexec）丢失了 load_path。上游同类问题的修法在入口传对路径，loader 内反推属兜底；同一逻辑两处重复，应抽 helper；根因（入口为何传 NULL）未查，登记技术债 |
+| `default_load_path` 补搜 | 配套修复 | exe 目录恢复的配套（vulkan-1.dll 等系统依赖回落）；与上一条互相依赖，合并上游时需整体对待 |
+| winevulkan swapchain 谎报 + 8 入口绕过 host 查询 | 平台场景差异 | 上游宿主有真 WSI（X11/Wayland），不存在此问题；本项目宿主为 Venus（无 WSI），自实现呈现链是同类平台（Winlator 的 vortekrenderer）的共同解法；责任边界闭环（win32u 在 host vkCreateDevice 前剥离该扩展） |
+| `WINEHUA_EGL_LIBRARY_PATH` 覆盖 + 依赖预载 | 已有机制扩展 | 上游按标准系统路径加载 libEGL；本项目库为应用内私有路径。改动为库名可覆盖 + 预载，不涉搜索逻辑重写 |
+| `dlls/winevulkan/loader.c` 中 `#if 1` 包裹 swapchain 分支 | 清理项 | 无意义的条件编译痕迹，应删除或改为真实开关 |
+
+### 7.5 个体问题清单
+
+| # | 项 | 状态/结论 |
+|---|---|---|
+| 1 | box64 指针不在 `.gitmodules` 声明分支（原钉在 feature 分支提交上） | **已修**（origin/main 已 fast-forward 到该提交，无分叉） |
+| 2 | box64 `mallochook.c` 文件头注释与生产现状矛盾 | 注释已修正（直通实现 + 已知能力损失），提交 `e9300bc07` 已推远程；**master 指针未更新，去留待决**（7.8 #1） |
+| 3 | wine `tools/makedep.c` 两处改动（原标 [待确认]） | **已核实**：install 规则去重跳过 dest 条目 + 断言前置打印上下文；动机为打包期 install 规则冲突。当前构建不经 make install，但删除有打包期回归风险且仅 12 行，**保留**（wine.md 已同步） |
+| 4 | wine `unix_wgl.c` 同一修复提交两遍 | 注明即可（历史不改） |
+| 5 | wine `is_window_managed` 三条未验证边界（tooltip / IME 候选窗 / 拖拽预览） | 验证清单 |
+| 6 | wine `hlsl_codegen.c` half 支持是否与上游 vkd3d 重复 | 合并 11.17 时 diff（`unix_wgl.c` 已核实上游未修，保留） |
+| 7 | box64 `rint` wrap 无背景说明 | 验证清单 |
+| 8 | box64 `threads.c` `real_pthread_cleanup_push_defer` 裸调用（无 NULL 守卫） | 低概率路径，建议加守卫 |
+| 9 | virglrenderer 上游注释被误截断（"mapped buffe"） | 合并时恢复 |
+| 10 | glib / gstreamer / pcre2 工作区状态 | 正常态（见 7.1） |
+| 11 | 测试程序未进产品包 | 已核实健康（`assemble.sh` 显式排除 + `from_wine` 载荷机制） |
+
+### 7.6 对 §五 路线图的修正建议
+
+1. 现有 A–J 均为「保留 + 整理」维度，缺「删除 / 收口」；建议增补 profile 收口（7.2）与诊断框架退役（7.3）两类，并把 7.7 的行动分级并入路线图。
+2. 「物理隔离」（A）治标：hook 调用点仍留在上游文件中，上游改动时冲突依旧发生，只是冲突块变小；删除与收口才是让冲突消失的手段。
+3. 「默认关闭 = 无成本」的隐含假设不成立：运行时零开销，但合并冲突面、阅读负担、构建时间三类成本仍在，判定休眠代码去留时应计入。
+4. F 项（env 目录）升级为「开关生命周期管理」：引入 → 定论 → 固化实现 → 删开关；当前缺的不是目录，是退役机制。
+5. 新增流程建议：止血类改动（如 7.2 的写死档位）需在集中位置登记治本待办，避免悬空。
+
+### 7.7 行动分级
+
+- **L1（低风险，可立即）**：box64 `e9300bc07` 去留决定并同步指针；补 submodule 检查脚本 / CI（指针在声明分支 + 已推送，即 §4.2 H 项——box64 事件证明其必要性）；7.5 涉及的文档更新（wine.md 已同步）。
+- **L2（需设计方案）**：profile 治本 → 恢复产品语义 → 收口变体的完整链（7.2）；生产恒定注入开关逐个「固化或回退」。
+- **L3（需确认前提）**：诊断框架删除（前提见 7.8 #2；执行时逐笔剥离 opt-in 行为）；7.5 验证清单项（#5 / #7 / #8）。
+- **L4（合并窗口）**：`hlsl_codegen.c` half 上游核对（#6）、"mapped buffe" 注释恢复（#9）、loader 三块改动整体合并对待（7.4）。
+
+### 7.8 待决事项
+
+1. box64 注释提交 `e9300bc07`：加进 master 指针，或 revert。
+2. 诊断框架（7.3）：Heaven / Instancing 调试线是否仍在计划内——决定整组休眠代码的去留。
+3. profile 治本（vkd3d 提交前发布）是否排期——它决定 7.2 收口链的启动时点。
+4. overlay 搜索顺位（7.4）确认为设计决定，并补「游戏自带 d3d11/dxgi」场景验证。
