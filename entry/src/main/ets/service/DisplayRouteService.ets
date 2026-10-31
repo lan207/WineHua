@@ -8,8 +8,9 @@ const STORE_NAME: string = 'display_route';
 const KEY_ROUTE: string = 'route';
 export const ROUTE_WAYLAND: string = 'wayland';
 export const ROUTE_X11: string = 'x11';
-// 缺省 x11 (2026-10-10 用户拍板: x11 为当前主线, 默认即 x11 方便手工随时测试)
-const DEFAULT_ROUTE: string = ROUTE_X11;
+// 缺省 wayland (main-ui 产品线语义: wayland=incumbent 默认, x11=实验线;
+// 2026-10-31 用户拍板。master 技术线缺省 x11 —— 两线此常量有意分叉)。
+const DEFAULT_ROUTE: string = ROUTE_WAYLAND;
 
 // 显示路线裁决 (wayland=原生路线对照 / x11=主线): 三级优先 —
 // ① want 参数 winehua.displayRoute (内存覆盖, 最高优先, smoke/自动化钉档位用)

@@ -50,9 +50,9 @@ export struct SettingsView {
   @State desktopModeSel: number[] = [0];
   @State desktopMode: string = MODE_FUSION;
   @State desktopModeRestartHint: boolean = false;
-  // -- 显示路线 (实验, Pad/PC): x11 主线 / wayland 对照 (镜像 DisplayRouteService) --
-  @State routeSel: number[] = [0];   // 0=X11, 1=Wayland
-  @State route: string = ROUTE_X11;
+  // -- 显示路线 (实验, Pad/PC): wayland 默认 / x11 实验 (镜像 DisplayRouteService) --
+  @State routeSel: number[] = [0];   // 0=Wayland, 1=X11 (main-ui: Wayland 在前)
+  @State route: string = ROUTE_WAYLAND;
   @State routeRestartHint: boolean = false;
   // 字体导入进行中 (镜像 WineEnvService.fontImporting): 按钮使能 + 文案
   @State fontImporting: boolean = false;
@@ -108,12 +108,12 @@ export struct SettingsView {
     }
     // 显示路线镜像: 以持久化选择值 (preferredRoute) 为准 — 本会话已应用值
     // (routeName) 在「已选待重启」窗口内落后于选择, 用它回翻高亮会把刚选
-    // 的项跳回旧值 (选 Wayland 后高亮弹回 X11, 复核 #136); 运行中/待生效
+    // 的项跳回旧值 (选 X11 后高亮弹回 Wayland, 复核 #136); 运行中/待生效
     // 的差异由 routeRestartHint 表达, 与 selectRoute 的选中语义同源
     const route = DisplayRouteService.getInstance().preferredRoute();
     if (route != this.route) {
       this.route = route;
-      this.routeSel = [route === ROUTE_X11 ? 0 : 1];
+      this.routeSel = [route === ROUTE_WAYLAND ? 0 : 1];
     }
     this.fontImporting = FontImportService.getInstance().fontImporting;
   }
@@ -214,7 +214,7 @@ export struct SettingsView {
     }
     if (this.env.isBusy()) {
       promptAction.showToast({ message: '引擎操作进行中，请稍后再试' });
-      this.routeSel = [DisplayRouteService.getInstance().preferredRoute() === ROUTE_X11 ? 0 : 1];
+      this.routeSel = [DisplayRouteService.getInstance().preferredRoute() === ROUTE_WAYLAND ? 0 : 1];
       return;
     }
     DisplayRouteService.getInstance().setPreferred(route);
@@ -223,7 +223,7 @@ export struct SettingsView {
     DisplayRouteService.getInstance().applyRoute(route, 'settings',
       WineWindowManager.getInstance().shouldUseMultiwindow(route), outSize[0], outSize[1]);
     this.route = route;
-    this.routeSel = [route == ROUTE_X11 ? 0 : 1];
+    this.routeSel = [route == ROUTE_WAYLAND ? 0 : 1];
     // 提示只在应用值落后于选择时成立 (重启被打断时可见, 正常路径重启完成
     // 即随镜像刷新消失)
     this.routeRestartHint = (route != DisplayRouteService.getInstance().routeName());
@@ -468,25 +468,25 @@ export struct SettingsView {
           }
           .width('100%')
 
-          // 显示路线 (实验): x11 主线 / wayland 对照。即改即生效 (#172):
-          // applyRoute 单点应用后重启引擎会话, 不要求退出应用
+          // 显示路线 (实验): wayland 默认 / x11 实验 (main-ui 产品语义)。
+          // 即改即生效 (#172): applyRoute 单点应用后重启引擎会话, 不要求退出应用
           Column({ space: 4 }) {
             Text('显示路线（实验）')
               .fontColor($r('app.color.text_primary'))
               .width('100%')
             SegmentButton({
               options: SegmentButtonOptions.capsule({
-                buttons: [{ text: 'X11' }, { text: 'Wayland' }],
+                buttons: [{ text: 'Wayland' }, { text: 'X11' }],
                 multiply: false
               }),
               selectedIndexes: $routeSel,
               onItemClicked: (index: number) => {
-                this.selectRoute(index == 0 ? ROUTE_X11 : ROUTE_WAYLAND);
+                this.selectRoute(index == 0 ? ROUTE_WAYLAND : ROUTE_X11);
               }
             })
             .width('100%')
-            // 说明文字: 主线/对照定位与生效方式
-            Text('X11: 主线路线; Wayland: 对照路线。切换后自动重启引擎会话生效')
+            // 说明文字: 默认/实验定位与生效方式
+            Text('Wayland: 默认路线; X11: 实验路线。切换后自动重启引擎会话生效')
               .fontSize(12)
               .fontColor($r('app.color.text_tertiary'))
               .width('100%')
