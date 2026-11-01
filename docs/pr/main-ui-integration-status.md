@@ -6,8 +6,8 @@
 
 已验证：
 
-- Native/ArkTS 签名 HAP 编译及包完整性检查通过，候选位于 `build/main-ui-hap-v5/`。
-- HAP SHA-256：`32bc8d2b61c937f5f11492201e9b04093cc598bba2aacb5580a905a1b064b15a`。
+- Native/ArkTS 签名 HAP 编译及包完整性检查通过，候选位于 `build/main-ui-hap-v6/`。
+- HAP SHA-256：`ade9612169938ffca80839c6c24d19c2b1eaf00df5d472973a50adb59a172589`。
 - libentry SHA-256：`b8a123f5c82cf9e49e43003ec1046ba3ac3d6d3d6e03500288e29eea022a8f5b`。
 - 九组 Node/TypeScript 回归通过：输出策略、鼠标模式、光标、共享按键/按钮、短按/长按释放、游戏触摸、冷暖 smoke 前台准备、游戏库和完整键盘。PC 输出测试明确核验用户选择的缩放；完整键盘测试核验焦点切换、修饰键共享、禁用/取消/卸载释放及 X11 路由。
 
