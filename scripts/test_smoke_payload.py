@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from automation import smoke
@@ -88,6 +89,45 @@ class PayloadValidationTests(unittest.TestCase):
         env = smoke.build_job(args)['params']['env']
         self.assertEqual(env['WINEHUA_SMOKE_EXPECT_ROUTE'], 'wayland')
         self.assertEqual(env['WINEHUA_SMOKE_DECLARED_ROUTE'], 'x11')
+
+    def test_run_reads_utf8_metadata_with_a_gbk_host_default(self):
+        read_text = Path.read_text
+
+        def host_read(path, encoding=None, errors=None):
+            return read_text(path, encoding=encoding or 'gbk', errors=errors)
+
+        args = smoke.build_parser().parse_args(['run', '--suite', 'core'])
+        with patch.object(Path, 'read_text', host_read), \
+                patch.object(smoke, 'ensure_payload', return_value=self.root), \
+                patch.object(smoke, 'resolve_hdc', return_value='unused-hdc'), \
+                patch.object(smoke, 'resolve_device', return_value='unused-device'), \
+                patch.object(smoke, 'cmd_push', side_effect=RuntimeError('ready to push')):
+            # Exercises case/suite parsing and cmd_run's desktopMode lookup.
+            # Stop before the first device operation.
+            with self.assertRaisesRegex(RuntimeError, 'ready to push'):
+                smoke.cmd_run(args)
+
+    def test_utf8_payload_and_job_roundtrip_with_a_gbk_host_default(self):
+        read_text, write_text = Path.read_text, Path.write_text
+
+        def host_read(path, encoding=None, errors=None):
+            return read_text(path, encoding=encoding or 'gbk', errors=errors)
+
+        def host_write(path, data, encoding=None, errors=None, newline=None):
+            return write_text(path, data, encoding=encoding or 'gbk', errors=errors, newline=newline)
+
+        label = '\u4e2d\u6587\U0001f9ea'
+        case = smoke.Case('fixture', 'probe.exe', ['x64'])
+        entry = smoke.TestEntry('probe-x64', case, 'x64', {'env': {'FIXTURE_LABEL': label}})
+        job = self.root/'unicode-job.json'
+        job.write_bytes(json.dumps({'params': {'env': {'FIXTURE_LABEL': label}}},
+                                  ensure_ascii=False).encode('utf-8'))
+        args = smoke.build_parser().parse_args(['run', '--job', str(job)])
+        with patch.object(Path, 'read_text', host_read), patch.object(Path, 'write_text', host_write):
+            smoke.write_payload(self.root, {'fixture': {'tests': [entry]}}, {'fixture': case}, {})
+            self.assertEqual(smoke.build_job(args)['params']['env']['FIXTURE_LABEL'], label)
+        payload = json.loads((self.root/'suites.json').read_bytes().decode('utf-8'))
+        self.assertEqual(payload['suites']['fixture']['tests'][0]['env']['FIXTURE_LABEL'], label)
 
 
 if __name__ == '__main__':
