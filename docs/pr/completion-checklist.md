@@ -32,6 +32,7 @@ OpenGL 随后失败于 `no compositor display sequence observed`，原因是 smo
 | 套件 | 主机判定 | 本地目录（相对候选工作树） |
 |---|---|---|
 | core | PASS 4/4（含两架构四象限截图） | `build/automation-logs/core-core-foreground-fixed/` |
+| core（Linux 新编 DNS） | PASS 4/4 | `build/automation-logs/core-core-linux-dns-rebuilt/` |
 | wine-vulkan | PASS 4/4 | `build/automation-logs/wine-vulkan-wine-vulkan-pr78-followup/` |
 | dxvk | PASS 3/3（含 cube 截图） | `build/automation-logs/dxvk-dxvk-pr78-6bf3abe/` |
 | d3d12 | PASS 3/3；1000 帧 + gears/triangle 各 600 帧 | `build/automation-logs/d3d12-d3d12-pr78-6bf3abe/` |
@@ -41,3 +42,5 @@ OpenGL 随后失败于 `no compositor display sequence observed`，原因是 smo
 `6bf3abe` HAP SHA-256：`98227b4b76a080594604576ef701fba09f9e06c082c3609585129cea7d741746`。Wine payload SHA-256：`d6eef4ffaecf84e45fc431d878aeaf108471b9fddb2df061b9e6fa0e4c1cf58a`。
 
 当前候选仍需要与最新主线完成集成并完整重建。已有旧基线通过记录不能代替集成后的验收，也不能据此标记整个 PR 完工。
+
+本轮公开证据边界与哈希见 [November 1 validation follow-up](../debugging/pr78-validation-20261101.md)。
