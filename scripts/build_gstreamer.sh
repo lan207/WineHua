@@ -344,8 +344,10 @@ if [ ! -f "$SYSROOT_EXT_LIB/libavcodec.so" ] || \
     fi
     if [ -n "${FFMPEG_SRC:-}" ] && [ -f "$FFMPEG_SRC/meson.build" ]; then
         build="$BUILD_DIR/ffmpeg_build"
-        rm -rf "$build"
-        meson setup "$build" "$FFMPEG_SRC" --cross-file "$(gen_cross_file)" \
+        ffmpeg_setup_flags=()
+        if [ -f "$build/build.ninja" ]; then ffmpeg_setup_flags+=(--reconfigure); fi
+        # Apply current options while retaining valid compiled objects on retry.
+        meson setup "${ffmpeg_setup_flags[@]}" "$build" "$FFMPEG_SRC" --cross-file "$(gen_cross_file)" \
             --prefix="$GST_PREFIX" -Dlibdir=lib/x86_64-linux-ohos \
             -Ddefault_library=shared \
             -Dc_args="--target=$TARGET --sysroot=$SYSROOT -I$SYSROOT_EXT_INC -D__MUSL__" \

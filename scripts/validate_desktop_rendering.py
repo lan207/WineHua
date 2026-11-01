@@ -144,6 +144,7 @@ def main():
         run('wine-dxvk-overlay', [sys.executable, 'scripts/test_wine_dxvk_overlay.py'])
         run('d3d9-profile-coverage', [sys.executable, 'scripts/test_d3d9_profile_coverage.py'])
         run('candidate-cleanup', [sys.executable, 'scripts/test_desktop_candidate_cleanup.py'])
+        run('linux-sdk-driver-args', [sys.executable, 'scripts/test_linux_sdk_driver_args.py'])
         run('renderer', [sys.executable, '-m', 'unittest', 'discover', '-s', 'scripts',
                          '-p', 'test_renderer_*.py'])
         run('initial-configure', [sys.executable, 'scripts/test_desktop_initial_configure.py'])
