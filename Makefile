@@ -34,11 +34,8 @@ CONFIG    := $(NATIVE_ARCH)
 BUILD_DIR := $(ROOT)/build
 STAMPS    := $(BUILD_DIR)/.stamps
 SCRIPTS   := $(ROOT)/scripts
-DXVK_ARTIFACTS := \
-	$(BUILD_DIR)/dxvk/legacy/x64/bin/d3d11.dll \
-	$(BUILD_DIR)/dxvk/legacy/x64/bin/dxgi.dll \
-	$(BUILD_DIR)/dxvk/legacy/x86/bin/d3d11.dll \
-	$(BUILD_DIR)/dxvk/legacy/x86/bin/dxgi.dll
+DXVK_LEGACY_DLLS := d3d9.dll d3d10.dll d3d10_1.dll d3d10core.dll d3d11.dll dxgi.dll
+DXVK_ARTIFACTS := $(foreach a,x64 x86,$(foreach dll,$(DXVK_LEGACY_DLLS),$(BUILD_DIR)/dxvk/legacy/$(a)/bin/$(dll)))
 DXVK_STAMP := $(STAMPS)/dxvk-legacy
 DXVK_SOURCE_INPUTS := $(shell find $(ROOT)/thirdparty/dxvk/src -type f 2>/dev/null; find $(ROOT)/thirdparty/dxvk -maxdepth 1 -type f 2>/dev/null)
 DXVK_MODERN_ARTIFACTS := \
@@ -123,12 +120,12 @@ endif
 .PHONY: dxvk
 dxvk: $(DXVK_STAMP)
 
-$(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(SCRIPTS)/patches/dxvk-legacy-mingw-compat.patch $(DXVK_SOURCE_INPUTS) | $(STAMPS)
+$(DXVK_STAMP): $(SCRIPTS)/build_dxvk.sh $(wildcard $(SCRIPTS)/patches/dxvk-legacy-*.patch) $(DXVK_SOURCE_INPUTS) | $(STAMPS)
 	@echo "=== dxvk legacy ==="
 	bash $(SCRIPTS)/build_dxvk.sh
 	touch $@
 
-# DXVK is produced as a four-file side effect of the stamp recipe.  Give each
+# DXVK is produced as a twelve-file side effect of the stamp recipe. Give each
 # packaged DLL an explicit rule so a clean checkout can resolve the assemble
 # dependency before the stamp exists (the previous bare sentinel made CI stop
 # with "No rule to make target .../d3d11.dll").  The size check also prevents

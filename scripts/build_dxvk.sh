@@ -100,7 +100,7 @@ log "--- DXVK Legacy fork ($DXVK_SRC) ---"
 ninja -j"$JOBS" -C "$DXVK_SRC/build.winehua64" install
 ninja -j"$JOBS" -C "$DXVK_SRC/build.winehua32" install
 
-for dll in d3d9.dll d3d11.dll dxgi.dll; do
+for dll in d3d9.dll d3d10.dll d3d10_1.dll d3d10core.dll d3d11.dll dxgi.dll; do
     [ -f "$DXVK_BUILD_ROOT/x64/bin/$dll" ] || \
         err "DXVK x64 artifact missing: $DXVK_BUILD_ROOT/x64/bin/$dll"
     [ -f "$DXVK_BUILD_ROOT/x86/bin/$dll" ] || \
