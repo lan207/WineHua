@@ -485,25 +485,6 @@ struct Index {
     return this.env.isBusy();
   }
 
-  private openGameLibrary(): void {
-    (getContext(this) as common.UIAbilityContext).startAbility({
-      bundleName: 'app.hackeris.winehua', abilityName: 'GameLibraryAbility'
-    }).catch((err: Error) => {
-      this.statusText = '无法打开游戏库';
-      hilog.error(DOMAIN, 'GameLibrary', 'Open library: %{public}s', JSON.stringify(err));
-    });
-  }
-
-  private async browseGames(): Promise<void> {
-    try {
-      this.curDir = await this.env.getGamesDirectory(getContext(this));
-      this.dirStack = [];
-      this.listDir(this.curDir);
-    } catch (err) {
-      this.statusText = err instanceof Error ? err.message : '无法打开游戏目录';
-    }
-  }
-
   build() {
     Stack() {
     Row() {
@@ -514,11 +495,6 @@ struct Index {
       // 内层内容缩进保留原层级, 不做纯缩进的整段重排。
       Scroll(this.sidebarScroller) {
       Column() {
-        Button('游戏库 · 浏览 games')
-          .width('100%').height(40).fontSize(15).backgroundColor('#2B609E')
-          .margin({ top: 10, bottom: 6 }).onClick(() => this.openGameLibrary())
-        Button('手动浏览 games').id('manual-browse-games').width('100%').height(34).fontSize(13)
-          .backgroundColor('#304359').onClick(() => this.browseGames())
         // -- Wine 环境状态 --
         Text('Wine 环境')
           .fontWeight(FontWeight.Bold).fontColor('#999')

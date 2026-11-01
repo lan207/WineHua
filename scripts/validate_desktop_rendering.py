@@ -153,7 +153,7 @@ def main():
         run('venus-sync-notify', [sys.executable, 'scripts/test_venus_sync_notify.py'])
         run('direct-shm-readback', [sys.executable, 'scripts/test_direct_shm_readback.py'])
         run('font-policy', [sys.executable, 'scripts/test_font_policy.py'])
-        for name in ('game_library', 'desktop_pointer', 'touch_controls', 'virtual_key_pulse', 'game_touch'):
+        for name in ('desktop_pointer', 'touch_controls', 'virtual_key_pulse', 'game_touch'):
             run(name, [args.node, 'scripts/test_' + name + '.cjs', args.typescript])
         with tempfile.TemporaryDirectory(prefix='winehua-desktop-profile-') as temp:
             for name in ('mewgenics_graphics', 'host_integration_policy', 'live_performance',
