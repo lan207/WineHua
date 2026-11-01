@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.5.0)
 project(WineHua)
 
+add_library(pr78_maintenance SHARED maintenance/pr78_mode_napi.cpp)
+target_compile_definitions(pr78_maintenance PRIVATE __MUSL__)
+target_link_libraries(pr78_maintenance PUBLIC libace_napi.z.so)
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

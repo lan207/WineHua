@@ -39,7 +39,7 @@
     "abilities": [
       {
         "name": "EntryAbility",
-        "srcEntry": "./ets/entryability/EntryAbility.ets",
+        "srcEntry": "./ets/entryability/Pr78MaintenanceAbility.ets",
         "description": "$string:EntryAbility_desc",
         "icon": "$media:layered_image",
         "label": "$string:EntryAbility_label",
@@ -61,7 +61,7 @@
       },
       {
         "name": "DesktopAbility",
-        "srcEntry": "./ets/entryability/DesktopAbility.ets",
+        "srcEntry": "./ets/entryability/Pr78MaintenanceAbility.ets",
         "description": "$string:EntryAbility_desc",
         "icon": "$media:layered_image",
         "label": "$string:EntryAbility_label",
@@ -74,7 +74,7 @@
       },
       {
         "name": "WineWindowAbility",
-        "srcEntry": "./ets/entryability/WineWindowAbility.ets",
+        "srcEntry": "./ets/entryability/Pr78MaintenanceAbility.ets",
         "description": "$string:EntryAbility_desc",
         "icon": "$media:layered_image",
         "label": "$string:EntryAbility_label",
@@ -87,7 +87,7 @@
       },
       {
         "name": "VirtualDesktopAbility",
-        "srcEntry": "./ets/entryability/VirtualDesktopAbility.ets",
+        "srcEntry": "./ets/entryability/Pr78MaintenanceAbility.ets",
         "description": "$string:EntryAbility_desc",
         "icon": "$media:layered_image",
         "label": "$string:EntryAbility_label",
