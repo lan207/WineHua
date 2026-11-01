@@ -164,7 +164,7 @@ def inline_test_entries(job: dict) -> dict:
 def load_cases() -> dict:
     cases = {}
     for path in sorted(TESTS_DIR.glob("*/test.json")):
-        body = json.loads(path.read_text())
+        body = json.loads(path.read_text(encoding="utf-8"))
         case = Case(
             id=body["id"],
             exe=body["exe"],
@@ -221,7 +221,7 @@ def reject_bad_backend(context: str, backend: dict) -> None:
 
 
 def load_suite(path: Path, cases: dict) -> tuple:
-    body = json.loads(path.read_text())
+    body = json.loads(path.read_text(encoding="utf-8"))
     name = body["name"]
     entries = []
     for inst in body.get("tests", []):
@@ -382,19 +382,19 @@ def write_payload(out_dir: Path, suites: dict, cases: dict, env: dict) -> None:
         },
     }
     suites_json = out_dir / "suites.json"
-    suites_json.write_text(json.dumps(suites_doc, indent=2, ensure_ascii=False) + "\n")
+    suites_json.write_text(json.dumps(suites_doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     exes = sorted(p for p in out_dir.rglob("*.exe"))
     if not exes:
         die("payload has no .exe")
     version = suite_version(suites_json, exes)
     suites_doc["suiteVersion"] = version
-    suites_json.write_text(json.dumps(suites_doc, indent=2, ensure_ascii=False) + "\n")
+    suites_json.write_text(json.dumps(suites_doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     files = {str(p.relative_to(out_dir)): sha256(p) for p in exes}
     manifest = {"schemaVersion": 1, "suiteVersion": version, "files": files}
     (out_dir / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
+        json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     log(f"payload: {len(exes)} exe, version {version}")
 
 
@@ -622,7 +622,7 @@ def archive_evidence(hdc: str, device: str, archive: Path) -> None:
     code, gf_out = hdc_shell(hdc, device,
                              "hilog -x 2>/dev/null | grep -a GUEST-FRAMES | tail -300")
     if code == 0 and gf_out.strip():
-        (evidence / "guest-frames.log").write_text(gf_out, errors="replace")
+        (evidence / "guest-frames.log").write_text(gf_out, encoding="utf-8", errors="replace")
         found.append("guest-frames.log")
     # D47 [AUTO-RETRY]（批次 1 复核 F1）：首启失败自动重试/作废的 app 侧
     # 日志（WineEnvService hilog warn, domain 'wine'）。判定器 auto-retry
@@ -631,7 +631,7 @@ def archive_evidence(hdc: str, device: str, archive: Path) -> None:
     code, ar_out = hdc_shell(hdc, device,
                              "hilog -x 2>/dev/null | grep -a AUTO-RETRY | tail -50")
     if code == 0 and ar_out.strip():
-        (evidence / "auto-retry.log").write_text(ar_out, errors="replace")
+        (evidence / "auto-retry.log").write_text(ar_out, encoding="utf-8", errors="replace")
         found.append("auto-retry.log")
     code, out = hdc_shell(hdc, device, "date +%Y%m%d")
     day = out.strip().splitlines()[-1].strip() if code == 0 and out.strip() else ""
@@ -778,7 +778,7 @@ def build_job(args: argparse.Namespace) -> dict:
         job_path = Path(args.job)
         if not job_path.is_file():
             die(f"--job 文件不存在: {job_path}")
-        loaded = json.loads(job_path.read_text())
+        loaded = json.loads(job_path.read_text(encoding="utf-8"))
         if not isinstance(loaded, dict):
             die(f"--job 文件必须是 JSON 对象: {job_path}")
         # job 文件的 env/inline 与套件定义走同一套护栏: 它们同样直通设备, 此前
@@ -795,7 +795,7 @@ def build_job(args: argparse.Namespace) -> dict:
     if args.tests:
         job["tests"] = [item.strip() for item in args.tests.split(",") if item.strip()]
     if args.inline:
-        job["inline"] = json.loads(Path(args.inline).read_text())
+        job["inline"] = json.loads(Path(args.inline).read_text(encoding="utf-8"))
     if args.long_seconds:
         job["longSeconds"] = args.long_seconds
     # 覆盖参数必须**并入** job 文件已有的 params, 不能整体替换: 实测
@@ -923,7 +923,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     if suite_name:
         sp = SUITES_DIR / f"{suite_name}.json"
         if sp.is_file():
-            suite_mode = json.loads(sp.read_text()).get("desktopMode", "")
+            suite_mode = json.loads(sp.read_text(encoding="utf-8")).get("desktopMode", "")
     # job 级 desktopMode: 纯 inline job (无 suite 键) 的钉档落点 —— 此前只存在
     # 于 _note 的运行命令文档里, 换人/漏带 CLI 参数即回退设备当前设置 (与套件级
     # pin 要治的漂移同类)。优先级 suite > job: suite 的 desktopMode 是其判定
@@ -939,7 +939,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                                        display_route=getattr(args, "display_route", None))
         if cmd_push(push_args) != 0:
             return 1
-    manifest = json.loads((payload / "manifest.json").read_text())
+    manifest = json.loads((payload / "manifest.json").read_text(encoding="utf-8"))
     run_id = args.run_id or time.strftime("r%Y%m%d-%H%M%S")
     archive = Path(args.archive_root).resolve() / f"{args.suite or 'job'}-{run_id}"
     # run-id 复用防护 (review F5): 归档目录复用会把上一轮的 device-results/
@@ -952,7 +952,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
     # job 文件：选测 / 参数覆盖 / 内联用例走它；5 键仍然带，兼容未升级的设备端
     job_path = archive / "job.json"
-    job_path.write_text(json.dumps(job, indent=2, ensure_ascii=False) + "\n")
+    job_path.write_text(json.dumps(job, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     remove_sandbox_path(hdc, device, JOB_REL)
     hdc_send(hdc, device, job_path, f"{SANDBOX_FILES}/{JOB_REL}")
 
@@ -1053,13 +1053,13 @@ def cmd_run(args: argparse.Namespace) -> int:
         # wine stderr + present 日志。复盘"谁呈现的帧"不再依赖设备现场。
         archive_evidence(hdc, device, archive)
         (archive / "suite-summary.json").write_text(
-            json.dumps(summary, indent=2, ensure_ascii=False) + "\n")
+            json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         long_seconds = args.long_seconds or int(job.get("longSeconds", 0)) or 3600
         (archive / "artifact.json").write_text(json.dumps({
             "runId": run_id, "suite": args.suite, "prefix": args.prefix,
             "payloadVersion": manifest.get("suiteVersion"),
             "device": device, "longSeconds": long_seconds,
-        }, indent=2, ensure_ascii=False) + "\n")
+        }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         # 判定层（判定与执行分离：check 子命令可对归档重跑同一套判定）。
         # 套件级 checks 来源: 套件定义 + job 声明（并集）。二者不是二选一 ——
         # 套件级管矩阵/覆盖 (coverage)，job 声明的管本次 bring-up 探针
@@ -1085,7 +1085,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                                       manifest, entries, host, frames,
                                       timeout_minutes, restamp, suite_ps)
         (archive / "host-summary.json").write_text(
-            json.dumps(host, indent=2, ensure_ascii=False) + "\n")
+            json.dumps(host, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     finally:
         # Native child diagnostics live outside files/. Capture them before
         # stopping the app, which closes the debug sandbox access channel.
@@ -1116,7 +1116,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     summary_path = archive / "suite-summary.json"
     if not summary_path.is_file():
         die(f"归档缺少 suite-summary.json: {archive}")
-    summary = json.loads(summary_path.read_text())
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
     cases = load_cases()
     suites = load_suites(cases)
     # 归档里的 job.json 是首次跑的那份选测/参数描述 —— 判定必须与它同源，
@@ -1127,7 +1127,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     # 写的是默认标签 "core" ⇒ check 会把 core 全套 4 个用例当成 entries，
     # 判出 run 侧根本没有的 missing-result 假红，实测 job-r20260930-190858）。
     job_path = archive / "job.json"
-    job = json.loads(job_path.read_text()) if job_path.is_file() else {}
+    job = json.loads(job_path.read_text(encoding="utf-8")) if job_path.is_file() else {}
     suite = job.get("suite", "") if job_path.is_file() else summary.get("suite", "")
     entries = {entry.test_id: entry for entry in suites[suite]["tests"]} if suite in suites else {}
     wanted = {item for item in (job.get("tests") or []) if item}
@@ -1143,7 +1143,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     artifact_path = archive / "artifact.json"
     long_seconds = 3600
     if artifact_path.is_file():
-        long_seconds = int(json.loads(artifact_path.read_text()).get("longSeconds", 3600))
+        long_seconds = int(json.loads(artifact_path.read_text(encoding="utf-8")).get("longSeconds", 3600))
     # 套件级 checks 来源与 cmd_run 一致: 套件定义 + 归档 job 声明（并集；
     # 重跑判定必须与首次判定同源，否则 check 会把 job 声明的 bring-up check
     # 丢掉）
@@ -1157,7 +1157,7 @@ def cmd_check(args: argparse.Namespace) -> int:
     host = judge_run(archive, entries, frames, summary.get("tests", []),
                      suite_def, suite, long_seconds)
     (archive / "host-summary.json").write_text(
-        json.dumps(host, indent=2, ensure_ascii=False) + "\n")
+        json.dumps(host, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     for test in host["tests"]:
         log(f"  {test['testId']:<28} {test['status']:<10} "
             f"{test.get('stage', '')} {test.get('message', '')[:70]}")
@@ -1313,7 +1313,7 @@ def retry_failed_tests(hdc, device, archive: Path, run_id: str, job: dict,
     retry_job["tests"] = failed
     retry_job_path = retry_dir / "job.json"
     retry_job_path.write_text(json.dumps(retry_job, indent=2,
-                                         ensure_ascii=False) + "\n")
+                                         ensure_ascii=False) + "\n", encoding="utf-8")
     remove_sandbox_path(hdc, device, JOB_REL)
     hdc_send(hdc, device, retry_job_path, f"{SANDBOX_FILES}/{JOB_REL}")
     retry_entries = {tid: entries[tid] for tid in failed if tid in entries}
@@ -1341,18 +1341,18 @@ def retry_failed_tests(hdc, device, archive: Path, run_id: str, job: dict,
         hdc_recv_dir(hdc, device, f"{DRIVE_C_REL}/results/{retry_run_id}",
                      retry_dir / "device-results")
         (retry_dir / "suite-summary.json").write_text(
-            json.dumps(retry_summary, indent=2, ensure_ascii=False) + "\n")
+            json.dumps(retry_summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         (retry_dir / "artifact.json").write_text(json.dumps({
             "runId": retry_run_id, "suite": args.suite, "prefix": args.prefix,
             "payloadVersion": manifest.get("suiteVersion"),
             "device": device, "retryOf": run_id,
-        }, indent=2, ensure_ascii=False) + "\n")
+        }, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     finally:
         hdc_shell(hdc, device, f"aa force-stop {BUNDLE}")
     retry_host = judge_run(retry_dir, retry_entries, retry_frames,
                            retry_summary.get("tests", []), None, "", 3600)
     (archive / f"retry-R{n}-summary.json").write_text(
-        json.dumps(retry_host, indent=2, ensure_ascii=False) + "\n")
+        json.dumps(retry_host, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     # 合并: 重试结果覆盖终判, 首判留档 (判定只读归档, 两份都在盘上)。
     retried = {t["testId"]: t for t in retry_host.get("tests", [])}
     merged = []
@@ -1402,7 +1402,7 @@ def judge_run(archive: Path, entries: dict, frames: dict, device_tests: list = N
         result_path = device_dir / f"{test_id}.json"
         if result_path.is_file():
             try:
-                result = json.loads(result_path.read_text())
+                result = json.loads(result_path.read_text(encoding="utf-8"))
             except json.JSONDecodeError:
                 result = None
         # 设备端 summary 条目：既做结果文件缺失时的回退，也作为判定输入之一
