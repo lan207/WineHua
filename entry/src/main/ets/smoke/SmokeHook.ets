@@ -3,6 +3,7 @@ import { fileIo as fs } from '@kit.CoreFileKit';
 import {
   WineEnvService, WINE_ROOT, FILES_BASE, pathExists, readTextIfExists
 } from '../service/WineEnvService';
+import { WineWindowManager } from '../service/WineWindowManager';
 import { SmokeRunner } from './SmokeRunner';
 import { SmokeJob, SmokeRequest } from './SmokeTypes';
 
@@ -114,6 +115,17 @@ export class SmokeHook {
   // 重启共用)。
   onEngineReady(): void {
     this.seed();
+    // Smoke present tests need the compositor surface in the foreground. The
+    // phone keeps the management page visible during normal sessions, so a
+    // cold smoke want would otherwise run the producer behind that page and
+    // never observe a display sequence even though Wine produces frames.
+    try {
+      WineWindowManager.getInstance().showDesktopInForeground();
+      hilog.info(DOMAIN, TAG, 'foreground desktop requested before smoke run');
+    } catch (e) {
+      hilog.warn(DOMAIN, TAG, 'foreground desktop request failed: %{public}s',
+        e instanceof Error ? e.message : JSON.stringify(e));
+    }
     this.runPending();
   }
 
