@@ -14,8 +14,23 @@ WINE_SOURCE = ROOT / 'thirdparty/wine/dlls/winewayland.drv/opengl_readback.c'
 PATCH = ROOT / 'scripts/patches/wine-direct-shm-readback.patch'
 
 
-def actual_pipeline():
+def patched_source():
     source = WINE_SOURCE.read_text(encoding='utf-8')
+    with tempfile.TemporaryDirectory(prefix='winehua-readback-source-') as temporary:
+        root = Path(temporary)
+        path = root / 'dlls/winewayland.drv/opengl_readback.c'
+        path.parent.mkdir(parents=True)
+        path.write_text(source, encoding='utf-8')
+        subprocess.run(['git', 'init', '-q', str(root)], check=True)
+        applied = subprocess.run(['git', '-C', str(root), 'apply', '--reverse', '--check', str(PATCH)],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        if not applied:
+            subprocess.run(['git', '-C', str(root), 'apply', str(PATCH)], check=True)
+        return path.read_text(encoding='utf-8')
+
+
+def actual_pipeline():
+    source = patched_source()
     # Keep all state/slot lifetime functions and the entire real present path.
     start = source.index('struct winehua_readback_drawable\n')
     end = source.index('\nstatic BOOL winehua_readback_drawable_swap(', start)
@@ -60,7 +75,7 @@ class DirectShmReadbackTests(unittest.TestCase):
         self.assertIn('wine-direct-shm-readback.patch',
                       (ROOT / 'scripts/build_wine.sh').read_text(encoding='utf-8'))
         # Reconstruct the preimage from the applied source, checking each hunk.
-        lines = WINE_SOURCE.read_text(encoding='utf-8').splitlines(keepends=True)
+        lines = patched_source().splitlines(keepends=True)
         cursor = 0
         hunks = re.split(r'(?m)^@@ .* @@[^\n]*\n', patch)[1:]
         self.assertTrue(hunks, 'Expected a nonempty patch.')

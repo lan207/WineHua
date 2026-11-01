@@ -1,11 +1,12 @@
 --- a/dlls/winewayland.drv/opengl_readback.c
 +++ b/dlls/winewayland.drv/opengl_readback.c
-@@ -34,6 +34,7 @@
+@@ -34,7 +34,8 @@
  #include <unistd.h>
  
  #include "waylanddrv.h"
 +#include "winternl.h"
  #include "wine/opengl_driver.h"
+ #include "wine/winehua_present.h"
  #include "opengl_diag.h"
  #include "opengl_readback.h"
 @@ -267,6 +268,16 @@
@@ -94,8 +95,8 @@
 -                "winehua_gl_present_bridge: readbacks=%d pid=%u surface=%u mapped=%s\n",
 +                "winehua_gl_present_bridge: readbacks=%d pid=%u surface=%u mapped=%s direct_shm=%u\n",
                  (int)readbacks, (uint32_t)getpid(), surface_id,
--                winehua_present_surface_page ? "yes" : "no");
-+                winehua_present_surface_page ? "yes" : "no", (unsigned int)direct_shm);
+-                winehua_present_surface_mapped() ? "yes" : "no");
++                winehua_present_surface_mapped() ? "yes" : "no", (unsigned int)direct_shm);
          fflush(stderr);
      }
  
