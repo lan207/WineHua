@@ -13,7 +13,7 @@
         "x86"
       ],
       "backend": {
-        "d3d": "dxvk_legacy"
+        "d3d": "dxvk_legacy_d3d9"
       },
       "extraArgs": [
         "--d3d9"
@@ -29,7 +29,7 @@
         "x86"
       ],
       "backend": {
-        "d3d": "dxvk_legacy"
+        "d3d": "dxvk_legacy_d3d9"
       },
       "extraArgs": [
         "--d3d11"

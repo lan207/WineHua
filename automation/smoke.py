@@ -204,7 +204,7 @@ def reject_unreachable_env(context: str, env: dict) -> None:
 
 # native 契约（wine_exe.cpp/wine_env.cpp）只认完整档位值，其余值被静默丢弃、
 # 引擎回落到无档位 env —— 表现为"该档 DLL 在位却不可用"。在这里拦死。
-D3D_BACKEND_VALUES = {"wined3d", "dxvk_legacy", "dxvk_modern_2_6", "vkd3d_limited_500k"}
+D3D_BACKEND_VALUES = {"wined3d", "dxvk_legacy", "dxvk_legacy_d3d9", "dxvk_modern_2_6", "vkd3d_limited_500k"}
 DXVK_BACKEND_VALUES = {"dxvk_legacy", "dxvk_modern_2_6"}
 
 
