@@ -1,6 +1,7 @@
 // Task-only maintenance HAP. This file is not part of either product PR.
-import { Want } from '@kit.AbilityKit';
-import { fileIo as fs } from '@kit.CoreFileKit';
+import { Want, common } from '@kit.AbilityKit';
+import { fileIo as fs, picker, fileUri } from '@kit.CoreFileKit';
+import { preferences } from '@kit.ArkData';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import modeNapi from 'libpr78_maintenance.so';
 
@@ -17,6 +18,8 @@ const NONCE = 'winehua-pr78-owned-runtime-filesystem-probe-20261101';
 interface RuntimeMarker { payloadSha256: string; }
 interface RuntimePlan { payloadSha256: string; files: Record<string, string>; executable: string[]; }
 interface VerifiedRuntime { payloadSha256: string; planSha256: string; count: number; }
+interface GameFile { path: string; size: number; }
+interface GameInventory { home: string; files: GameFile[]; errors: string[]; }
 interface MaintenanceResult {
   status: string; action: string; requestId: string; message: string;
   count: number; oldSha?: string; newSha?: string;
@@ -30,6 +33,7 @@ export class Pr78RuntimeMaintenance {
   }
   private busy: boolean = false;
   private verified: VerifiedRuntime | null = null;
+  private context: common.UIAbilityContext | null = null;
 
   private exists(path: string): boolean {
     try { fs.lstatSync(path); return true; } catch (_) { return false; }
@@ -100,7 +104,8 @@ export class Pr78RuntimeMaintenance {
       fs.renameSync(BACKUP, WINE);
     }
   }
-  async handle(want: Want): Promise<void> {
+  async handle(want: Want, context?: common.UIAbilityContext): Promise<void> {
+    if (context) this.context = context;
     const params = want.parameters;
     const id = params && params['winehua.maintenance.id'] ? `${params['winehua.maintenance.id']}` : 'auto';
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(id)) return;
@@ -144,6 +149,37 @@ export class Pr78RuntimeMaintenance {
     return names.length;
   }
   private async perform(id: string, action: string): Promise<MaintenanceResult> {
+    if (action === 'inventory') {
+      this.require(this.context !== null, 'No foreground caller context');
+      if (!this.context) throw new Error('Missing context');
+      const store = preferences.getPreferencesSync(this.context, { name: 'wine_settings' });
+      let home = store.getSync('z_home', '') as string;
+      if (!home) {
+        const view = new picker.DocumentViewPicker(this.context);
+        const selected = await view.save({ pickerMode: picker.DocumentPickerMode.DOWNLOAD });
+        this.require(selected.length > 0, 'App download directory is unavailable');
+        home = new fileUri.FileUri(selected[0]).path;
+      }
+      const inventory: GameInventory = { home, files: [], errors: [] };
+      const scan = (folder: string, depth: number): void => {
+        if (depth > 6 || inventory.files.length >= 400) return;
+        try {
+          for (const name of fs.listFileSync(folder)) {
+            if (inventory.files.length >= 400) break;
+            if (name.startsWith('.') || name.includes('/') || name.includes('\\')) continue;
+            const path = `${folder}/${name}`;
+            const stat = fs.lstatSync(path);
+            if (stat.isSymbolicLink()) continue;
+            if (stat.isDirectory()) scan(path, depth+1);
+            else if (stat.isFile() && /\.(exe|lnk|zip|7z)$/i.test(name))
+              inventory.files.push({ path, size: stat.size });
+          }
+        } catch (error) { inventory.errors.push(`${folder}: ${error}`); }
+      };
+      scan(home.replace(/\/$/, ''), 0);
+      this.write(`${WORK}/game-inventory.json`, JSON.stringify(inventory));
+      return this.result(id, action, 'PASS', 'Existing app download files inventoried; contents and saves untouched', inventory.files.length);
+    }
     if (action === 'inspect' || action === 'prepare') {
       if (action === 'prepare' && !this.exists(`${FILES}/.pr78-runtime-stage`)) fs.mkdirSync(`${FILES}/.pr78-runtime-stage`);
       const result = this.result(id, action, 'PASS', 'Maintenance-only application; engine is not started');
