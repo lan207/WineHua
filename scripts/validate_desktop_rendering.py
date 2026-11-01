@@ -51,6 +51,26 @@ def verify_native_libraries(package):
     return sorted(expected)
 
 
+def verify_dxvk_runtime(runtime):
+    manifest = json.loads(runtime.read('dxvk/manifest.json'))
+    profiles = {'legacy': ('d3d9.dll', 'd3d10.dll', 'd3d10_1.dll', 'd3d10core.dll', 'd3d11.dll', 'dxgi.dll'),
+                'modern-2.6': ('d3d11.dll', 'dxgi.dll')}
+    names = set(runtime.namelist())
+    verified = {}
+    for profile, libraries in profiles.items():
+        for arch in ('x64', 'x86'):
+            recorded = manifest['runtimes'][profile][arch]
+            for library in libraries:
+                member = f'dxvk/{profile}/{arch}/{library}'
+                assert member in names, f'Runtime DLL missing: {member}'
+                data = runtime.read(member)
+                assert data, f'Empty runtime DLL: {member}'
+                actual = hashlib.sha256(data).hexdigest()
+                assert recorded.get(library) == actual, f'Runtime DLL hash mismatch: {member}'
+                verified[member] = actual
+    return verified
+
+
 def verify_hap(path):
     with zipfile.ZipFile(path) as package:
         assert package.testzip() is None, 'HAP CRC failure'
@@ -118,6 +138,7 @@ def main():
     try:
         run('smoke-payload', [sys.executable, 'scripts/test_smoke_payload.py'])
         run('hap-native-libraries', [sys.executable, 'scripts/test_hap_native_libraries.py'])
+        run('hap-dxvk-runtime', [sys.executable, 'scripts/test_hap_dxvk_runtime.py'])
         run('renderer', [sys.executable, '-m', 'unittest', 'discover', '-s', 'scripts',
                          '-p', 'test_renderer_*.py'])
         run('initial-configure', [sys.executable, 'scripts/test_desktop_initial_configure.py'])
