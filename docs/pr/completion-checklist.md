@@ -6,12 +6,27 @@
 
 | 门槛 | 状态 | 完成条件 |
 |---|---|---|
-| 分支同步 | 进行中 | 最新 `master` 为 `a001e6d`；原基线后新增 1038 个提交，已建立独立集成工作树处理冲突 |
-| 变更分层 | 待办 | Wine/native/构建修复进入 `master`；应用库和产品界面进入 `main-ui` |
-| 主机回归 | 旧基线候选通过 | Linux 27 个编译/运行阶段（含 ASan/UBSan），Windows 8 个 JS 组及包完整性回归通过；最新主线集成版须重跑 |
-| 完整构建 | 待办 | 干净目录完成 arm64 HAP、Native/Wine/Mesa/VirGL、core、wine-vulkan、DXVK、D3D12 |
-| 设备验收 | 单设备套件通过 | core 4/4、wine-vulkan 4/4、dxvk 3/3、d3d12 3/3；多设备、完整 IME 和真实游戏长跑仍待补齐 |
-| PR 状态 | 待办 | 补齐 review/CI 后再把 Draft 改为 Ready for review |
+| 分支同步 | 集成候选已同步 | `integration/pr78-upstream` 已合入最新 `master` / `a001e6d` 并解决冲突；PR #78 头仍待候选完整验收后替换 |
+| 变更分层 | 已拆分候选 | 技术分支已移除独立游戏库产品文件；`integration/pr78-main-ui` 通过 merge 继承公共修复，产品配套 [PR #79](https://github.com/winehua/WineHua/pull/79) 为 Draft |
+| 主机回归 | 分层通过 | 技术版 7 组 JS、9 个 renderer 用例及新增 EGL/loader/特性/覆盖/打包回归通过；产品版 9 组 JS 通过；原 Linux 27 阶段属于旧基线证据 |
+| 完整构建 | HAP/原生依赖通过，Guest 重建中 | ARM64 X11/wlroots/Xwayland/Wayland/VirGL 独立编译、两分支 Native/ArkTS HAP 通过；Wine/guest Mesa 完整重建及后续重新验收待完成 |
+| 设备验收 | 集成技术版主套件通过 | 同一手机同一技术 HAP 下 core 4/4、wine-vulkan 4/4、dxvk 3/3、d3d12 3/3；专用 D3D9 2/4，产品交互、完整 IME 和真实游戏长跑待验；用户确认只有当前手机 |
+| PR 状态 | Draft | #78 仍为旧基线 Draft 且与 master 冲突；#79 为产品候选 Draft。补齐重建、设备验收与 CI/review 后再改 Ready |
+
+## 集成技术候选实机证据
+
+当前设备包为 `build/integration-hap-v7-technical/desktop-candidate-signed.hap`，HAP SHA-256 为 `dfeef6ad69321010abeed8b77edd1bb73c0f217b83a3d8a1bfe478e5bff4e223`；运行时载荷 SHA-256 为 `0aa1eac9b72376ea5094441b5d5b27067b1266dcd275c442d5148e0960404e0c`。该包已移除独立游戏库，保留共享输入/图形修复。以下均显式使用 Wayland 路线和 `prefix=reuse`，不能替代 X11 默认路线或全新运行时验收。
+
+| 套件 | 主机判定 | 集成工作树中的归档 |
+|---|---|---|
+| core（当前源码编译的两架构探针） | PASS 4/4 | `build/automation-logs/core-technical-core-dfeef6/` |
+| wine-vulkan | PASS 4/4 | `build/automation-logs/wine-vulkan-technical-wine-vulkan-dfeef6/` |
+| dxvk | PASS 3/3 | `build/automation-logs/dxvk-technical-dxvk-dfeef6/` |
+| d3d12 | PASS 3/3；1000 帧、gears/triangle 各 600 帧 | `build/automation-logs/d3d12-technical-d3d12-dfeef6/` |
+
+独立 D3D9 套件当前为 2/4：x64 D3D9 和同档位 D3D11 完成呈现及截图，x86 两项仍因 DLL 加载失败而退出。Wine overlay 搜索补丁已通过主机 WoW64/档位隔离测试，待新 Wine 构建后实机确认。该套件现要求专用档位下两架构、两 API 均成功呈现；普通 DXVK 的完整 D3D11 功能矩阵判据保留。
+
+系统崩溃栈已确认并修复 EGL 探针错误载荷导致的手机首启 SIGSEGV，设备标记为 `pass:payload=OHNativeWindowBuffer`。运行库迁移均先核验旧文件、备份、停引擎、逐文件回读并最后更新标记；未卸载、重置 prefix 或清除游戏/存档。
 
 ## 本地验证
 
@@ -27,7 +42,7 @@
 
 OpenGL 随后失败于 `no compositor display sequence observed`，原因是 smoke Want 将管理页拉回前台，而手机普通会话有意不自动打开桌面。最终修复将前台准备放入 SmokeRunner 的共同执行路径：冷启动、二次 Want、开发面板均传入当前调用方的 UIAbilityContext，等待 root、请求 DesktopAbility，并确认 surface 就绪后再启动测试。普通无 smoke 请求的启动不触发前台切换。`prefix=reuse` 在 runtime 升级待处理时会失败并保留环境，只有显式 clean 请求可走测试重置。
 
-### 当前权威归档
+### 旧基线候选归档
 
 | 套件 | 主机判定 | 本地目录（相对候选工作树） |
 |---|---|---|
