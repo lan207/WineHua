@@ -142,6 +142,7 @@ def main():
         run('egl-import-probe', [sys.executable, 'scripts/test_egl_import_probe.py'])
         run('dxvk-d3d9-features', [sys.executable, 'scripts/test_dxvk_d3d9_features.py'])
         run('wine-dxvk-overlay', [sys.executable, 'scripts/test_wine_dxvk_overlay.py'])
+        run('d3d9-profile-coverage', [sys.executable, 'scripts/test_d3d9_profile_coverage.py'])
         run('renderer', [sys.executable, '-m', 'unittest', 'discover', '-s', 'scripts',
                          '-p', 'test_renderer_*.py'])
         run('initial-configure', [sys.executable, 'scripts/test_desktop_initial_configure.py'])

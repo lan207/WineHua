@@ -2,7 +2,7 @@
   "name": "dxvk-d3d9",
   "title": "DXVK Legacy D3D9 → Vulkan",
   "checks": [
-    "coverage"
+    "d3d9-profile-coverage"
   ],
   "tests": [
     {
