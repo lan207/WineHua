@@ -251,8 +251,11 @@ if [ ! -d "$GST_LIBDIR/gstreamer-1.0" ] || \
     build="$BUILD_DIR/gst_good_build"
     rm -rf "$build"
     # zlib 来自 OHOS sysroot; vpx 插件已由 libvpx 提供。禁用外部音频/图像依赖。
+    # The OHOS runtime build cannot execute gst-check binaries on the Linux
+    # build host. Match the base/bad/ugly cross builds by disabling test targets.
     meson setup "$build" "$GOOD_SRC" --cross-file "$(gen_cross_file)" \
         --prefix="$GST_PREFIX" -Dlibdir=lib/x86_64-linux-ohos --wrap-mode=nofallback \
+        -Dtests=disabled \
         -Dc_args="--target=$TARGET --sysroot=$SYSROOT -I$SYSROOT_EXT_INC -D__MUSL__" \
         -Dcairo=disabled -Ddv=disabled -Dflac=disabled -Djack=disabled \
         -Djpeg=disabled -Dlame=disabled -Dlibcaca=disabled -Dmpg123=disabled \
