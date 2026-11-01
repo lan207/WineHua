@@ -55,8 +55,12 @@ ninja -C "$WL_BUILD/x86_64"
 
 # 安装 .so (文件名 = SONAME; 版本尾缀随 tag 变, glob 取实际产物, 取不到即失败)
 install_soname() {  # $1=产物 glob  $2=目标 SONAME 名
-    local src
-    src=$(compgen -G "$1" | head -1 || true)
+    local src="" candidate
+    # Meson object directories also match *.so.0.* (for example .so.0.26.0.p).
+    # Select a library file rather than relying on glob enumeration order.
+    while IFS= read -r candidate; do
+        if [ -f "$candidate" ]; then src="$candidate"; break; fi
+    done < <(compgen -G "$1" || true)
     [ -n "$src" ] || err "未找到产物: $1"
     cp "$src" "$SYSROOT_EXT_LIB/$2"
     log "installed $2 ← $(basename "$src")"
