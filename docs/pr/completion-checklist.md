@@ -37,6 +37,7 @@ OpenGL 随后失败于 `no compositor display sequence observed`，原因是 smo
 | dxvk | PASS 3/3（含 cube 截图） | `build/automation-logs/dxvk-dxvk-pr78-6bf3abe/` |
 | d3d12 | PASS 3/3；1000 帧 + gears/triangle 各 600 帧 | `build/automation-logs/d3d12-d3d12-pr78-6bf3abe/` |
 | DXVK 专用 D3D9 档位 | FAIL 0/4；载荷缺少 x64/x86 DXVK `d3d9.dll` | `build/automation-logs/dxvk-d3d9-dxvk-d3d9-explicit/` |
+| DXVK 专用 D3D9 档位（重建 DLL 后） | FAIL 1/4；x64 D3D11 通过，x64 D3D9 建设备失败，x86 DLL 加载失败 | `build/automation-logs/dxvk-d3d9-dxvk-d3d9-rebuilt-138733/` |
 
 后三套件对应 `6bf3abe` 候选；第一次完整 core 通过时已包含同样的共同前台逻辑，但尚未加入 reuse 升级保护。HAP 的 Native/ArkTS 是本轮构建；Wine/Mesa/VirGL 和最初 smoke EXE 复用已有产物。这些不是完整运行时从零重建证据。Linux 另已重新编译两架构 DNS probe，图形探针仍来自已有 Wine PE 构建，构建来源记录在单独 core payload 的 `build-provenance.json`。
 
@@ -46,4 +47,4 @@ OpenGL 随后失败于 `no compositor display sequence observed`，原因是 smo
 
 本轮公开证据边界与哈希见 [November 1 validation follow-up](../debugging/pr78-validation-20261101.md)。
 
-D3D9 后端契约复核发现，自动化曾漏接 native 已支持的 `dxvk_legacy_d3d9`。现已恢复专用档位并放行该精确值；保留对模糊 `dxvk` 的拒绝。专用档位暴露的缺失 DLL 不能用普通 `dxvk_legacy` 替代来规避。Linux 正在独立、从空构建目录重建两架构 DXVK Legacy；新增包检查会拒绝缺失的 D3D9/D3D10 链及不匹配的 manifest hash，当前旧载荷尚未满足这个新增的完整性门槛。
+D3D9 后端契约复核发现，自动化曾漏接 native 已支持的 `dxvk_legacy_d3d9`。现已恢复专用档位并放行该精确值；保留对模糊 `dxvk` 的拒绝。两架构 DXVK Legacy 已在独立 Linux 目录重建，新包完整性检查通过；设备上的 13 个 DXVK 运行库/清单文件已备份、替换并回读核验，未重置 prefix。新载荷 SHA-256 为 `138733418e6deb7b525606805a1fe0e9526a53567ec377e92b0904eebd899b3e`。专用套件仍失败，不能把 DLL 打包修复等同于 D3D9 可用，也不能用普通 `dxvk_legacy` 替代专用档位来规避。
