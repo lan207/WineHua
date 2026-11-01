@@ -71,6 +71,24 @@ class PayloadValidationTests(unittest.TestCase):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             smoke.reject_bad_backend('ambiguous fixture', {'d3d': 'dxvk'})
 
+    def test_explicit_host_route_is_used_for_expected_presentation(self):
+        parser = smoke.build_parser()
+        default = smoke.build_job(parser.parse_args(['run', '--suite', 'core']))
+        wayland = smoke.build_job(parser.parse_args([
+            'run', '--suite', 'core', '--display-route', 'wayland']))
+        self.assertEqual(default['params']['env']['WINEHUA_SMOKE_EXPECT_ROUTE'], 'x11')
+        self.assertEqual(wayland['params']['env']['WINEHUA_SMOKE_EXPECT_ROUTE'], 'wayland')
+
+    def test_explicit_host_route_does_not_erase_job_declaration(self):
+        job = self.root/'declared.json'
+        job.write_text(json.dumps({'suite': 'core', 'params': {
+            'env': {'WINEHUA_DISPLAY_ROUTE': 'x11'}}}))
+        args = smoke.build_parser().parse_args([
+            'run', '--job', str(job), '--display-route', 'wayland'])
+        env = smoke.build_job(args)['params']['env']
+        self.assertEqual(env['WINEHUA_SMOKE_EXPECT_ROUTE'], 'wayland')
+        self.assertEqual(env['WINEHUA_SMOKE_DECLARED_ROUTE'], 'x11')
+
 
 if __name__ == '__main__':
     unittest.main()

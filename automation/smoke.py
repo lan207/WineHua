@@ -845,8 +845,9 @@ def build_job(args: argparse.Namespace) -> dict:
     # 声明 = 设备按产品缺省跑 —— 期望值必须与产品缺省一致, 否则裸跑必假 FAIL
     # (core opengl 两项 2026-10-10 04:36 实测: 期望 wayland/实际 x11)。两处
     # 分属 smoke 与 app, 无单一来源, 改产品缺省必须同步这里 (grep 本注释)。
-    route_env["WINEHUA_SMOKE_EXPECT_ROUTE"] = route_env.get(
-        "WINEHUA_DISPLAY_ROUTE") or "x11"
+    route_env["WINEHUA_SMOKE_EXPECT_ROUTE"] = (
+        getattr(args, "display_route", None)
+        or route_env.get("WINEHUA_DISPLAY_ROUTE") or "x11")
     if declared_route:
         route_env["WINEHUA_SMOKE_DECLARED_ROUTE"] = declared_route
     # M3a 一致性检查: host 裁决 (app 冷启参数 winehua.displayRoute=x11) 会经
