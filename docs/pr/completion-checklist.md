@@ -18,6 +18,11 @@
 - TypeScript/ArkTS：桌面输出、指针、游戏库、触控、鼠标模式和虚拟按键回归通过。
 - C++ host：20 个纯逻辑用例通过；事件总线测试已对齐当前 21 个事件，z-order 测试改为字符串内容比较。
 - 字体策略：`wine.inf` 以 UTF-8（含 BOM 兼容）读取，中文字体别名回归通过。
-- 未执行设备安装、启动、清理或数据操作。
+- HAP 构建：干净 `hvigor clean` 后 `assembleHap` 成功；候选包 CRC、runtime manifest/hash 和 native markers 校验通过。
+- 设备启动：首次候选包因 native 依赖未被 HAP 收集而触发 `libentry.so` 加载失败；改用实体 `entry/libs/arm64-v8a` 并干净重打包后，28 个 native 库进入 HAP，设备启动保持运行。
+
+## 设备 smoke 状态
+
+候选 HAP 已安装到设备并保持常亮。`core` smoke 已推送 payload，但本机 MinGW GCC 16.2 在重新编译 `winehua_dns_probe.c` 时触发编译器内部错误，因此本轮没有把旧 payload 冒充为本候选的完整新编译结果；一次手工复用历史 payload 的运行因自动化 App 的二次启动/轮询链未产生 summary 而中止，归档保留在 `build/automation-logs/core-r20261101-130000/`。
 
 当前候选仍需要 Linux 构建机完成完整构建和 ASan/UBSan 回归，不能仅凭本机 host 结果标记为完工。
