@@ -59,7 +59,6 @@ static unsigned long winehua_gl_releases, winehua_gl_drops, winehua_gl_commits;
 static LONG winehua_gl_in_flight, winehua_gl_readbacks = 1, winehua_gl_zero_copy_presents = 1;
 static struct { void *wl_display, *wl_event_queue; } process_wayland;
 static struct { void *display; } platform;
-static const void *winehua_present_surface_page;
 
 static BOOL direct_enabled, diagnostics, zero_copy, fail_rgba, fail_shm;
 static int width = 3, height = 5, pb_width = 3, pb_height = 5;
@@ -78,9 +77,10 @@ static uint64_t winehua_gl_stage_begin(enum winehua_gl_stage s, HWND h, LONG n) 
 static void winehua_gl_stage_end(enum winehua_gl_stage s, uint64_t n) { (void)s; (void)n; }
 static void winehua_gl_diag_idle(void) {}
 static uint32_t winehua_prepare_present_surface(struct wayland_client_surface *c) { (void)c; return 7; }
-static BOOL winehua_surface_zero_copy_ready(uint32_t id) { (void)id; return zero_copy; }
-static void winehua_begin_present_surface(uint32_t id) { (void)id; }
-static void winehua_finish_present_surface(void) {}
+static BOOL winehua_present_surface_ready(uint32_t id) { (void)id; return zero_copy; }
+static void winehua_present_surface_begin(uint32_t id) { (void)id; }
+static void winehua_present_surface_end(void) {}
+static BOOL winehua_present_surface_mapped(void) { return FALSE; }
 static void NtUserGetClientRect(HWND h, RECT *r, int dpi) { (void)h; (void)dpi; r->right = width; r->bottom = height; }
 static int NtUserGetDpiForWindow(HWND h) { (void)h; return 96; }
 static void *egl_config_for_format(int f) { (void)f; return NULL; }
