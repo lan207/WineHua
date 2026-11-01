@@ -9,7 +9,8 @@ for compat_patch in "$SCRIPT_DIR/patches/wine-instanced-arrays-alias.patch" \
                     "$SCRIPT_DIR/patches/wine-ddraw-clip-surface-bounds.patch" \
                     "$SCRIPT_DIR/patches/wine-legacy-bitmap-text.patch" \
                     "$SCRIPT_DIR/patches/wine-direct-shm-readback.patch" \
-                    "$SCRIPT_DIR/patches/wine-ime-key-scancode.patch"; do
+                    "$SCRIPT_DIR/patches/wine-ime-key-scancode.patch" \
+                    "$SCRIPT_DIR/patches/wine-dxvk-legacy-overlay.patch"; do
     if ! patch -d "$WINE_SRC" -p1 --reverse --dry-run --batch --force --silent < "$compat_patch" >/dev/null 2>&1; then
         patch -d "$WINE_SRC" -p1 --forward --batch < "$compat_patch"
     fi
