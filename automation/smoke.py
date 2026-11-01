@@ -204,7 +204,7 @@ def reject_unreachable_env(context: str, env: dict) -> None:
 
 # native 契约（wine_exe.cpp/wine_env.cpp）只认完整档位值，其余值被静默丢弃、
 # 引擎回落到无档位 env —— 表现为"该档 DLL 在位却不可用"。在这里拦死。
-D3D_BACKEND_VALUES = {"wined3d", "dxvk_legacy", "dxvk_modern_2_6", "vkd3d_limited_500k"}
+D3D_BACKEND_VALUES = {"wined3d", "dxvk_legacy", "dxvk_legacy_d3d9", "dxvk_modern_2_6", "vkd3d_limited_500k"}
 DXVK_BACKEND_VALUES = {"dxvk_legacy", "dxvk_modern_2_6"}
 
 
@@ -701,6 +701,30 @@ def ensure_payload(args) -> Path:
     payload = Path(args.payload).resolve()
     if not (payload / "suites.json").is_file():
         die(f"payload not built: {payload} (run: smoke.py build)")
+    # Validate before starting the app or replacing anything on the device.
+    # A stale timestamp check alone accepted malformed suites JSON, leaving
+    # SmokeRunner unable to report a result after the payload was pushed.
+    try:
+        suites_doc = json.loads((payload / 'suites.json').read_text(encoding='utf-8'))
+        manifest = json.loads((payload / 'manifest.json').read_text(encoding='utf-8'))
+        version = manifest.get('suiteVersion')
+        if not version or suites_doc.get('suiteVersion') != version:
+            raise ValueError('suites/manifest version mismatch')
+        files = manifest.get('files')
+        if not isinstance(files, dict) or not files:
+            raise ValueError('payload manifest has no files')
+        for relative, expected in files.items():
+            # Existing Windows manifests contain backslashes; preserve them
+            # as input while enforcing that every listed file stays in root.
+            name = relative.replace(chr(92), '/')
+            if name.startswith('/') or ':' in name or '..' in name.split('/'):
+                raise ValueError(f'invalid payload path: {relative}')
+            path = (payload / name).resolve()
+            path.relative_to(payload)
+            if sha256(path) != expected:
+                raise ValueError(f'payload hash mismatch: {relative}')
+    except (OSError, ValueError, AttributeError, TypeError) as exc:
+        die(f'payload invalid: {exc} (run: smoke.py build)')
     # 定义比载荷新 = 改了 smoke/tests 或 smoke/suites 却没重建：push 上去的
     # 仍是旧定义（实测踩坑：改套件档位后设备端 suites.json 还是旧 backend）
     definitions = list(TESTS_DIR.glob("*/test.json")) + list(SUITES_DIR.glob("*.json"))
@@ -821,8 +845,9 @@ def build_job(args: argparse.Namespace) -> dict:
     # 声明 = 设备按产品缺省跑 —— 期望值必须与产品缺省一致, 否则裸跑必假 FAIL
     # (core opengl 两项 2026-10-10 04:36 实测: 期望 wayland/实际 x11)。两处
     # 分属 smoke 与 app, 无单一来源, 改产品缺省必须同步这里 (grep 本注释)。
-    route_env["WINEHUA_SMOKE_EXPECT_ROUTE"] = route_env.get(
-        "WINEHUA_DISPLAY_ROUTE") or "x11"
+    route_env["WINEHUA_SMOKE_EXPECT_ROUTE"] = (
+        getattr(args, "display_route", None)
+        or route_env.get("WINEHUA_DISPLAY_ROUTE") or "x11")
     if declared_route:
         route_env["WINEHUA_SMOKE_DECLARED_ROUTE"] = declared_route
     # M3a 一致性检查: host 裁决 (app 冷启参数 winehua.displayRoute=x11) 会经
@@ -956,6 +981,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         start += " " + format_extra_ps(args.extra_ps)
     if args.long_seconds:
         start += f" --ps winehua.long_seconds {args.long_seconds}"
+    if args.d3d:
+        start += f" --ps winehua.d3d_backend {args.d3d}"
+    if args.dxvk:
+        start += f" --ps winehua.dxvk_backend {args.dxvk}"
     log(f"run {args.suite or 'job'} (runId={run_id}, prefix={args.prefix}, "
         f"job={json.dumps(job, ensure_ascii=False)})")
     code, out = hdc_shell(hdc, device, start)
@@ -1058,6 +1087,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         (archive / "host-summary.json").write_text(
             json.dumps(host, indent=2, ensure_ascii=False) + "\n")
     finally:
+        # Native child diagnostics live outside files/. Capture them before
+        # stopping the app, which closes the debug sandbox access channel.
+        try:
+            subprocess.run([hdc, "-t", device, "file", "recv", "-b", BUNDLE,
+                            "/data/storage/el2/base/temp", str(archive / "native-logs")],
+                           capture_output=True, text=True, errors="replace", timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log(f"收集原生日志失败: {exc}")
         # 无论成败都停掉测试 App：常驻会让下次启动走 onNewWant 保留自动化
         # 窗口/页面状态，而不是重建正常形态
         hdc_shell(hdc, device, f"aa force-stop {BUNDLE}")
@@ -1155,7 +1192,7 @@ def recent_log(hdc: str, device: str, seconds: int = 4) -> str:
         return result.stdout or ""
     except subprocess.TimeoutExpired as error:
         if error.stdout:
-            return error.stdout.decode("utf-8", errors="replace")
+            return error.stdout if isinstance(error.stdout, str) else error.stdout.decode("utf-8", errors="replace")
         return ""
 
 
