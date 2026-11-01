@@ -113,6 +113,8 @@ def main():
     report = {'host_platform': sys.platform, 'steps': results,
               'device_regression': 'not performed', 'performance_ab': 'not performed'}
     try:
+        run('smoke-payload', [sys.executable, 'scripts/test_smoke_payload.py'])
+        run('hap-native-libraries', [sys.executable, 'scripts/test_hap_native_libraries.py'])
         run('renderer', [sys.executable, '-m', 'unittest', 'discover', '-s', 'scripts',
                          '-p', 'test_renderer_*.py'])
         run('initial-configure', [sys.executable, 'scripts/test_desktop_initial_configure.py'])
