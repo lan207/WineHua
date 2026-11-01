@@ -66,7 +66,9 @@ build_libffi() {
     mkdir -p "$build"
     cd "$build"
 
-    "$src/autogen.sh" 2>/dev/null || true
+    if [ ! -f "$src/configure" ]; then
+        (cd "$src" && ./autogen.sh)
+    fi
     if [ "$HOST_OS" = "Darwin" ]; then
         CC="$OHOS_SDK/native/llvm/bin/clang" CCAS="$OHOS_SDK/native/llvm/bin/clang" \
         AR="$OHOS_SDK/native/llvm/bin/llvm-ar" \
@@ -113,7 +115,8 @@ remove_native_egl_linker_stubs() {
 }
 
 build_native_freetype() {
-    if [ -f "$NATIVE_LIBS/libfreetype.so.6" ] && [ -f "$NATIVE_LIBS/libfreetype.so" ]; then
+    if [ -f "$NATIVE_LIBS/libfreetype.so.6" ] && [ -f "$NATIVE_LIBS/libfreetype.so" ] \
+       && [ -f "$HOST_EXT_PC/freetype2.pc" ]; then
         log "freetype ($NATIVE_ARCH) 已就绪，跳过"
         return 0
     fi
@@ -133,6 +136,7 @@ build_native_freetype() {
         -DCMAKE_SHARED_LINKER_FLAGS="--target=$NATIVE_TARGET --sysroot=$SYSROOT -fuse-ld=lld" \
         -DCMAKE_EXE_LINKER_FLAGS="--target=$NATIVE_TARGET --sysroot=$SYSROOT -fuse-ld=lld" \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_INSTALL_PREFIX="$build/install" -DCMAKE_INSTALL_LIBDIR=lib \
         -DFT_DISABLE_ZLIB=ON \
         -DFT_DISABLE_BROTLI=ON \
         -DFT_DISABLE_HARFBUZZ=ON \
@@ -140,6 +144,9 @@ build_native_freetype() {
         -DFT_DISABLE_BZIP2=ON \
         -DBUILD_SHARED_LIBS=ON
     ninja -C "$build"
+    cmake --install "$build"
+    mkdir -p "$HOST_EXT_PC"
+    cp "$build/install/lib/pkgconfig/freetype2.pc" "$HOST_EXT_PC/"
 
     copy_soname_with_linker_alias "$build/libfreetype.so.6.20.2" "libfreetype.so.6" "libfreetype.so"
     log "freetype ($NATIVE_ARCH) → $NATIVE_LIBS"
@@ -170,7 +177,7 @@ build_native_libxml2() {
     cmake --build "$build"
     cmake --install "$build"
 
-    copy_soname_with_linker_alias "$(compgen -G "$build/libxml2.so.2.*" | head -1)" "libxml2.so.2" "libxml2.so"
+    copy_soname_with_linker_alias "$build/libxml2.so.2" "libxml2.so.2" "libxml2.so"
     log "libxml2 ($NATIVE_ARCH) → $NATIVE_LIBS"
 }
 
@@ -284,6 +291,13 @@ emit_wayland_host_pc() {
     # 毁灭性重建 (rm -rf build/) 里 build_native 与 display 链是并行分支,
     # 本函数可能先跑到 —— 目录自建, 不依赖别人的副作用 (T7 演练实测断链)。
     mkdir -p "$HOST_EXT_PC"
+
+    # wayland's Requires.private is resolved even for dynamic consumers.
+    # Export the host libffi metadata beside the host Wayland metadata, so
+    # wlroots never depends on a prior guest sysroot build to find it.
+    local ffi_pc="$NATIVE_BUILD/libffi/install/lib/pkgconfig/libffi.pc"
+    [ -f "$ffi_pc" ] || { err "host libffi 元数据缺失: $ffi_pc"; return 1; }
+    cp "$ffi_pc" "$HOST_EXT_PC/libffi.pc"
 
     # 版本守卫: pc 已存在且 Version 行一致才跳过 (直接读文件, 不走 pkg-config——
     # 顶层 PKG_CONFIG_LIBDIR 里 guest 侧同名 pc 同版本, 会混淆判读)
@@ -522,6 +536,7 @@ build_libffi
 build_native_freetype
 build_native_libxml2
 build_native_xkbcommon
+bash "$SCRIPT_DIR/build_wayland_scanner.sh"
 build_wayland
 emit_wayland_host_pc
 build_protocols

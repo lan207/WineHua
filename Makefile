@@ -276,6 +276,7 @@ $(STAMPS)/deps: $(SCRIPTS)/build_deps.sh $(SCRIPTS)/build_gnutls.sh $(SCRIPTS)/b
 	    ! [ "$(SCRIPTS)/build_libffi.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_freetype.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_wayland.sh" -nt $@ ] && \
+	    ! [ "$(SCRIPTS)/build_wayland_scanner.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_xkbcommon.sh" -nt $@ ] && \
 	    ! [ "$(SCRIPTS)/build_xkbconfig.sh" -nt $@ ] && \
 	    ! [ "$(ROOT)/smoke/guest_vulkan_smoke.c" -nt $@ ] && \
@@ -386,7 +387,7 @@ define native_rule
 .PHONY: native-$(1)
 native-$(1): $$(STAMPS)/$(1)/native
 
-$$(STAMPS)/$(1)/native: $(SCRIPTS)/build_native.sh $(SCRIPTS)/env.sh FORCE | $$(STAMPS)/$(1)
+$$(STAMPS)/$(1)/native: $(SCRIPTS)/build_native.sh $(SCRIPTS)/build_wayland_scanner.sh $(SCRIPTS)/env.sh FORCE | $$(STAMPS)/$(1)
 # virgl (native) 与 libdrm (display-libs) 的关系见 build_native.sh virgl 段
 # 注释: virgl 的 meson 视野收窄到 epoxy, 豁免分支确定性生效, 与构建顺序无关
 # (2026-10-04 毁灭性重建实证并修复)。
@@ -399,6 +400,7 @@ $$(STAMPS)/$(1)/native: $(SCRIPTS)/build_native.sh $(SCRIPTS)/env.sh FORCE | $$(
 		    [ -f "$$$$libs_dir/libffi.so.8" ] && \
 		    [ -f "$$$$libs_dir/libwinehua_vtest_server.so" ] && \
 	    ! [ "$(SCRIPTS)/build_native.sh" -nt $$@ ] && \
+	    ! [ "$(SCRIPTS)/build_wayland_scanner.sh" -nt $$@ ] && \
 	    ! find $(ROOT)/thirdparty/wayland \
 	           $(ROOT)/thirdparty/libffi \
 	           $(ROOT)/thirdparty/libepoxy \
@@ -450,7 +452,7 @@ define display_route_rule
 .PHONY: display-route-$(1)
 display-route-$(1): $$(STAMPS)/$(1)/display-route
 
-$$(STAMPS)/$(1)/display-route: $$(STAMPS)/$(1)/display-libs $(SCRIPTS)/build_xcb_stack.sh $(SCRIPTS)/build_x11_client.sh $(SCRIPTS)/build_native.sh $(SCRIPTS)/build_wlroots.sh $(SCRIPTS)/build_xwayland.sh $(SCRIPTS)/env.sh | $$(STAMPS)/$(1)
+$$(STAMPS)/$(1)/display-route: $$(STAMPS)/$(1)/display-libs $(SCRIPTS)/build_xcb_stack.sh $(SCRIPTS)/build_x11_client.sh $(SCRIPTS)/build_native.sh $(SCRIPTS)/build_wayland_scanner.sh $(SCRIPTS)/build_wlroots.sh $(SCRIPTS)/build_xwayland.sh $(SCRIPTS)/env.sh | $$(STAMPS)/$(1)
 	@NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_xcb_stack.sh && \
 	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_x11_client.sh && \
 	NATIVE_ARCH=$(1) bash $(SCRIPTS)/build_native.sh && \
