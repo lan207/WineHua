@@ -51,6 +51,26 @@ def verify_native_libraries(package):
     return sorted(expected)
 
 
+def verify_dxvk_runtime(runtime):
+    manifest = json.loads(runtime.read('dxvk/manifest.json'))
+    profiles = {'legacy': ('d3d9.dll', 'd3d10.dll', 'd3d10_1.dll', 'd3d10core.dll', 'd3d11.dll', 'dxgi.dll'),
+                'modern-2.6': ('d3d11.dll', 'dxgi.dll')}
+    names = set(runtime.namelist())
+    verified = {}
+    for profile, libraries in profiles.items():
+        for arch in ('x64', 'x86'):
+            recorded = manifest['runtimes'][profile][arch]
+            for library in libraries:
+                member = f'dxvk/{profile}/{arch}/{library}'
+                assert member in names, f'Runtime DLL missing: {member}'
+                data = runtime.read(member)
+                assert data, f'Empty runtime DLL: {member}'
+                actual = hashlib.sha256(data).hexdigest()
+                assert recorded.get(library) == actual, f'Runtime DLL hash mismatch: {member}'
+                verified[member] = actual
+    return verified
+
+
 def verify_hap(path):
     with zipfile.ZipFile(path) as package:
         assert package.testzip() is None, 'HAP CRC failure'
@@ -68,6 +88,8 @@ def verify_hap(path):
         with package.open(member('/rawfile/wine-data.zip')) as payload:
             payload_sha = digest(payload)
         assert payload_sha == manifest['payloadSha256'], 'Payload/manifest hash mismatch'
+        with package.open(member('/rawfile/wine-data.zip')) as payload, zipfile.ZipFile(payload) as runtime:
+            dxvk_runtime = verify_dxvk_runtime(runtime)
         raw = ROOT / 'entry/src/main/resources/rawfile'
         assert manifest == json.loads((raw / 'wine-runtime-manifest.json').read_text(encoding='utf-8'))
         with (raw / 'wine-data.zip').open('rb') as payload:
@@ -79,6 +101,7 @@ def verify_hap(path):
             'payload_sha256': payload_sha, 'crc': 'passed',
             'native_fix_markers': 'passed', 'payload_manifest': 'matched',
             'native_libraries': native_libraries,
+            'dxvk_runtime': dxvk_runtime,
             'device_installation': 'not performed', 'signature_verification':
             'HAP signing is checked by the build; this script checks contents only'}
 
@@ -115,6 +138,7 @@ def main():
     try:
         run('smoke-payload', [sys.executable, 'scripts/test_smoke_payload.py'])
         run('hap-native-libraries', [sys.executable, 'scripts/test_hap_native_libraries.py'])
+        run('hap-dxvk-runtime', [sys.executable, 'scripts/test_hap_dxvk_runtime.py'])
         run('renderer', [sys.executable, '-m', 'unittest', 'discover', '-s', 'scripts',
                          '-p', 'test_renderer_*.py'])
         run('initial-configure', [sys.executable, 'scripts/test_desktop_initial_configure.py'])
