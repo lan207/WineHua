@@ -15,7 +15,7 @@ LIBRARIES = ('box64.so', 'libc++_shared.so', 'libentry.so', 'libsmoke_napi.so', 
 
 
 class NativePackageTests(unittest.TestCase):
-    def verify(self, libraries, staged=None):
+    def verify(self, libraries, staged=None, compiled=None):
         data = io.BytesIO()
         with zipfile.ZipFile(data, 'w') as archive:
             for name in libraries:
@@ -23,6 +23,10 @@ class NativePackageTests(unittest.TestCase):
         data.seek(0)
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            if compiled:
+                cmake = root/'entry/src/main/cpp/CMakeLists.txt'
+                cmake.parent.mkdir(parents=True)
+                cmake.write_text('add_library(' + compiled + ' SHARED source.cpp)')
             if staged:
                 path = root / 'entry/libs/arm64-v8a' / staged
                 path.parent.mkdir(parents=True)
@@ -40,6 +44,12 @@ class NativePackageTests(unittest.TestCase):
     def test_new_staged_dependency_must_be_packaged(self):
         with self.assertRaisesRegex(AssertionError, 'libfuture.so'):
             self.verify(LIBRARIES, staged='libfuture.so')
+
+    def test_cmake_napi_module_is_required_without_a_staged_copy(self):
+        with self.assertRaisesRegex(AssertionError, 'libdisplay_route_napi.so'):
+            self.verify(LIBRARIES, compiled='display_route_napi')
+        libraries = LIBRARIES + ('libdisplay_route_napi.so',)
+        self.assertEqual(self.verify(libraries, compiled='display_route_napi'), sorted(libraries))
 
 
 if __name__ == '__main__':

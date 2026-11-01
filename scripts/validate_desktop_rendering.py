@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -40,6 +41,12 @@ def verify_native_libraries(package):
         'libwinehua_vtest_server.so',
     }
     staged = ROOT / 'entry/libs/arm64-v8a'
+    cmake = ROOT / 'entry/src/main/cpp/CMakeLists.txt'
+    if cmake.is_file():
+        # CMake-built NAPI/child modules are not necessarily copied into the
+        # staged libs tree. They are still required by ArkTS and dlopen users.
+        expected.update('lib' + name + '.so' for name in re.findall(
+            r'\badd_library\(\s*([A-Za-z0-9_]+)\s+SHARED\b', cmake.read_text(encoding='utf-8')))
     if staged.is_dir():
         expected.update(path.name for path in staged.glob('*.so*') if path.is_file())
     packaged = {name.rsplit('/', 1)[-1]: name for name in package.namelist()
