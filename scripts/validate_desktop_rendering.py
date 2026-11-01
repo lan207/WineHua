@@ -68,6 +68,8 @@ def verify_hap(path):
         with package.open(member('/rawfile/wine-data.zip')) as payload:
             payload_sha = digest(payload)
         assert payload_sha == manifest['payloadSha256'], 'Payload/manifest hash mismatch'
+        with package.open(member('/rawfile/wine-data.zip')) as payload, zipfile.ZipFile(payload) as runtime:
+            dxvk_runtime = verify_dxvk_runtime(runtime)
         raw = ROOT / 'entry/src/main/resources/rawfile'
         assert manifest == json.loads((raw / 'wine-runtime-manifest.json').read_text(encoding='utf-8'))
         with (raw / 'wine-data.zip').open('rb') as payload:
@@ -79,6 +81,7 @@ def verify_hap(path):
             'payload_sha256': payload_sha, 'crc': 'passed',
             'native_fix_markers': 'passed', 'payload_manifest': 'matched',
             'native_libraries': native_libraries,
+            'dxvk_runtime': dxvk_runtime,
             'device_installation': 'not performed', 'signature_verification':
             'HAP signing is checked by the build; this script checks contents only'}
 

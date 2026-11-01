@@ -502,6 +502,23 @@ PY
 }
 EOF
     log "  VKD3D-Proton 2.6 limited-500K (default mixed D3D12 profile) → vkd3d/limited-500k/x64 (sha256=$vkd3d64_d3d12_sha)"
+    # Record every packaged overlay, including the opt-in D3D9 DLL and the
+    # complete legacy D3D10 chain. Missing entries must fail package validation.
+    python3 - "$wine_data/dxvk" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+root = Path(sys.argv[1])
+manifest_path = root / 'manifest.json'
+manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+for profile in ('legacy', 'modern-2.6'):
+    for arch in ('x64', 'x86'):
+        manifest['runtimes'][profile][arch] = {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted((root / profile / arch).glob('*.dll'))}
+manifest_path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+PY
 
     # fonts
     cp "$WINE_SRC/fonts/"*.ttf "$wine_data/share/wine/fonts/"
