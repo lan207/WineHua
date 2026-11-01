@@ -21,7 +21,8 @@ class FontPolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='winehua-font-policy-') as directory:
             path = Path(directory)
             (path / 'wine.inf').write_text(fixture, encoding='utf-8')
-            subprocess.run([sys.executable, '-', str(path)], input=generator, text=True, check=True)
+            subprocess.run([sys.executable, '-', str(path)], input=generator,
+                           text=True, encoding='utf-8', check=True)
             registry = (path / 'winehua-fonts.reg').read_text(encoding='utf-16')
             self.assertIn('"宋体"="Noto Serif CJK SC"', registry)
             self.assertIn('"黑体"="Noto Sans CJK SC"', registry)

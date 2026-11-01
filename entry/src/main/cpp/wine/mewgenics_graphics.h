@@ -4,10 +4,21 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <cctype>
 #include <cstring>
-#include <strings.h>
 
 namespace winehua {
+
+inline bool AsciiCaseEqual(const char* lhs, const char* rhs)
+{
+    if (!lhs || !rhs) return lhs == rhs;
+    while (*lhs && *rhs) {
+        const unsigned char left = static_cast<unsigned char>(*lhs++);
+        const unsigned char right = static_cast<unsigned char>(*rhs++);
+        if (std::tolower(left) != std::tolower(right)) return false;
+    }
+    return *lhs == *rhs;
+}
 
 inline bool IsMewgenicsGpuCandidate(const char* device, const char* exe,
     const char* driver, const char* override, bool qualified, bool ready)
@@ -15,7 +26,7 @@ inline bool IsMewgenicsGpuCandidate(const char* device, const char* exe,
     if (!device || strcmp(device, "phone") || !exe || !driver || strcmp(driver, "virpipe")) return false;
     const char* base = exe;
     for (const char* p = exe; *p; ++p) if (*p == '/' || *p == '\\') base = p + 1;
-    return !strcasecmp(base, "Mewgenics.exe") && qualified && ready &&
+    return AsciiCaseEqual(base, "Mewgenics.exe") && qualified && ready &&
         (!override || (!strcmp(override, "zink")));
 }
 

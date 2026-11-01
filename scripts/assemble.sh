@@ -536,7 +536,7 @@ import json
 from pathlib import Path
 import sys
 directory = Path(sys.argv[1])
-text = (directory / 'wine.inf').read_text()
+text = (directory / 'wine.inf').read_text(encoding='utf-8-sig')
 block = text.split(';; OHOS font substitutes', 1)[1].split('[MCI]', 1)[0]
 lines = ['Windows Registry Editor Version 5.00', '',
          r'[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes]']

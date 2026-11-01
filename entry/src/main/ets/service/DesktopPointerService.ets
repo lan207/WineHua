@@ -35,6 +35,6 @@ export function sendDesktopPointerEvent(target: number, action: number, x: numbe
 
 export function desktopKeyboardTarget(rootId: number): number {
   if (rootId <= 0) return 0;
-  const target = testNapi.getKeyboardTarget();
+  const target: number = testNapi.getKeyboardTarget() as number;
   return target > 0 ? target : rootId;
 }

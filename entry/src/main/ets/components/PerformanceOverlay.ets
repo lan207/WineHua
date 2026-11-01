@@ -1,5 +1,15 @@
 import testNapi from 'libentry.so';
 
+interface PerformanceSnapshot {
+  clientFps: number;
+  displayFps: number;
+  cpuPercent: number;
+  memoryMb: number;
+  gpu: string;
+  width: number;
+  height: number;
+}
+
 @Component
 export struct PerformanceOverlay {
   @State private frames: string = '客户端 FPS -- | 显示 FPS --';
@@ -25,12 +35,12 @@ export struct PerformanceOverlay {
 
   private refresh(): void {
     try {
-      const stats = testNapi.getPerformanceState();
+      const stats: PerformanceSnapshot = testNapi.getPerformanceState() as PerformanceSnapshot;
       this.frames = `客户端 ${stats.clientFps.toFixed(1)} FPS | 显示 ${stats.displayFps.toFixed(1)} FPS`;
       this.gpu = `GPU: ${stats.gpu}`;
       this.load = `CPU(宿主) ${stats.cpuPercent < 0 ? '--' : stats.cpuPercent.toFixed(0) + '%'} | RSS ${stats.memoryMb.toFixed(0)} MB`;
       this.status = `${stats.width}×${stats.height} | ${stats.clientFps > 0 ? (1000 / stats.clientFps).toFixed(1) + ' ms/帧' : '等待客户端新帧'}`;
-    } catch (_) {
+    } catch {
       this.status = '性能采样未就绪';
     }
   }

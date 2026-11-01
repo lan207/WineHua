@@ -13,6 +13,7 @@ import { DRIVE_C, WineEnvService } from './WineEnvService';
 import { WineWindowManager } from './WineWindowManager';
 
 interface ScanDirectory { absolutePath: string; relativePath: string; }
+interface WineLaunchHandle { pid: number; }
 
 export class GameLibraryService {
   private static instance: GameLibraryService | null = null;
@@ -240,7 +241,7 @@ export class GameLibraryService {
       hilog.info(0, 'GameLibrary', 'Launch exe=%{public}s cwd=%{public}s d3d=%{public}s dxvk=%{public}s cpu=%{public}s envKeys=%{public}s resolution=%{public}s',
         launchExe, launchDirectory, options.d3dBackend, options.dxvkBackend,
         profile.compatMode || 'native-default', Object.keys(environment).join(','), selectedResolution);
-      const handle = testNapi.runWineProgram(options);
+      const handle: WineLaunchHandle = testNapi.runWineProgram(options) as WineLaunchHandle;
       if (handle.pid <= 0) throw new Error('Wine 未能受理启动请求，请检查主程序及后端设置');
       profile.lastLaunchedAt = Date.now();
       try { this.saveProfile(game, profile); }
