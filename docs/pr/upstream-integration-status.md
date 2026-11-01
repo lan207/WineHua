@@ -15,7 +15,9 @@
 
 当前集成 HAP SHA-256：`5e0aeb018caa499dc31b62440b1521ab5b81777983e848d7b1e2bb06a455c568`；libentry SHA-256：`83b56f81de915e428e4c723c12a291ff2a4b428c558982dd4a8cc0613e9ad733`。运行时载荷为增量重建 DXVK 的 `138733418e6deb7b525606805a1fe0e9526a53567ec377e92b0904eebd899b3e`，Wine/guest Mesa 仍复用旧产物，因此不是完整运行时从零重建。
 
-首轮 Wayland core 原始结果 4/4 通过，但主机只判 2/4：旧图形探针缺少主线要求的 expectedRoute/presentedRoute。已从当前 Wine gitlink 源码独立编译两架构图形/DNS 探针用于重验；此独立编译不代表 Wine 引擎重建。另已修复显式 `--display-route wayland` 时主机期望仍为 X11 的编排错误，并保留 job 声明路线的独立检查。
+当前源码探针下的 Wayland core 已通过主机判定 4/4，归档 `build/automation-logs/core-integration-current-core-5e0aeb/`，payload 版本 `smoke-v2-14fad0447506`。两架构图形/DNS 探针由当前 Wine gitlink 源码独立编译；此独立编译不代表 Wine 引擎重建。普通 DXVK 在同一集成 HAP 下通过 3/3，归档 `build/automation-logs/dxvk-integration-dxvk-5e0aeb/`。显式显示路线现在同时决定主机验收期望，job 声明路线仍独立核验。
+
+D3D9 后续候选仅更改显式兼容模式的可选 Vulkan 特性请求：不向驱动请求缺失的 BC/multiViewport，默认严格行为保留，未实现的压缩格式仍由格式能力检查拒绝。两架构 DLL 已重新编译；x64 D3D9 实机用例完成 623 帧且截图通过。该次只选了一个用例，套件覆盖检查仍为 FAIL，不能当成完整 D3D9 套件通过。候选 HAP SHA-256 为 `df84c2d9b9dadd8b112c4132c4c27feed2c819c8a1dff72c3d46ceb69f45ad44`，载荷 SHA-256 为 `0aa1eac9b72376ea5094441b5d5b27067b1266dcd275c442d5148e0960404e0c`；已按相同的备份/回读步骤更新管理运行库，未重置 prefix。Wine loader 的专用 D3D9/D3D10 overlay 搜索补丁已通过主机 WoW64/档位隔离测试，仍需重建 Wine 后实机验证 x86。
 
 仍需当前探针下的完整设备回归、最新 Wine/guest Mesa 运行时构建和 X11 默认路线验收。DXVK 专用 D3D9 档位仍未通过。应用库/产品界面仍需按 master/main-ui 规范拆分。
 
