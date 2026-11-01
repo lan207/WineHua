@@ -62,6 +62,15 @@ class PayloadValidationTests(unittest.TestCase):
             self.write_manifest()
             self.rejected()
 
+    def test_d3d9_profile_is_a_distinct_supported_contract(self):
+        smoke.reject_bad_backend('d3d9 fixture', {'d3d': 'dxvk_legacy_d3d9'})
+        suite = smoke.load_suites(smoke.load_cases())['dxvk-d3d9']
+        self.assertTrue(suite['tests'])
+        for entry in suite['tests']:
+            self.assertEqual(entry.to_suite_json()['d3dBackend'], 'dxvk_legacy_d3d9')
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            smoke.reject_bad_backend('ambiguous fixture', {'d3d': 'dxvk'})
+
 
 if __name__ == '__main__':
     unittest.main()
