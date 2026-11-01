@@ -18,7 +18,11 @@ class D3d9FeatureTests(unittest.TestCase):
             source_file.parent.mkdir(parents=True)
             source_file.write_text((ROOT/'thirdparty/dxvk/src/d3d9/d3d9_device.cpp').read_text(encoding='utf-8'), encoding='utf-8')
             subprocess.run(['git','init','-q',str(work)],check=True)
-            subprocess.run(['git','-C',str(work),'apply',str(ROOT/'scripts/patches/dxvk-legacy-d3d9-features.patch')],check=True)
+            patch_file = str(ROOT/'scripts/patches/dxvk-legacy-d3d9-features.patch')
+            applied = subprocess.run(['git','-C',str(work),'apply','--reverse','--check',patch_file],
+                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode == 0
+            if not applied:
+                subprocess.run(['git','-C',str(work),'apply',patch_file],check=True)
             source = source_file.read_text(encoding='utf-8')
             start = source.index('  DxvkDeviceFeatures D3D9DeviceEx::GetDeviceFeatures(')
             end = source.index('  void D3D9DeviceEx::DetermineConstantLayouts',start)
