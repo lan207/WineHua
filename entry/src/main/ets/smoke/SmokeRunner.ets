@@ -207,7 +207,8 @@ export class SmokeRunner {
       hilog.info(DOMAIN, TAG, 'run done suite=%{public}s status=%{public}s %{public}d/%{public}d',
         request.suite, summary.status, passed, results.length);
     } catch (e) {
-      hilog.error(DOMAIN, TAG, 'run ERROR: %{public}s', JSON.stringify(e));
+      const detail: string = e instanceof Error ? `${e.message}\\n${e.stack || ''}` : JSON.stringify(e);
+      hilog.error(DOMAIN, TAG, 'run ERROR: %{public}s', detail);
       this.currentResult = 'ERROR';
       this.currentStatus = `Smoke ${request.suite} ERROR`;
     } finally {
