@@ -230,6 +230,8 @@ export struct KeyboardOverlay {
           .fontSize(13).fontColor('#ffffff').padding(9).borderRadius(7)
           .backgroundColor('#cc202936')
           .position({ x: Math.max(4, this.widthVp - 100), y: 8 })
+          .hitTestBehavior(HitTestMode.Block)
+          .onTouch((event: TouchEvent) => event.stopPropagation())
           .onClick(() => {
             this.releaseInput(); this.setEditing(false);
             this.fullKeyboard = !this.fullKeyboard; this.open = !this.fullKeyboard;

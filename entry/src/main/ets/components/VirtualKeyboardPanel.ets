@@ -186,7 +186,9 @@ export struct VirtualKeyboardPanel {
       .borderRadius(8)
       .border({ width: 1, color: '#66FFFFFF' })
       .layoutWeight($$.k.w)
+      .hitTestBehavior(HitTestMode.Block)
       .onTouch((ev: TouchEvent) => {
+        ev.stopPropagation();
         this.onKeyTouch($$.k, ev);
       })
   }
