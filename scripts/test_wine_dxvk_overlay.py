@@ -17,7 +17,11 @@ class WineDxvkOverlayTests(unittest.TestCase):
             loader.parent.mkdir(parents=True)
             loader.write_text((ROOT/'thirdparty/wine/dlls/ntdll/loader.c').read_text(encoding='utf-8'), encoding='utf-8')
             subprocess.run(['git','init','-q',str(work)], check=True)
-            subprocess.run(['git','-C',str(work),'apply',str(ROOT/'scripts/patches/wine-dxvk-legacy-overlay.patch')], check=True)
+            patch_file = str(ROOT/'scripts/patches/wine-dxvk-legacy-overlay.patch')
+            applied = subprocess.run(['git','-C',str(work),'apply','--reverse','--check',patch_file],
+                stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode == 0
+            if not applied:
+                subprocess.run(['git','-C',str(work),'apply',patch_file],check=True)
             source = loader.read_text(encoding='utf-8')
             start = source.index('static NTSTATUS search_winehua_dxvk_overlay(')
             end = source.index('\n/***********************************************************************', start)
