@@ -591,9 +591,6 @@ extern "C" void Main(NativeChildProcess_Args args)
     }
     const bool mewgenicsSoftwareGl = apply_program_opengl_compatibility(argc, argv, binDir);
     apply_box64_diagnostic_config();
-    // Diagnostic overrides arrive through entryParams, after the baseline.
-    // Resolve the profile again so WINEHUA_WINEDEBUG takes effect here.
-    setenv("WINEDEBUG", select_winedebug_profile(argc, argv), 1);
     // WINEPREFIX is a per-session override. Derive paths only after the final
     // value is known, and avoid a "prefix/../" path whose intermediate prefix
     // may not exist after a clean install.
