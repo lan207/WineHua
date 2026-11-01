@@ -115,18 +115,36 @@ export class SmokeHook {
   // 重启共用)。
   onEngineReady(): void {
     this.seed();
-    // Smoke present tests need the compositor surface in the foreground. The
-    // phone keeps the management page visible during normal sessions, so a
-    // cold smoke want would otherwise run the producer behind that page and
-    // never observe a display sequence even though Wine produces frames.
-    try {
-      WineWindowManager.getInstance().showDesktopInForeground();
-      hilog.info(DOMAIN, TAG, 'foreground desktop requested before smoke run');
-    } catch (e) {
-      hilog.warn(DOMAIN, TAG, 'foreground desktop request failed: %{public}s',
-        e instanceof Error ? e.message : JSON.stringify(e));
-    }
-    this.runPending();
+    this.foregroundDesktopThenRun();
+  }
+
+  // The engine can reach ready before the Wayland desktop_root event has been
+  // delivered to WineWindowManager. Requesting foreground at that instant is
+  // a no-op on phones, leaving producer frames behind the management page.
+  private foregroundDesktopThenRun(): void {
+    const wm = WineWindowManager.getInstance();
+    let attempts = 0;
+    const tick = (): void => {
+      if (wm.isDesktopMode && wm.getDesktopRootId() > 0) {
+        try {
+          wm.showDesktopInForeground();
+          hilog.info(DOMAIN, TAG, 'foreground desktop requested root=%{public}d',
+            wm.getDesktopRootId());
+        } catch (e) {
+          hilog.warn(DOMAIN, TAG, 'foreground desktop request failed: %{public}s',
+            e instanceof Error ? e.message : JSON.stringify(e));
+        }
+        setTimeout(() => this.runPending(), 500);
+        return;
+      }
+      if (++attempts < 50) {
+        setTimeout(tick, 100);
+        return;
+      }
+      hilog.warn(DOMAIN, TAG, 'desktop root not ready before smoke timeout');
+      this.runPending();
+    };
+    tick();
   }
 
   // WineEnvService 置 upgradePending 后调用: 引擎数据与 HAP 不一致时产品不
