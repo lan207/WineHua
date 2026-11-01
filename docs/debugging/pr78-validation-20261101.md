@@ -75,3 +75,33 @@ runs. That checkpoint still needs the new ARM64 X11/wlroots build dependencies,
 complete rebuilding, and its own device validation. Product/frontend routing to
 `main-ui`, multiple devices, complete IME composition and longer real-game runs
 remain unfinished. PR #78 stays Draft.
+
+## Rebuilt DXVK candidate
+
+Both legacy PE architectures were rebuilt in an isolated Linux workspace from
+DXVK `5058927a741132fd643d20800f23e62dda432760` with the repository compatibility
+patch. The provenance includes the additional Wine BC decoder header hash.
+The incremental packager changes only 12 legacy DLLs and the DXVK manifest;
+all other Wine payload members are preserved. Package tests and the complete
+16-DLL HAP inventory/hash check passed.
+
+| Artifact | SHA-256 |
+|---|---|
+| Selected HAP | `14d08b585c05b44ca4326c29fb1b8c5ec75a7a8d8294eff4498a30cf41556601` |
+| Selected Wine payload | `138733418e6deb7b525606805a1fe0e9526a53567ec377e92b0904eebd899b3e` |
+| x64 legacy D3D9 DLL | `724f20a5fb028707be3244ba58707310e3a2b01e861dc09d3332a69947fb272a` |
+| x86 legacy D3D9 DLL | `c2c6bdf1c7fa417f8de7a6a2e68ffce7b66950a206049ffbd51be2a35e570264` |
+
+The debug HAP installed successfully. A task-specific migration checked the
+exact old runtime marker and all 13 affected paths, saved matching backups,
+confirmed the engine was stopped, copied only managed DXVK files and updated
+the runtime marker last. Every changed file was read back and hash-verified.
+The prefix, game directories and saves were not reset.
+
+The dedicated `dxvk_legacy_d3d9` suite remains **FAIL 1/4** in
+`build/automation-logs/dxvk-d3d9-dxvk-d3d9-rebuilt-138733/`: x64 D3D9 returns
+`0x8876086a` at device creation; both x86 cases report a D3D9 DLL load failure.
+The same profile's x64 D3D11 case passes with 607 frames and host screenshots.
+An info-level x64 repeat also fails at device creation. These are unresolved
+runtime failures, not a passing D3D9 qualification. The earlier core, DXVK,
+Wine Vulkan and D3D12 results used the old payload and do not validate this one.
