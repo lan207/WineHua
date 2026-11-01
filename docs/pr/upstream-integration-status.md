@@ -1,28 +1,27 @@
-# PR #78 与最新主线集成
+# PR #78 集成状态
 
-核实日期：2026-11-01。集成基线为官方 `master` / `a001e6d0ca277d5a5fb2b4bd6a030ac52e5e132e`，分支为 `integration/pr78-upstream`。这是集成检查点，尚未具备可合并的完整验证。
+核实日期：2026-11-01。技术分支 `integration/pr78-upstream` 已合入官方 `master` 的 `a001e6d`，处理 21 个冲突，保留 X11 路线、CreatedAt/Restored/Modal 契约和 DesktopInputSink。PR #78 仍为旧基线 Draft，候选尚未替换 PR head。
 
-## 已完成
+独立游戏库页面、Ability 和配置模型已迁往 `integration/pr78-main-ui`，产品配套 [PR #79](https://github.com/winehua/WineHua/pull/79) 的目标为 `main-ui`。产品分支通过 merge 继承公共修复，保留应用库、主题、悬浮桌面、PC 缩放和完整键盘；其完整主机回归及 Native/ArkTS HAP 构建通过，产品实机交互待验。
 
-- 合并 PR 的 `6bf3abe` 候选变更，处理全部 21 个文本/删除冲突；保留主线 X11 路线、CreatedAt/Restored/Modal 契约、XKB/X11 构建接线及桌面退出状态。
-- DesktopWindow 沿用主线的 DesktopLayer 组件承载。PR 的直接按住、相对鼠标和虚拟按键经 DesktopInputSink 分发，Wayland 保留 surface 身份和键盘焦点，X11 保留原有注入通道。
-- 八组 Node/TypeScript 回归通过，包括直接/相对鼠标、共享按键、取消/释放、游戏库、输出策略和冷暖 smoke 前台准备。X11 smoke 的 root=0 使用 canvas 就绪条件。
-- ARM64 display-route 链已在隔离 Linux 目录完成编译与 wlroots 试链接，包括新编的 Wayland、VirGL、X11、wlroots 和 Xwayland。补齐干净构建所需的 scanner、libffi/FreeType 元数据、协议枚举头及 EGL 补丁头文件依赖。
-- 集成版 Native/ArkTS HAP 构建成功，包内 68 个原生库以及 16 个 DXVK DLL 的完整性检查通过；调试签名包已覆盖安装，未卸载或重置 prefix。
-- 修复集成版首启闪退：系统 SIGSEGV 栈定位到 EGL 导入探针把裸 `OH_NativeBuffer*` 传入驱动。探针现仅使用 `OHNativeWindowBuffer*` 包装，实机标记为 `pass:payload=OHNativeWindowBuffer`，应用保持运行。主机回归执行实际导入代码，旧源码对照会触发错误载荷断言。
+## 已有集成技术版证据
 
-## 当前构建门槛
+技术 HAP SHA-256 为 `dfeef6ad69321010abeed8b77edd1bb73c0f217b83a3d8a1bfe478e5bff4e223`，运行时载荷为 `0aa1eac9b72376ea5094441b5d5b27067b1266dcd275c442d5148e0960404e0c`。同一台手机、同一 HAP、显式 Wayland 路线和 `prefix=reuse` 下，core 4/4、Wine Vulkan 4/4、普通 DXVK 3/3、D3D12 3/3 均通过设备结果与主机判定。归档及各包身份见[完工清单](completion-checklist.md)。这些记录使用旧 Wine/guest Mesa，不能代替新运行时或默认 X11 路线验收。
 
-当前集成 HAP SHA-256：`5e0aeb018caa499dc31b62440b1521ab5b81777983e848d7b1e2bb06a455c568`；libentry SHA-256：`83b56f81de915e428e4c723c12a291ff2a4b428c558982dd4a8cc0613e9ad733`。运行时载荷为增量重建 DXVK 的 `138733418e6deb7b525606805a1fe0e9526a53567ec377e92b0904eebd899b3e`，Wine/guest Mesa 仍复用旧产物，因此不是完整运行时从零重建。
+专用 `dxvk_legacy_d3d9` 套件为 2/4：x64 D3D9 和同档位 D3D11 完成呈现与截图，x86 两项仍在加载 DLL 时退出。显式兼容模式已避免请求设备缺失的 BC/multiViewport，默认严格行为和格式能力检查保留。Wine overlay 搜索补丁已通过真实 loader 函数的 WoW64/档位隔离回归，须在新 Wine 下实机确认。
 
-当前源码探针下的 Wayland core 已通过主机判定 4/4，归档 `build/automation-logs/core-integration-current-core-5e0aeb/`，payload 版本 `smoke-v2-14fad0447506`。两架构图形/DNS 探针由当前 Wine gitlink 源码独立编译；此独立编译不代表 Wine 引擎重建。普通 DXVK 在同一集成 HAP 下通过 3/3，归档 `build/automation-logs/dxvk-integration-dxvk-5e0aeb/`。显式显示路线现在同时决定主机验收期望，job 声明路线仍独立核验。
+手机首启 SIGSEGV 已由系统栈定位并修复：EGL 探针仅传入 `OHNativeWindowBuffer*` 包装，设备标记为 `pass:payload=OHNativeWindowBuffer`。回归执行实际导入代码，旧源码负对照会触发错误载荷断言。HAP 检查覆盖 staged 库、CMake 生成的 NAPI/子进程模块、16 个 DXVK DLL、清单哈希及 CRC。
 
-D3D9 后续候选仅更改显式兼容模式的可选 Vulkan 特性请求：不向驱动请求缺失的 BC/multiViewport，默认严格行为保留，未实现的压缩格式仍由格式能力检查拒绝。两架构 DLL 已重新编译；x64 D3D9 实机用例完成 623 帧且截图通过。该次只选了一个用例，套件覆盖检查仍为 FAIL，不能当成完整 D3D9 套件通过。候选 HAP SHA-256 为 `df84c2d9b9dadd8b112c4132c4c27feed2c819c8a1dff72c3d46ceb69f45ad44`，载荷 SHA-256 为 `0aa1eac9b72376ea5094441b5d5b27067b1266dcd275c442d5148e0960404e0c`；已按相同的备份/回读步骤更新管理运行库，未重置 prefix。Wine loader 的专用 D3D9/D3D10 overlay 搜索补丁已通过主机 WoW64/档位隔离测试，仍需重建 Wine 后实机验证 x86。
+## 完整重建进度
 
-仍需当前探针下的完整设备回归、最新 Wine/guest Mesa 运行时构建和 X11 默认路线验收。DXVK 专用 D3D9 档位仍未通过。应用库/产品界面仍需按 master/main-ui 规范拆分。
+隔离 Linux 工作目录的 `make NATIVE_ARCH=arm64-v8a deps wine` 已成功，日志以 `GUEST_RUNTIME_BUILD_READY`、`runtime_build_exit=0` 结束。包括新编的 Wine、wineserver、Guest Mesa/VirGL/Venus、Vulkan Loader、GnuTLS 和 GStreamer/FFmpeg。源码 gitlink、补丁/脚本哈希及工具版本均有 provenance，SDK 使用 Linux LLVM 18 配合独立的 OHOS SDK overlay，未修改原 VM 开发仓库。
 
-## 旧基线候选的证据边界
+`make NATIVE_ARCH=arm64-v8a assemble` 正在同一目录完成其余图形/原生依赖和布局打包。已完成两架构 Legacy/Modern DXVK、VKD3D 及新 smoke EXE 编译；完整组装 ZIP、重打 HAP 和新运行时设备验收尚未完成。此前独立 ARM64 X11/wlroots/Xwayland/Wayland/VirGL 干净构建及试链接已通过。
 
-独立的 `fix/compatibility-history-rollup` 分支已有单设备 core 4/4、wine-vulkan 4/4、dxvk 3/3、d3d12 3/3 主机判定，以及 Linux 27 阶段 ASan/UBSan 回归记录。Native/ArkTS 为本轮构建，Wine/Mesa/VirGL 复用现有产物，未完成完整运行时从零重建；也未完成多设备、完整 IME 和真实游戏长跑验收。
+当前技术分支的 Windows 完整主机验证为 34 阶段通过，产品分支为 36 阶段通过。Linux 上当前 Wine/DXVK 补丁后的函数回归、读回 ASan/UBSan 和 `make test` 通过，包括窗口事件、输入状态、合成像素、控制器和 WHGP 协议检查。旧 Linux 27 阶段归档另有历史范围，不能混记为本次全部证据。
 
-原开发工作树与已通过验收的候选工作树均保留独立；本分支的构建失败不改变那些历史记录的范围。
+## 数据保护与待验收项
+
+手机只有当前一台可用。保持常亮；未卸载应用、重置 prefix、删除游戏或存档。已备份并哈希核验三份现有 prefix 注册表。HDC shell 无权重命名应用目录，临时维护 HAP 在应用权限内完成了独立测试目录的移出/移回/回读验证；新运行时尚未切换。正式切换须逐文件哈希验证 staging，保留旧管理运行库，并具备失败恢复路径。
+
+仍需新运行时的 core、Wine Vulkan、DXVK、D3D12 和专用 D3D9 验收、默认 X11 路线、输入/IME、现有真实游戏持续运行及产品页面交互。其他设备没有实机证据。#79 CI 当前为 `action_required`，需要上游维护者批准 fork 工作流；当前凭据只有上游读取权限。两 PR 继续保持 Draft。
