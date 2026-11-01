@@ -1,4 +1,5 @@
 import { SmokeRunner } from './SmokeRunner';
+import { common } from '@kit.AbilityKit';
 import { WineEnvService } from '../service/WineEnvService';
 
 // 侧边栏「开发测试」区 (Index 唯一的 smoke 侵入行: <SmokeDevPanel />)。
@@ -43,7 +44,7 @@ export struct SmokeDevPanel {
             runId: `manual-${Date.now()}`,
             prefix: 'reuse',
             source: 'ui'
-          });
+          }, getContext(this) as common.UIAbilityContext);
         })
         .margin({ bottom: 6 })
       if (this.smokeStatus) {

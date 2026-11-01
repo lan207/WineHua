@@ -105,7 +105,7 @@ export default class EntryAbility extends UIAbility {
     }
     // [[SMOKE]] 合并到 main-ui: 删本行 (want 的模式/套件/前缀等 smoke 参数解析
     // 在 SmokeHook, 模式非 smoke 时零行为)
-    SmokeHook.getInstance().applyWant(parameters);
+    SmokeHook.getInstance().applyWant(parameters, this.context);
   }
 
   // 自动化通道: winehua.program → 引擎就绪后直启该程序。单次消费 (成功才

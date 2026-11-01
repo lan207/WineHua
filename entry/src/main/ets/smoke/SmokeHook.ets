@@ -1,9 +1,9 @@
 import { hilog } from '@kit.PerformanceAnalysisKit';
+import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import {
   WineEnvService, WINE_ROOT, FILES_BASE, pathExists, readTextIfExists
 } from '../service/WineEnvService';
-import { WineWindowManager } from '../service/WineWindowManager';
 import { SmokeRunner } from './SmokeRunner';
 import { SmokeJob, SmokeRequest } from './SmokeTypes';
 
@@ -39,6 +39,7 @@ export class SmokeHook {
   }
 
   private env: WineEnvService | null = null;
+  private caller: common.UIAbilityContext | undefined = undefined;
   // 已消费待执行的 smoke 请求 (消费后置空 = 已启动, 不跨会话重触发;
   // App 存活期间二次 want 会重新置入, SmokeRunner.busy 负责防重入)
   private pending: SmokeRequest | null = null;
@@ -50,12 +51,13 @@ export class SmokeHook {
   // AppStorage (消费清键, 不重触发)。正常会话 (无 mode) 零行为变化。
   // 两种下发方式: winehua.job_file (沙箱路径, 内容大的 job) 优先于内联
   // winehua.job; 都没有则退化为旧 5 键 (suite + run_id + prefix)。
-  applyWant(parameters: Record<string, Object> | undefined): void {
+  applyWant(parameters: Record<string, Object> | undefined, caller?: common.UIAbilityContext): void {
     const value = (key: string, fallback: string): string => {
       if (!parameters || parameters[key] === undefined || parameters[key] === null) return fallback;
       return `${parameters[key]}`;
     };
     if (value('winehua.mode', '') !== 'smoke') return;
+    this.caller = caller;
     const job: SmokeJob | undefined = this.parseJob(value);
     const prefix = job && job.prefix ? job.prefix : value('winehua.prefix', 'reuse');
     const request: SmokeRequest = {
@@ -115,36 +117,7 @@ export class SmokeHook {
   // 重启共用)。
   onEngineReady(): void {
     this.seed();
-    this.foregroundDesktopThenRun();
-  }
-
-  // The engine can reach ready before the Wayland desktop_root event has been
-  // delivered to WineWindowManager. Requesting foreground at that instant is
-  // a no-op on phones, leaving producer frames behind the management page.
-  private foregroundDesktopThenRun(): void {
-    const wm = WineWindowManager.getInstance();
-    let attempts = 0;
-    const tick = (): void => {
-      if (wm.isDesktopMode && wm.getDesktopRootId() > 0) {
-        try {
-          wm.showDesktopInForeground();
-          hilog.info(DOMAIN, TAG, 'foreground desktop requested root=%{public}d',
-            wm.getDesktopRootId());
-        } catch (e) {
-          hilog.warn(DOMAIN, TAG, 'foreground desktop request failed: %{public}s',
-            e instanceof Error ? e.message : JSON.stringify(e));
-        }
-        setTimeout(() => this.runPending(), 500);
-        return;
-      }
-      if (++attempts < 50) {
-        setTimeout(tick, 100);
-        return;
-      }
-      hilog.warn(DOMAIN, TAG, 'desktop root not ready before smoke timeout');
-      this.runPending();
-    };
-    tick();
+    this.runPending();
   }
 
   // WineEnvService 置 upgradePending 后调用: 引擎数据与 HAP 不一致时产品不
@@ -161,6 +134,15 @@ export class SmokeHook {
     const req = this.pending;
     const env = this.env;
     if (!req || !env) return false;
+    // Reuse is also used on development devices with real prefixes. A runtime
+    // hash mismatch must fail this request, never silently turn reuse into a
+    // destructive reset. Only an explicit clean request may reset test data.
+    if (env.upgradePending && req.prefix !== 'clean') {
+      this.pending = null;
+      SmokeRunner.getInstance().start(req, this.caller,
+        'runtime update pending; prefix=reuse preserves the existing environment');
+      return false;
+    }
     // 引擎数据与 HAP 不一致 (upgradePending): 产品不拉起引擎, 等用户点
     // 「应用引擎更新（重置）」。测试容器没有要保留的用户数据, 直接做同一动作
     // (doReset = 停 → 清 → 重解压 → 重启), ready 边沿会再进本方法跑测。
@@ -200,7 +182,7 @@ export class SmokeHook {
     if (!req || !env) return;
     if (!env.prefixReady || env.engineState !== 'ready') return;
     this.pending = null;
-    SmokeRunner.getInstance().start(req);
+    SmokeRunner.getInstance().start(req, this.caller);
   }
 
   // 请求消费单点: AppStorage 键 (applyWant 写入) → pending; 立即清键防重触发。

@@ -30,9 +30,31 @@ def digest(stream):
     return result.hexdigest()
 
 
+def verify_native_libraries(package):
+    # Checking libentry's markers alone accepted a HAP with only six libraries:
+    # the SDK linked it successfully, but the phone could not load its runtime.
+    expected = {
+        'box64.so', 'libentry.so', 'libsmoke_napi.so', 'libwine_child.so',
+        'libvirgl_child.so', 'libwayland-server.so.0', 'libxkbcommon.so.0',
+        'libffi.so.8', 'libepoxy.so.0', 'libvirglrenderer.so.1',
+        'libwinehua_vtest_server.so',
+    }
+    staged = ROOT / 'entry/libs/arm64-v8a'
+    if staged.is_dir():
+        expected.update(path.name for path in staged.glob('*.so*') if path.is_file())
+    packaged = {name.rsplit('/', 1)[-1]: name for name in package.namelist()
+                if name.startswith('libs/arm64-v8a/')}
+    missing = expected - packaged.keys()
+    assert not missing, 'HAP native libraries missing: ' + ', '.join(sorted(missing))
+    for name in expected:
+        assert package.getinfo(packaged[name]).file_size > 0, f'Empty native library: {name}'
+    return sorted(expected)
+
+
 def verify_hap(path):
     with zipfile.ZipFile(path) as package:
         assert package.testzip() is None, 'HAP CRC failure'
+        native_libraries = verify_native_libraries(package)
         def member(suffix):
             matches = [name for name in package.namelist() if name.endswith(suffix)]
             assert len(matches) == 1, (suffix, matches)
@@ -56,6 +78,7 @@ def verify_hap(path):
             'native_sha256': hashlib.sha256(native).hexdigest(),
             'payload_sha256': payload_sha, 'crc': 'passed',
             'native_fix_markers': 'passed', 'payload_manifest': 'matched',
+            'native_libraries': native_libraries,
             'device_installation': 'not performed', 'signature_verification':
             'HAP signing is checked by the build; this script checks contents only'}
 
@@ -96,6 +119,7 @@ def main():
         run('bufferless-root', [sys.executable, 'scripts/test_desktop_bufferless_root.py'])
         run('output-policy', [args.node, 'scripts/test_desktop_output_policy.cjs', args.typescript])
         run('mouse-modes', [args.node, 'scripts/test_mouse_modes.cjs', args.typescript])
+        run('smoke-foreground', [args.node, 'scripts/test_smoke_foreground.cjs', args.typescript])
         run('venus-sync-notify', [sys.executable, 'scripts/test_venus_sync_notify.py'])
         run('direct-shm-readback', [sys.executable, 'scripts/test_direct_shm_readback.py'])
         run('font-policy', [sys.executable, 'scripts/test_font_policy.py'])
