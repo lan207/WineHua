@@ -12,6 +12,7 @@ overlay="$(realpath -m "$2")"
 [ -d "$sdk/native/sysroot" ] || { echo 'SDK sysroot missing' >&2; exit 1; }
 [ ! -e "$overlay" ] || { echo "Overlay already exists: $overlay" >&2; exit 1; }
 llvm_version="${LLVM_VERSION:-18}"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
 cc="$(command -v "clang-$llvm_version")"
 cxx="$(command -v "clang++-$llvm_version")"
 tools=(ld.lld llvm-ar llvm-ranlib llvm-nm llvm-strip llvm-readelf llvm-objcopy llvm-objdump)
@@ -53,6 +54,17 @@ for arg in "$@"; do
         -c|-E|-S|-fsyntax-only|-M|-MM|--version|-dumpversion|-dumpmachine) link=0 ;;
     esac
 done
+# Ninja/Meson can put --target and even -c entirely inside @response files.
+# Inspect those tokens for SDK library lookup while passing the original
+# arguments to Clang unchanged. Assignment propagates parser failures.
+for arg in "$@"; do
+    if [[ "$arg" = @* ]]; then
+        inspection=$(python3 "$(dirname "$0")/linux_sdk_driver_args.py" "$@")
+        target="${inspection%%$'\n'*}"
+        link="${inspection##*$'\n'}"
+        break
+    fi
+done
 case "$target" in
     aarch64*-linux-ohos*) triple=aarch64-linux-ohos ;;
     x86_64*-linux-ohos*) triple=x86_64-linux-ohos ;;
@@ -65,6 +77,7 @@ fi
 exec "$compiler" -resource-dir="$RESOURCE_DIR" "${extra[@]}" "$@"
 WRAPPER
 chmod +x "$overlay/native/llvm/bin/clang"
+cp "$script_dir/linux_sdk_driver_args.py" "$overlay/native/llvm/bin/"
 ln -s clang "$overlay/native/llvm/bin/clang++"
 for tool in "${tools[@]}"; do
     ln -s "$(command -v "$tool-$llvm_version")" "$overlay/native/llvm/bin/$tool"
