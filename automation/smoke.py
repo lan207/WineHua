@@ -538,6 +538,30 @@ def ensure_payload(args) -> Path:
     payload = Path(args.payload).resolve()
     if not (payload / "suites.json").is_file():
         die(f"payload not built: {payload} (run: smoke.py build)")
+    # Validate before starting the app or replacing anything on the device.
+    # A stale timestamp check alone accepted malformed suites JSON, leaving
+    # SmokeRunner unable to report a result after the payload was pushed.
+    try:
+        suites_doc = json.loads((payload / 'suites.json').read_text(encoding='utf-8'))
+        manifest = json.loads((payload / 'manifest.json').read_text(encoding='utf-8'))
+        version = manifest.get('suiteVersion')
+        if not version or suites_doc.get('suiteVersion') != version:
+            raise ValueError('suites/manifest version mismatch')
+        files = manifest.get('files')
+        if not isinstance(files, dict) or not files:
+            raise ValueError('payload manifest has no files')
+        for relative, expected in files.items():
+            # Existing Windows manifests contain backslashes; preserve them
+            # as input while enforcing that every listed file stays in root.
+            name = relative.replace(chr(92), '/')
+            if name.startswith('/') or ':' in name or '..' in name.split('/'):
+                raise ValueError(f'invalid payload path: {relative}')
+            path = (payload / name).resolve()
+            path.relative_to(payload)
+            if sha256(path) != expected:
+                raise ValueError(f'payload hash mismatch: {relative}')
+    except (OSError, ValueError, AttributeError, TypeError) as exc:
+        die(f'payload invalid: {exc} (run: smoke.py build)')
     # 定义比载荷新 = 改了 smoke/tests 或 smoke/suites 却没重建：push 上去的
     # 仍是旧定义（实测踩坑：改套件档位后设备端 suites.json 还是旧 backend）
     definitions = list(TESTS_DIR.glob("*/test.json")) + list(SUITES_DIR.glob("*.json"))
