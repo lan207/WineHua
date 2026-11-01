@@ -10,21 +10,24 @@ source "$SCRIPT_DIR/env.sh"
 
 [ -d "$DXVK_SRC" ] || err "DXVK fork missing: $DXVK_SRC"
 
-compat_patch="$SCRIPT_DIR/patches/dxvk-legacy-mingw-compat.patch"
 python3 - "$DXVK_SRC" <<'PY'
 from pathlib import Path
 import sys
 root = Path(sys.argv[1])
-for name in ('src/d3d10/d3d10_interfaces.h', 'src/dxvk/dxvk_gpu_query.cpp'):
+for name in ('src/d3d10/d3d10_interfaces.h', 'src/dxvk/dxvk_gpu_query.cpp',
+             'src/d3d9/d3d9_device.cpp'):
     path = root / name
     data = path.read_bytes()
     normalized = data.replace(b'\r\n', b'\n')
     if data != normalized:
         path.write_bytes(normalized)
 PY
-if ! patch -d "$DXVK_SRC" -p1 --reverse --dry-run --silent < "$compat_patch" >/dev/null 2>&1; then
-    patch -d "$DXVK_SRC" -p1 --forward --batch < "$compat_patch"
-fi
+for compat_patch in "$SCRIPT_DIR/patches/dxvk-legacy-mingw-compat.patch" \
+                    "$SCRIPT_DIR/patches/dxvk-legacy-d3d9-features.patch"; do
+    if ! patch -d "$DXVK_SRC" -p1 --reverse --dry-run --silent < "$compat_patch" >/dev/null 2>&1; then
+        patch -d "$DXVK_SRC" -p1 --forward --batch < "$compat_patch"
+    fi
+done
 
 # 读取 meson 缓存里配置的源码绝对路径 (可能为空)
 configured_source_of() {
