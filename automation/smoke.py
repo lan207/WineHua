@@ -956,6 +956,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         start += " " + format_extra_ps(args.extra_ps)
     if args.long_seconds:
         start += f" --ps winehua.long_seconds {args.long_seconds}"
+    if args.d3d:
+        start += f" --ps winehua.d3d_backend {args.d3d}"
+    if args.dxvk:
+        start += f" --ps winehua.dxvk_backend {args.dxvk}"
     log(f"run {args.suite or 'job'} (runId={run_id}, prefix={args.prefix}, "
         f"job={json.dumps(job, ensure_ascii=False)})")
     code, out = hdc_shell(hdc, device, start)
@@ -1058,6 +1062,14 @@ def cmd_run(args: argparse.Namespace) -> int:
         (archive / "host-summary.json").write_text(
             json.dumps(host, indent=2, ensure_ascii=False) + "\n")
     finally:
+        # Native child diagnostics live outside files/. Capture them before
+        # stopping the app, which closes the debug sandbox access channel.
+        try:
+            subprocess.run([hdc, "-t", device, "file", "recv", "-b", BUNDLE,
+                            "/data/storage/el2/base/temp", str(archive / "native-logs")],
+                           capture_output=True, text=True, errors="replace", timeout=30)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log(f"收集原生日志失败: {exc}")
         # 无论成败都停掉测试 App：常驻会让下次启动走 onNewWant 保留自动化
         # 窗口/页面状态，而不是重建正常形态
         hdc_shell(hdc, device, f"aa force-stop {BUNDLE}")
@@ -1155,7 +1167,7 @@ def recent_log(hdc: str, device: str, seconds: int = 4) -> str:
         return result.stdout or ""
     except subprocess.TimeoutExpired as error:
         if error.stdout:
-            return error.stdout.decode("utf-8", errors="replace")
+            return error.stdout if isinstance(error.stdout, str) else error.stdout.decode("utf-8", errors="replace")
         return ""
 
 
