@@ -8,7 +8,7 @@ import zipfile
 
 import validate_desktop_rendering as validation
 
-LIBRARIES = ('box64.so', 'libentry.so', 'libsmoke_napi.so', 'libwine_child.so',
+LIBRARIES = ('box64.so', 'libc++_shared.so', 'libentry.so', 'libsmoke_napi.so', 'libwine_child.so',
              'libvirgl_child.so', 'libwayland-server.so.0', 'libxkbcommon.so.0',
              'libffi.so.8', 'libepoxy.so.0', 'libvirglrenderer.so.1',
              'libwinehua_vtest_server.so')
