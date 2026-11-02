@@ -149,6 +149,7 @@ def main():
         run('egl-import-probe', [sys.executable, 'scripts/test_egl_import_probe.py'])
         run('dxvk-d3d9-features', [sys.executable, 'scripts/test_dxvk_d3d9_features.py'])
         run('wine-dxvk-overlay', [sys.executable, 'scripts/test_wine_dxvk_overlay.py'])
+        run('vulkan-fence-policy', [sys.executable, 'scripts/test_vulkan_fence_policy.py'])
         run('d3d9-profile-coverage', [sys.executable, 'scripts/test_d3d9_profile_coverage.py'])
         run('candidate-cleanup', [sys.executable, 'scripts/test_desktop_candidate_cleanup.py'])
         run('linux-sdk-driver-args', [sys.executable, 'scripts/test_linux_sdk_driver_args.py'])
