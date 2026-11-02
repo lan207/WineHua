@@ -31,6 +31,7 @@ int main()
     assert(env.at("ZINK_WINEHUA_SHADOW_TRANSFERS") == "true");
     assert(env.at("VN_WINEHUA_PERSISTENT_MAP_SYNC") == "0");
     assert(env.at("VN_WINEHUA_SYNC_NOTIFY_RING") == "1");
+    assert(env.at("VN_WINEHUA_DIRECT_FENCE_WAIT") == "0");
     assert(env.at("BOX64_DYNACACHE") == "0");
     assert(!env.count("BOX64_DYNAREC"));
     assert(!env.count("WINEHUA_GL_READBACK_BATCH"));

@@ -221,9 +221,8 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
             "WINEHUA_DXVK_ROOT=" + dxvkRoot,
             "WINEHUA_DXVK_PROFILE=" + dxvkRuntimeProfile,
             "WINEHUA_DXVK_VERSION=" + std::string(modern26 ? "2.6.2" : "1.10.3"),
-            /* Product sessions use the qualified precise mapping contract
-             * without enabling the Gate C trace selector. Direct fence waits
-             * remain enabled explicitly below. */
+            /* Product sessions use the precise mapping contract without
+             * enabling the Gate C trace selector. */
             "WINEHUA_PERF_PROFILE=shadow-precise",
             "WINEHUA_VULKAN_RUNTIME=1",
             "WINEHUA_VULKAN_LOADER_ARCH=x86_64",
@@ -278,7 +277,11 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
              * 回读（compute UAV 拿旧数据）。500k 档两种消费者共用档位
              * env，先保 D3D12 出图。 */
             "VN_WINEHUA_PERSISTENT_MAP_SYNC=1",
-            "VN_WINEHUA_DIRECT_FENCE_WAIT=1",
+            /* The rebuilt Guest/Host pair reproduces stale first-dispatch
+             * readback with the direct-wait fast path. Keep the existing
+             * timeout-aware status polling until that path is qualified;
+             * per-program environment overrides can still opt in. */
+            "VN_WINEHUA_DIRECT_FENCE_WAIT=0",
             "VKR_WINEHUA_SHADOW_FROM_HOST=precise",
             "VKD3D_WINEHUA_FORCE_COHERENT_MAP_SYNC=1",
             "WINEDLLOVERRIDES=d3d12=n;d3d11=n;dxgi=n",
@@ -396,6 +399,9 @@ void AppendD3dBackendEnv(std::vector<std::string>& env,
          * 纯 n 后正常出界面)。modern 2.x 已移除 d3d10, 不设。 */
         "WINEDLLOVERRIDES=" + std::string(profile.dllOverrides),
         "VN_WINEHUA_REMOTE_MEMORY_SYNC=1",
+        /* Pin the completion policy instead of inheriting a direct-wait
+         * setting from an Explorer/VKD3D parent process. */
+        "VN_WINEHUA_DIRECT_FENCE_WAIT=0",
         "WINEDLLPATH=" + wineDllPath,
         "WINEDLLDIR0=" + overlay64,
         "WINEDLLDIR1=" + overlay86,

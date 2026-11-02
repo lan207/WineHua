@@ -82,7 +82,8 @@ inline std::vector<std::pair<std::string, std::string>> MewgenicsGpuEnvironment(
         // window. Asynchronous draws keep their existing notification policy.
         {"VN_WINEHUA_SYNC_NOTIFY_RING", "1"},
         {"VN_WINEHUA_PERSISTENT_MAP_SYNC", "0"},
-        {"VN_WINEHUA_DIRECT_FENCE_WAIT", "1"},
+        // Use the same qualified completion path as the D3D overlays.
+        {"VN_WINEHUA_DIRECT_FENCE_WAIT", "0"},
         {"LIBGL_ALWAYS_SOFTWARE", "0"},
         {"VK_LOADER_LAYERS_DISABLE", "~implicit~"},
         {"ZINK_DEBUG", "nobgc,noreorder"},
